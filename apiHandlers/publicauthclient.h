@@ -13,8 +13,6 @@
 
 class PublicAuthClient : public QObject {
     Q_OBJECT
-    QML_ELEMENT
-    QML_SINGLETON
 public:
 
     // session active is set to true when tokens are returned by the authorization request
@@ -66,7 +64,7 @@ signals:
 private:
     QString m_secretKey;
     QNetworkAccessManager m_manager;
-    bool m_sessionActive;
+    bool m_sessionActive = false;
 };
 
 #endif // PUBLICAUTHCLIENT_H

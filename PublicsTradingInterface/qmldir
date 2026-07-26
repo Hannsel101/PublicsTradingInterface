@@ -1,0 +1,6 @@
+module PublicsTradingInterface
+typeinfo appPublicsTradingInterface.qmltypes
+prefer :/qt/qml/PublicsTradingInterface/
+Main 254.0 Main.qml
+depends QtQuick
+
