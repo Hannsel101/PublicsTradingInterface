@@ -1,9 +1,9 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
-#include "accountfetcher.h"
 #include "publicauthclient.h"
 #include "publicapiworker.h"
+#include "stocksearchcontroller.h"
 // #include <qtkeychain/keychain.h>
 
 // void saveKeyToSecureStorage(const QString &apiKey) {
@@ -33,17 +33,20 @@ int main(int argc, char *argv[])
     // TO DO: use qtkeychain to ensure secure storage of keys
     QString mySecretKey = "gtJwUKPxkMR8cnpR3k54474rvqHymfo9"; // From your Publics account settings
     PublicAuthClient authClient(mySecretKey);
-    AccountFetcher fetcher("");
-    PublicApiWorker newApiWorker;
+    PublicApiWorker publicsApiWorker;
+    StockSearchController stockSearchController;
 
 
     // Connect the token received signal to processing the token
     QObject::connect(&authClient, &PublicAuthClient::tokenReceived,
-                     &newApiWorker, &PublicApiWorker::processToken);
+                     &publicsApiWorker, &PublicApiWorker::processToken);
+    QObject::connect(&authClient, &PublicAuthClient::tokenReceived,
+                     &stockSearchController, &StockSearchController::storeAuthorizationToken);
 
 
     engine.rootContext()->setContextProperty("AuthClient", &authClient);
-    engine.rootContext()->setContextProperty("ApiWorker", &newApiWorker);
+    engine.rootContext()->setContextProperty("ApiWorker", &publicsApiWorker);
+    engine.rootContext()->setContextProperty("StockSearchController", &stockSearchController);
 
     QObject::connect(
         &engine,

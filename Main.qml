@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import "qml/DisplayAccountInformation"
+import "qml/StockSearchAutoComplete"
 
 
 ApplicationWindow {
@@ -38,6 +39,13 @@ ApplicationWindow {
         anchors.left: parent.left
         width: 100
         height: 50
+    }
+
+    StockSearchAutoComplete
+    {
+        id: findTickerSymbol
+        anchors.top: userKeyInput.bottom
+        anchors.horizontalCenter: userKeyInput.horizontalCenter
     }
 
     Column

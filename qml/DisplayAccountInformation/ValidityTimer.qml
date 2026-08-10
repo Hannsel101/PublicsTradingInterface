@@ -102,5 +102,6 @@ Item
     function performTimeoutAction()
     {
         sessionActive = false
+        StockSearchController.tokenActive = false
     }
 }
