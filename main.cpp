@@ -4,23 +4,38 @@
 #include "publicauthclient.h"
 #include "publicapiworker.h"
 #include "stocksearchcontroller.h"
-// #include <qtkeychain/keychain.h>
+#include <windows.h>
+#include <wincred.h>
 
-// void saveKeyToSecureStorage(const QString &apiKey) {
-//     auto job = new QKeychain::WritePasswordJob("MyAppIdentifier", this);
-//     job->setKey("api_key");
-//     job->setTextData(apiKey);
-//     QObject::connect(job, &QKeychain::Job::finished, this, [job]() {
-//         if (job->error()) {
-//             qWarning() << "Failed to save API key:" << job->errorString();
-//         } else {
-//             qDebug() << "API key saved securely.";
-//         }
-//         job->deleteLater();
-//     });
-//     job->start();
-// }
+/*
+ * Grabs a publics api key from windows credential manager
+ *
+ * Name must be setup as PublicsApiKey in order for the key
+ * be grabbed
+ * */
+QString getPublicsApiKey()
+{
+    PCREDENTIALW pCred = nullptr;
 
+    // Read the secret securely from Windows Credential Manager
+    if (CredReadW(L"PublicsApiKey", CRED_TYPE_GENERIC, 0, &pCred))
+    {
+        // Convert the raw bytes from the credential blob into a QString
+        QString key = QString::fromWCharArray(
+            reinterpret_cast<wchar_t*>(pCred->CredentialBlob),
+            pCred->CredentialBlobSize / sizeof(wchar_t)
+            );
+        CredFree(pCred);
+        return key;
+    }
+
+    qWarning() << "Failed to retrieve the API key from Credential Manager.";
+    return QString();
+}
+
+/*
+ * Main entry point into the application
+ * */
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
@@ -29,9 +44,7 @@ int main(int argc, char *argv[])
     /*
      * Set the initial properties which can be used in both c++ and qml
      * */
-    // Perform authentication with publics api using your secret key
-    // TO DO: use qtkeychain to ensure secure storage of keys
-    QString mySecretKey = "gtJwUKPxkMR8cnpR3k54474rvqHymfo9"; // From your Publics account settings
+    QString mySecretKey = getPublicsApiKey();
     PublicAuthClient authClient(mySecretKey);
     PublicApiWorker publicsApiWorker;
     StockSearchController stockSearchController;

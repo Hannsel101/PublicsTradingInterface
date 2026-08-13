@@ -64,6 +64,7 @@ target_link_libraries(appPublicsTradingInterface
         Qt6::Quick
         Qt6::Network
         Qt6::Concurrent
+        Advapi32
         #KDABQtKeychain::qt6keychain
 )
 
