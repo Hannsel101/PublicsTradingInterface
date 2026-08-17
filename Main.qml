@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import "qml/DisplayAccountInformation"
 import "qml/StockSearchAutoComplete"
+import "qml/PerformTrades"
 
 
 ApplicationWindow {
@@ -41,18 +42,38 @@ ApplicationWindow {
         height: 50
     }
 
+    /**
+      * a widget that performs the purchase and selling of stocks
+      */
+    StockTrade
+    {
+        id: stockTradeInterface
+        anchors.centerIn: parent
+        visible: StockSearchController.tokenActive
+    }
+
+    /**
+      * Will be added in a future update to give ticker suggestions when the user
+      * begins typing part of a possible ticker symbol
+      */
     StockSearchAutoComplete
     {
         id: findTickerSymbol
         anchors.top: userKeyInput.bottom
         anchors.horizontalCenter: userKeyInput.horizontalCenter
+        visible: false
     }
 
+    /**
+      * TO DO: add functionality later so that the user can add new keys and it will store it in windows under
+      *        some type of credential manager group. And be accessed for subsequent runs
+      */
     Column
     {
         id: userKeyInput
         anchors.centerIn: parent
         spacing: 15
+        visible: !AuthClient.sessionActive
 
         TextField
         {

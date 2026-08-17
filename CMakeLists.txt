@@ -41,6 +41,7 @@ qt_add_qml_module(appPublicsTradingInterface
         apiHandlers/publicapiworker.h apiHandlers/publicapiworker.cpp
         SOURCES apiHandlers/stocksearchcontroller.h apiHandlers/stocksearchcontroller.cpp
         QML_FILES qml/StockSearchAutoComplete/StockSearchAutoComplete.qml
+        QML_FILES qml/PerformTrades/StockTrade.qml
 
 )
 
