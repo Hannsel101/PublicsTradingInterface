@@ -50,6 +50,16 @@ ApplicationWindow {
         id: stockTradeInterface
         anchors.centerIn: parent
         visible: StockSearchController.tokenActive
+
+        onPerformBuy:
+        {
+            ApiWorker.executePreflight(inputFieldText, "BUY")
+        }
+
+        onPerformSell:
+        {
+            ApiWorker.executePreflight(inputFieldText, "SELL")
+        }
     }
 
     /**

@@ -32,15 +32,12 @@ public:
      * */
     void fetchAllSubaccountsConcurrently();
 
-    /*
-     * Execute a trade if the preflight approves the trade
-     * */
-    void executeTrade(const QString &accessToken, // Authorization token
-                      const QString &accountId, // Account to perform trade
-                      const QString &symbol, // Ticker Symbol
-                      const QString &quantity, // How Many Buy/Sell
-                      const QString &side, // "BUY" or "SELL"
-                      bool isPreflight); // isPreflightf = true means this will be a preflight
+
+    Q_INVOKABLE void executePreflight(const QString &symbol,    // Ticker Symbol
+                                      const QString &side);     // BUY or SELL
+
+    Q_INVOKABLE void executeTrade(const QString &symbol,        // Ticker Symbol
+                                  const QString &side);         // BUY or SELL
 
 public slots:
     /*
@@ -98,6 +95,15 @@ private:
      *  order placement (POST): /userapigateway/trading/
      * */
     QNetworkRequest setPublicBrokerageHeaders(QString requestType);
+
+
+    /*
+     * perform a trade if the preflight approves the trade
+     * */
+    void executeTradeOrPreflight(const QString &accountId,     // Account to perform trade
+                                 const QString &symbol,        // Ticker Symbol
+                                 const QString &side,          // "BUY" or "SELL"
+                                 bool isPreflight);            // isPreflight = true means this will be a preflight
 };
 
 

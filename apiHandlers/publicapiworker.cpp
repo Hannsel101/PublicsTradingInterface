@@ -61,26 +61,46 @@ void PublicApiWorker::fetchAllSubaccountsConcurrently() {
     });
 }
 
-void PublicApiWorker::executeTrade(const QString &accessToken, const QString &accountId, const QString &symbol, const QString &quantity, const QString &side, bool isPreflight)
+void PublicApiWorker::executePreflight(const QString &symbol, const QString &side)
+{
+    // Execute a preflight for all accounts in the account list
+    for(auto &accountData: m_accountList)
+    {
+        qDebug() << "Executing Preflight for" << accountData.accountId << ":" << symbol << side;
+        executeTradeOrPreflight(accountData.accountId,
+                                symbol,
+                                side,
+                                true);
+    }
+}
+
+void PublicApiWorker::executeTrade(const QString &symbol, const QString &side)
+{
+    qDebug() << "Executing Trade:" << symbol << side;
+    executeTradeOrPreflight(m_accountList.at(0).accountId,
+                            symbol,
+                            side,
+                            false);
+}
+
+void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QString &symbol, const QString &side, bool isPreflight)
 {
     QNetworkAccessManager *manager = new QNetworkAccessManager(this);
 
-    isPreflight = true; // REMOVE for real buy and sell
     // Construct target URL based on whether we are testing or executing
-    QString endpoint = isPreflight ? "order/preflight" : "order";
-    QUrl url(QString("https://public.com")
-                 .arg(accountId, endpoint));
-
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    request.setRawHeader("Authorization", QString("Bearer %1").arg(accessToken).toUtf8());
+    QString endpoint = isPreflight ? "preflight/single-leg": "order";
+    QNetworkRequest request = setPublicBrokerageHeaders("userapigateway/trading/" +
+                                                        accountId +
+                                                        "/" +
+                                                        endpoint);
 
     // Construct Order Payload
     QJsonObject orderObj;
     orderObj["orderId"] = QUuid::createUuid().toString(QUuid::WithoutBraces); // Generate dynamic UUIDv4
     orderObj["orderSide"] = side.toUpper(); // "BUY" or "SELL"
     orderObj["orderType"] = "MARKET";
-    orderObj["quantity"] = quantity;
+    orderObj["quantity"] = "1"; // Always trade in single stock amounts
+    orderObj["validateOrder"] = "true"; // Validate the order against current account state
 
     QJsonObject instrumentObj;
     instrumentObj["symbol"] = symbol.toUpper();
@@ -103,6 +123,7 @@ void PublicApiWorker::executeTrade(const QString &accessToken, const QString &ac
 
         if (reply->error() != QNetworkReply::NoError) {
             emit transactionFailed(QString("Network Error: %1").arg(reply->errorString()));
+            qDebug() << "Transaction failed!!!!";
             return;
         }
 
@@ -112,8 +133,9 @@ void PublicApiWorker::executeTrade(const QString &accessToken, const QString &ac
         if (isPreflight) {
             // Preflight passes back key impact telemetry (fees, margin requirements)
             QString summary = QString("Preflight Success! Est Value: $%1 | Est Fees: $%2")
-                                  .arg(responseObj["estimatedOrderValue"].toString())
-                                  .arg(responseObj["estimatedCommission"].toString());
+                                  .arg(responseObj["orderValue"].toString())
+                                  .arg(responseObj["estimatedExecutionFee"].toString());
+            qDebug() << summary;
             emit preflightPassed(summary);
         } else {
             emit orderExecuted(QString("Live Order Placed! Status: %1")

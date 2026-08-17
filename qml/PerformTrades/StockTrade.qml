@@ -9,14 +9,23 @@ Item
     height: 320
     visible: true
 
+    property color errorColor: "#ff3b30"    // red error
+    property color successColor: "#34c759"  // Green success
+    property alias inputFieldText: inputField.text
+
+    signal performBuy();
+    signal performSell();
+
     // Main layout container holding all structural UI rows sequentially
-    ColumnLayout {
+    ColumnLayout
+    {
         anchors.centerIn: parent
         width: parent.width * 0.85
         spacing: 16
 
         // SECTION 1: Result Display Area (Positioned above the text input field)
-        Rectangle {
+        Rectangle
+        {
             id: resultContainer
             Layout.fillWidth: true
             height: 70
@@ -25,12 +34,14 @@ Item
             border.color: "#e5e5ea"
             border.width: 1
 
-            ColumnLayout {
+            ColumnLayout
+            {
                 anchors.centerIn: parent
                 width: parent.width * 0.9
                 spacing: 4
 
-                Label {
+                Label
+                {
                     text: "OUTPUT CHANNEL"
                     font.pixelSize: 10
                     font.bold: true
@@ -38,7 +49,8 @@ Item
                     Layout.alignment: Qt.AlignHCenter
                 }
 
-                Label {
+                Label
+                {
                     id: resultLabel
                     text: "Awaiting execution request..."
                     font.pixelSize: 15
@@ -52,25 +64,29 @@ Item
         }
 
         // Decorative separating line to distinct output from input
-        Rectangle {
+        Rectangle
+        {
             Layout.fillWidth: true
             height: 1
             color: "#d1d1d6"
         }
 
         // SECTION 2: User Input Field
-        ColumnLayout {
+        ColumnLayout
+        {
             Layout.fillWidth: true
             spacing: 6
 
-            Label {
+            Label
+            {
                 text: "Source String Input"
                 font.pixelSize: 12
                 font.bold: true
                 color: "#1c1c1e"
             }
 
-            TextField {
+            TextField
+            {
                 id: inputField
                 placeholderText: "Type text data here..."
                 Layout.fillWidth: true
@@ -89,17 +105,21 @@ Item
         }
 
         // SECTION 3: Operation Actions Container (Two distinctive button routines)
-        RowLayout {
+        RowLayout
+        {
             Layout.fillWidth: true
             spacing: 12
 
-            // Button Routine A: Uppercase Transformer Logic
-            Button {
+            // Button Routine A: Buy a single stock across all accounts
+            Button
+            {
                 id: btnUppercase
-                text: "Transform: UPPERCASE"
+                text: "BUY"
                 Layout.fillWidth: true
+                enabled: inputField.text.trim() !== ""
 
-                contentItem: Text {
+                contentItem: Text
+                {
                     text: btnUppercase.text
                     font.pixelSize: 13
                     font.bold: true
@@ -108,31 +128,28 @@ Item
                     verticalAlignment: Text.AlignVCenter
                 }
 
-                background: Rectangle {
+                background: Rectangle
+                {
                     radius: 6
                     color: btnUppercase.down ? "#0051a8" : (btnUppercase.hovered ? "#0062cc" : "#007aff")
                 }
 
-                onClicked: {
-                    // Operational validation constraint checking
-                    if (inputField.text.trim() === "") {
-                        resultLabel.text = "Error: Input element cannot be blank."
-                        resultContainer.border.color = "#ff3b30" // Red boundary fault alert
-                    } else {
-                        // Execution processing logic
-                        resultLabel.text = inputField.text.toUpperCase()
-                        resultContainer.border.color = "#34c759" // Green validation success alert
-                    }
+                onClicked:
+                {
+                    performBuy()
                 }
             }
 
-            // Button Routine B: Text Reversing Vector Logic
-            Button {
+            // Button Routine B: Selling a single stock across all accounts
+            Button
+            {
                 id: btnReverse
-                text: "Operation: REVERSE"
+                text: "SELL"
                 Layout.fillWidth: true
+                enabled: inputField.text.trim() !== ""
 
-                contentItem: Text {
+                contentItem: Text
+                {
                     text: btnReverse.text
                     font.pixelSize: 13
                     font.bold: true
@@ -141,22 +158,15 @@ Item
                     verticalAlignment: Text.AlignVCenter
                 }
 
-                background: Rectangle {
+                background: Rectangle
+                {
                     radius: 6
                     color: btnReverse.down ? "#434190" : (btnReverse.hovered ? "#4c49a1" : "#5856d6")
                 }
 
-                onClicked: {
-                    // Operational validation constraint checking
-                    if (inputField.text.trim() === "") {
-                        resultLabel.text = "Error: Input element cannot be blank."
-                        resultContainer.border.color = "#ff3b30" // Red boundary fault alert
-                    } else {
-                        // Execution processing logic: splits text by indices array, inverts structural positioning, recombines into a flat string
-                        let reversedString = inputField.text.split("").reverse().join("");
-                        resultLabel.text = reversedString
-                        resultContainer.border.color = "#34c759" // Green validation success alert
-                    }
+                onClicked:
+                {
+                    performSell()
                 }
             }
         }
