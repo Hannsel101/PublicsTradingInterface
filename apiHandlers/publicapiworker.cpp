@@ -71,16 +71,28 @@ void PublicApiWorker::executePreflight(const QString &symbol, const QString &sid
                                 symbol,
                                 side,
                                 true);
+
+        QEventLoop loop;
+        QTimer::singleShot(200, &loop, &QEventLoop::quit);
+        loop.exec();
     }
 }
 
 void PublicApiWorker::executeTrade(const QString &symbol, const QString &side)
 {
-    qDebug() << "Executing Trade:" << symbol << side;
-    executeTradeOrPreflight(m_accountList.at(0).accountId,
-                            symbol,
-                            side,
-                            false);
+    // Execute a trade for all accounts in the account list
+    for(auto &accountData: m_accountList)
+    {
+        qDebug() << "Executing Trade for" << accountData.accountId << ":" << symbol << side;
+        executeTradeOrPreflight(accountData.accountId,
+                                symbol,
+                                side,
+                                false);
+
+        QEventLoop loop;
+        QTimer::singleShot(200, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
 }
 
 void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QString &symbol, const QString &side, bool isPreflight)
@@ -123,7 +135,7 @@ void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QS
 
         if (reply->error() != QNetworkReply::NoError) {
             emit transactionFailed(QString("Network Error: %1").arg(reply->errorString()));
-            qDebug() << "Transaction failed!!!!";
+            qDebug() << "Transaction failed!\n" << QString("Network Error: %1").arg(reply->errorString());
             return;
         }
 

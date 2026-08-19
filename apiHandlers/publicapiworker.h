@@ -8,12 +8,18 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QString>
 #include <QUrl>
 #include <QPromise>
 #include <QFuture>
 #include <QtConcurrent>
+
+// For Debugging
 #include <QDebug>
-#include <QString>
+
+// For adding delays to trades
+#include <QEventLoop>
+#include <QTimer>
 
 // Helper structure to bundle results
 struct AccountData {

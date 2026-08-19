@@ -53,7 +53,7 @@ ApplicationWindow {
 
         onPerformBuy:
         {
-            ApiWorker.executePreflight(inputFieldText, "BUY")
+            ApiWorker.executeTrade(inputFieldText , "BUY")
         }
 
         onPerformSell:
