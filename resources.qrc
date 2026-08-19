@@ -1,0 +1,9 @@
+<RCC>
+    <qresource prefix="/">
+        <file>qml/DisplayAccountInformation/ValidityTimer.qml</file>
+        <file>qml/PerformTrades/StockTrade.qml</file>
+        <file>qml/StockSearchAutoComplete/StockSearchAutoComplete.qml</file>
+        <file>qml/DisplayAccountInformation/ApiKeyList.qml</file>
+        <file>Main.qml</file>
+    </qresource>
+</RCC>

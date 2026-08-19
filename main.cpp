@@ -18,7 +18,7 @@ QString getPublicsApiKey()
     PCREDENTIALW pCred = nullptr;
 
     // Read the secret securely from Windows Credential Manager
-    if (CredReadW(L"PublicsApiKey", CRED_TYPE_GENERIC, 0, &pCred))
+    if (CredReadW(L"PublicsApiKey0", CRED_TYPE_GENERIC, 0, &pCred))
     {
         // Convert the raw bytes from the credential blob into a QString
         QString key = QString::fromWCharArray(
@@ -33,19 +33,55 @@ QString getPublicsApiKey()
     return QString();
 }
 
+// Retrieve a list of target names that start with "ApiKey"
+QStringList listStoredApiKeys()
+{
+    QStringList matchingKeys;
+    PCREDENTIALW *pCreds = nullptr;
+    DWORD count = 0;
+
+    // "ApiKey*" acts as a wildcard filter for Windows Credential Manager
+    LPCWSTR filter = L"PublicsApiKey*";
+
+    // Enumerate only generic credentials matching the filter
+    if (CredEnumerateW(filter, 0, &count, &pCreds) && pCreds) {
+        for (DWORD i = 0; i < count; ++i) {
+            if (pCreds[i]->Type == CRED_TYPE_GENERIC && pCreds[i]->TargetName) {
+                matchingKeys.append(QString::fromWCharArray(
+                    reinterpret_cast<wchar_t*>(pCreds[i]->CredentialBlob),
+                    pCreds[i]->CredentialBlobSize / sizeof(wchar_t)
+                    ));
+            }
+        }
+        CredFree(pCreds);
+    }
+    return matchingKeys;
+}
+
 /*
  * Main entry point into the application
  * */
 int main(int argc, char *argv[])
 {
+    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     QGuiApplication app(argc, argv);
     QQmlApplicationEngine engine;
 
     /*
-     * Set the initial properties which can be used in both c++ and qml
+     * Test Pulling in stored api keys
+     * */
+    qDebug() << listStoredApiKeys();
+
+    /*
+     * Grab an initial set of Public Brokerage Api Keys from Windows Credential Manager
+     *
+     * these will persist between runs unless removed by the user
      * */
     QString mySecretKey = getPublicsApiKey();
     PublicAuthClient authClient(mySecretKey);
+    authClient.listStoredApiKeys();
+
+
     PublicApiWorker publicsApiWorker;
     StockSearchController stockSearchController;
 
@@ -67,7 +103,8 @@ int main(int argc, char *argv[])
         &app,
         []() { QCoreApplication::exit(-1); },
         Qt::QueuedConnection);
-    engine.loadFromModule("PublicsTradingInterface", "Main");
+    //engine.loadFromModule("PublicsTradingInterface", "Main");
+    engine.load(QUrl("qrc:/Main.qml"));
 
     return QGuiApplication::exec();
 }

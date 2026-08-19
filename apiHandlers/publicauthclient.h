@@ -1,6 +1,7 @@
 #ifndef PUBLICAUTHCLIENT_H
 #define PUBLICAUTHCLIENT_H
 
+// QT6
 #include <QObject>
 #include <QCoreApplication>
 #include <QNetworkAccessManager>
@@ -11,13 +12,21 @@
 #include <QtQml>
 #include <QDebug>
 
+// Windows API
+#include <windows.h>
+#include <wincred.h>
+
 class PublicAuthClient : public QObject {
     Q_OBJECT
 public:
 
     // session active is set to true when tokens are returned by the authorization request
     Q_PROPERTY(bool sessionActive READ sessionActive WRITE setSessionActive NOTIFY sessionActiveChanged FINAL)
+    Q_PROPERTY(QStringList secretKeys READ secretKeys WRITE setSecretKeys NOTIFY secretKeysChanged FINAL)
 
+    /*
+     * Default constructor which accepts a secret key or can be left as empty
+     * */
     PublicAuthClient(const QString secretKey = "", QObject *parent = nullptr)
         : QObject(parent), m_secretKey(secretKey) {}
 
@@ -31,10 +40,20 @@ public:
     Q_INVOKABLE void requestToken();
 
     /*
+     * List and securely store API keys into windows credential manager
+     * */
+    QStringList listStoredApiKeys();
+    bool storeNextApiKey(const QString &userName, const QString &apiKey);
+
+
+    /*
      * Setters and getters
      * */
     bool sessionActive() const;
     void setSessionActive(bool newSessionActive);
+
+    QStringList secretKeys() const;
+    void setSecretKeys(const QStringList &newSecretKeys);
 
 private slots:
     /*
@@ -61,8 +80,11 @@ signals:
      * */
     void sessionActiveChanged();
 
+    void secretKeysChanged();
+
 private:
     QString m_secretKey;
+    QStringList m_secretKeys;
     QNetworkAccessManager m_manager;
     bool m_sessionActive = false;
 };

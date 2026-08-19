@@ -53,7 +53,7 @@ Item
         Button
         {
             id: refreshSessionButton
-            text: "Reset Session"
+            text: "Start Session"
             anchors.left: parent.left
             enabled: !sessionActive
             onClicked:

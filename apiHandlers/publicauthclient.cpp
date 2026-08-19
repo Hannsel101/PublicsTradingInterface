@@ -41,6 +41,56 @@ void PublicAuthClient::requestToken()
             });
 }
 
+QStringList PublicAuthClient::listStoredApiKeys()
+{
+    QStringList matchingKeys;
+    PCREDENTIALW *pCreds = nullptr;
+    DWORD count = 0;
+
+    // "ApiKey*" acts as a wildcard filter for Windows Credential Manager
+    LPCWSTR filter = L"PublicsApiKey*";
+
+    // Enumerate only generic credentials matching the filter
+    if (CredEnumerateW(filter, 0, &count, &pCreds) && pCreds) {
+        for (DWORD i = 0; i < count; ++i) {
+            if (pCreds[i]->Type == CRED_TYPE_GENERIC && pCreds[i]->TargetName) {
+                matchingKeys.append(QString::fromWCharArray(
+                    reinterpret_cast<wchar_t*>(pCreds[i]->CredentialBlob),
+                    pCreds[i]->CredentialBlobSize / sizeof(wchar_t)
+                    ));
+            }
+        }
+        CredFree(pCreds);
+    }
+
+    // Store the new list of api keys
+    setSecretKeys(matchingKeys);
+    return secretKeys();
+}
+
+bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &apiKey)
+{
+    // Determine the next index based on the count of existing keys
+    int nextIndex = secretKeys().size();
+    QString targetName = QString("PublicsApiKey%1").arg(nextIndex);
+
+    CREDENTIALW cred = {};
+    cred.Type = CRED_TYPE_GENERIC;
+    cred.TargetName = (LPWSTR)targetName.utf16();
+    cred.UserName = (LPWSTR)userName.utf16();
+    cred.CredentialBlobSize = (DWORD)(apiKey.toUtf8().size());
+    cred.CredentialBlob = (LPBYTE)apiKey.toUtf8().data();
+    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+
+    if(CredWriteW(&cred, 0) == TRUE)
+    {
+        m_secretKeys.append(apiKey);
+        emit secretKeysChanged();
+        return true;
+    }
+    return false;
+}
+
 void PublicAuthClient::handleReply(QNetworkReply *reply)
 {
     if (reply->error() == QNetworkReply::NoError)
@@ -67,4 +117,17 @@ void PublicAuthClient::handleReply(QNetworkReply *reply)
     }
 
     reply->deleteLater();
+}
+
+QStringList PublicAuthClient::secretKeys() const
+{
+    return m_secretKeys;
+}
+
+void PublicAuthClient::setSecretKeys(const QStringList &newSecretKeys)
+{
+    if (m_secretKeys == newSecretKeys)
+        return;
+    m_secretKeys = newSecretKeys;
+    emit secretKeysChanged();
 }

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
+import QtQuick.Window
 import "qml/DisplayAccountInformation"
 import "qml/StockSearchAutoComplete"
 import "qml/PerformTrades"
@@ -8,10 +9,8 @@ import "qml/PerformTrades"
 
 ApplicationWindow {
     id: window
-    width: 640
-    height: 480
-    minimumWidth: 200
-    minimumHeight: 250
+    width: 1000
+    height: 700
     visible: true
     title: qsTr("Publics Brokerage API Multi-Account Trader")
     property bool lightMode: Application.styleHints.colorScheme === Qt.Light
@@ -19,6 +18,7 @@ ApplicationWindow {
     property color dark: "#262626"
     property color reallyLight: "#e7e7e7"
     property color light: "#e0e0e0"
+    color: "#8E9294"
 
 
     /**
@@ -63,16 +63,29 @@ ApplicationWindow {
     }
 
     /**
+      * Api Key List displays a list of securely stored Public Brokerage
+      * Api Keys that are stored in Windows Credential Manager
+      */
+    ApiKeyList
+    {
+        id: apiKeys
+        visible: !StockSearchController.tokenActive
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        anchors.topMargin: parent.height*0.10
+    }
+
+    /**
       * Will be added in a future update to give ticker suggestions when the user
       * begins typing part of a possible ticker symbol
       */
-    StockSearchAutoComplete
-    {
-        id: findTickerSymbol
-        anchors.top: userKeyInput.bottom
-        anchors.horizontalCenter: userKeyInput.horizontalCenter
-        visible: false
-    }
+    // StockSearchAutoComplete
+    // {
+    //     id: findTickerSymbol
+    //     anchors.top: userKeyInput.bottom
+    //     anchors.horizontalCenter: userKeyInput.horizontalCenter
+    //     visible: false
+    // }
 
     /**
       * TO DO: add functionality later so that the user can add new keys and it will store it in windows under
@@ -81,7 +94,9 @@ ApplicationWindow {
     Column
     {
         id: userKeyInput
-        anchors.centerIn: parent
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: apiKeys.bottom
+        anchors.topMargin: 10
         spacing: 15
         visible: !AuthClient.sessionActive
 
@@ -100,7 +115,7 @@ ApplicationWindow {
 
         Button
         {
-            text: "Submit"
+            text: "Store New Key"
 
             // Triggered when clicking the button manually
             onClicked:
@@ -109,5 +124,10 @@ ApplicationWindow {
             }
         }
         z:3
+    }
+
+    Component.onCompleted:
+    {
+
     }
 }

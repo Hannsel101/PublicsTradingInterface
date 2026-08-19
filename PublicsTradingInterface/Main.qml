@@ -1,6 +1,9 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
+import "qml/DisplayAccountInformation"
+import "qml/StockSearchAutoComplete"
+import "qml/PerformTrades"
 
 
 ApplicationWindow {
@@ -10,81 +13,114 @@ ApplicationWindow {
     minimumWidth: 200
     minimumHeight: 250
     visible: true
-    title: qsTr("Hello World")
+    title: qsTr("Publics Brokerage API Multi-Account Trader")
     property bool lightMode: Application.styleHints.colorScheme === Qt.Light
     property color reallyDark: "#1f1f1f"
     property color dark: "#262626"
     property color reallyLight: "#e7e7e7"
     property color light: "#e0e0e0"
 
-    GridLayout {
-        id: grid
-        columns: width < 400 ? 1 : 2
-        rowSpacing: 0
-        columnSpacing: 0
-        anchors.fill: parent
 
-        Rectangle {
-            id: rectangle1
-            color: window.lightMode ? window.reallyLight : window.reallyDark
-            Layout.fillHeight: true
-            Layout.fillWidth: true
+    /**
+      * When the
+      */
+    property bool tokenValid: false
 
-            ColumnLayout {
-                anchors.fill: parent
-                Layout.alignment: Qt.AlignHCenter | Qt.AlignTop
+    // Custom Action Function
+    function printUserSecretKey(secretKey)
+    {
+        console.log("User submitted key:", secretKey)
+        userInputField.clear()
+    }
 
-                Label {
-                    id: text1
-                    color: window.lightMode ? window.dark : window.light
-                    font.pixelSize: 120
-                    fontSizeMode: Text.Fit
-                    text: qsTr("Hello World")
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.margins: 16
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-            }
+    ValidityTimer
+    {
+        id: testTimer
+        anchors.top: parent.top
+        anchors.left: parent.left
+        width: 100
+        height: 50
+    }
+
+    /**
+      * a widget that performs the purchase and selling of stocks
+      */
+    StockTrade
+    {
+        id: stockTradeInterface
+        anchors.centerIn: parent
+        visible: StockSearchController.tokenActive
+
+        onPerformBuy:
+        {
+            ApiWorker.executePreflight(inputFieldText, "BUY")
         }
 
-        Rectangle {
-            id: rectangle2
-            color: window.lightMode ? window.light : window.dark
-            Layout.fillHeight: true
-            Layout.fillWidth: true
-
-            ColumnLayout {
-                anchors.fill: parent
-                Layout.alignment: Qt.AlignHCenter | Qt.AlignTop
-
-                Button {
-                    id: button1
-                    text: window.lightMode ? qsTr("\u263D  Dark mode")
-                                           : qsTr("\u263C  Light mode")
-                    Layout.bottomMargin: 16
-                    Layout.alignment: Qt.AlignHCenter | Qt.AlignBottom
-
-                    contentItem: Text {
-                        text: button1.text
-                        color: window.lightMode ? window.light : window.dark
-                        font: button1.font
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-
-                    background: Rectangle {
-                        implicitWidth: 120
-                        implicitHeight: 36
-                        radius: 8
-                        color: window.lightMode ? window.dark : window.light
-                    }
-
-                    onClicked: window.lightMode = !window.lightMode
-                }
-            }
+        onPerformSell:
+        {
+            ApiWorker.executePreflight(inputFieldText, "SELL")
         }
     }
 
+    /**
+      * Api Key List displays a list of securely stored Public Brokerage
+      * Api Keys that are stored in Windows Credential Manager
+      */
+    ApiKeyList
+    {
+        id: apiKeys
+        visible: !StockSearchController.tokenActive
+        anchors.horizontalCenter: window.horizontalCenter
+        anchors.top: window.top
+        anchors.topMargin: window.height*0.10
+    }
+
+    /**
+      * Will be added in a future update to give ticker suggestions when the user
+      * begins typing part of a possible ticker symbol
+      */
+    // StockSearchAutoComplete
+    // {
+    //     id: findTickerSymbol
+    //     anchors.top: userKeyInput.bottom
+    //     anchors.horizontalCenter: userKeyInput.horizontalCenter
+    //     visible: false
+    // }
+
+    /**
+      * TO DO: add functionality later so that the user can add new keys and it will store it in windows under
+      *        some type of credential manager group. And be accessed for subsequent runs
+      */
+    Column
+    {
+        id: userKeyInput
+        anchors.centerIn: parent
+        spacing: 15
+        visible: !AuthClient.sessionActive
+
+        TextField
+        {
+            id: userInputField
+            placeholderText: "Enter your secret key here..."
+            width: 250
+
+            // Triggered automatically when the user presses Enter/Return
+            onAccepted:
+            {
+               printUserSecretKey(userInputField.text)
+            }
+        }
+
+        Button
+        {
+            text: "Submit"
+
+            // Triggered when clicking the button manually
+            onClicked:
+            {
+                printUserSecretKey(userInputField.text)
+            }
+        }
+        z:3
+    }
 }

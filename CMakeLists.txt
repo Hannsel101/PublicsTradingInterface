@@ -1,14 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
-
 project(PublicsTradingInterface VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Quick Network Concurrent)
-
-# Find Qt6 Keychain provided by vcpkg
-#find_package(KDABQtKeychain REQUIRED)
-#find_package(Qt6Keychain REQUIRED)
 
 qt_standard_project_setup(REQUIRES 6.10)
 
@@ -26,22 +24,19 @@ qt_add_executable(appPublicsTradingInterface
     main.cpp
     ${API_HANDLERS}
     vcpkg.json
+    resources.qrc
 )
 
 qt_add_qml_module(appPublicsTradingInterface
     URI PublicsTradingInterface
     VERSION 1.0
-    RESOURCE_PREFIX "/qt/qml"
 
-    QML_FILES
-        Main.qml
-        qml/DisplayAccountInformation/ValidityTimer.qml
     SOURCES
         apiHandlers/publicauthclient.h apiHandlers/publicauthclient.cpp
         apiHandlers/publicapiworker.h apiHandlers/publicapiworker.cpp
-        SOURCES apiHandlers/stocksearchcontroller.h apiHandlers/stocksearchcontroller.cpp
-        QML_FILES qml/StockSearchAutoComplete/StockSearchAutoComplete.qml
-        QML_FILES qml/PerformTrades/StockTrade.qml
+        apiHandlers/stocksearchcontroller.h apiHandlers/stocksearchcontroller.cpp
+    RESOURCES
+        resources.qrc
 
 )
 
@@ -66,7 +61,6 @@ target_link_libraries(appPublicsTradingInterface
         Qt6::Network
         Qt6::Concurrent
         Advapi32
-        #KDABQtKeychain::qt6keychain
 )
 
 install(TARGETS appPublicsTradingInterface
