@@ -53,7 +53,15 @@ ApplicationWindow {
 
         onPerformBuy:
         {
-            ApiWorker.executeTrade(inputFieldText , "BUY")
+
+            if(isDebugMode)
+            {
+                ApiWorker.executePreflight(inputFieldText, "BUY")
+            }
+            else
+            {
+                ApiWorker.executeTrade(inputFieldText , "BUY")
+            }
         }
 
         onPerformSell:

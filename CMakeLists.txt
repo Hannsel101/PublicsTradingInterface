@@ -63,6 +63,12 @@ target_link_libraries(appPublicsTradingInterface
         Advapi32
 )
 
+# When in release mode real trades will occur. Where in debug mode only
+# preflight trades occur.
+if(RELEASE_BUILD)
+    add_compile_definitions(RELEASE)
+endif()
+
 install(TARGETS appPublicsTradingInterface
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

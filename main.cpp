@@ -97,6 +97,17 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("ApiWorker", &publicsApiWorker);
     engine.rootContext()->setContextProperty("StockSearchController", &stockSearchController);
 
+    /*
+     * Release compiler flag used primarily so only preflight trades are performed
+     * from a debug relase. And actual market trades are performed from a release
+     * build
+     * */
+    #ifdef RELEASE
+        engine.rootContext()->setContextProperty("isDebugMode", false);
+    #else
+        engine.rootContext()->setContextProperty("isDebugMode", true);
+    #endif
+
     QObject::connect(
         &engine,
         &QQmlApplicationEngine::objectCreationFailed,
