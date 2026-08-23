@@ -49,8 +49,19 @@ void PublicApiWorker::fetchAllSubaccountsConcurrently() {
         QJsonArray accounts = doc.object().value("accounts").toArray();
 
         QStringList accountIds;
-        for (const QJsonValue &val : accounts) {
-            accountIds.append(val.toObject().value("accountId").toString());
+        for (const QJsonValue &val : accounts)
+        {
+            if(val.toObject().value("accountType").toString() == "BROKERAGE" ||
+               val.toObject().value("accountType").toString() == "ROTH_IRA"  ||
+               val.toObject().value("accountType").toString() == "TRADITIONAL_IRA")
+            {
+                accountIds.append(val.toObject().value("accountId").toString());
+            }
+            else
+            {
+                qDebug() << val.toObject().value("accountId").toString() << "of account type" <<
+                    val.toObject().value("accountType").toString() << "which is not a supported account type";
+            }
         }
 
         if (accountIds.isEmpty()) return;
@@ -121,7 +132,7 @@ void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QS
     orderObj["validateOrder"] = "true"; // Validate the order against current account state
 
     QJsonObject instrumentObj;
-    instrumentObj["symbol"] = symbol.toUpper();
+    instrumentObj["symbol"] = symbol.toUpper().trimmed();
     instrumentObj["type"] = "EQUITY";
     orderObj["instrument"] = instrumentObj;
 

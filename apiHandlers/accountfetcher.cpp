@@ -94,24 +94,13 @@ void AccountFetcher::onPortfolioReceived(QNetworkReply *reply) {
         qWarning() << "Portfolio fetch failed:" << reply->errorString();
         return;
     }
-    qDebug() << "in portfolio received1";
+
     // Read the raw network transmission buffer
     QByteArray rawData = reply->readAll();
 
-    // Fix 1: Wrap unquoted special financial numbers (NaN / Infinity) into valid JSON strings
-    // rawData.replace("NaN", "\"NaN\"");
-    // rawData.replace("Infinity", "\"Infinity\"");
-    // rawData.replace("-Infinity", "\"-Infinity\"");
-
-    qDebug() << "in portfolio received2";
-    // Fix 2: Prevent 64-bit long integer truncation/overflow parsing issues (if applicable)
-    // If you notice specific numeric strings failing (e.g. 12345678901234567890),
-    // you can catch or print them here before passing to standard fromJson
 
     QJsonParseError parseError;
     QJsonDocument doc = QJsonDocument::fromJson(rawData, &parseError);
-
-    qDebug() << "in portfolio received3";
 
     if (parseError.error != QJsonParseError::NoError) {
         qWarning() << "Sanitized JSON Parse Error:" << parseError.errorString();
@@ -122,8 +111,6 @@ void AccountFetcher::onPortfolioReceived(QNetworkReply *reply) {
         qWarning() << "Faulty Segment Context:" << rawData.mid(contextStart, 60);
         return;
     }
-
-    qDebug() << "in portfolio received3";
 
     QJsonObject portfolioObj = doc.object();
     qDebug() << "Portfolio Data Successfully Parsed under LLVM-MinGW!";
@@ -136,5 +123,4 @@ void AccountFetcher::onPortfolioReceived(QNetworkReply *reply) {
         QString availableCash = buyingPower["cashOnlyBuyingPower"].toString();
         qDebug() << "Available Cash Balance:" << availableCash;
     }
-    qDebug() << "in portfolio received4";
 }
