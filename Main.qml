@@ -27,13 +27,6 @@ ApplicationWindow {
       */
     property bool tokenActive: StockSearchController.tokenActive
 
-    // Custom Action Function
-    function printUserSecretKey(secretKey)
-    {
-        console.log("User submitted key:", secretKey)
-        userInputField.clear()
-    }
-
     ValidityTimer
     {
         id: sessionTimer
@@ -41,6 +34,14 @@ ApplicationWindow {
         anchors.left: parent.left
         width: 100
         height: 50
+    }
+
+    ChooseAccountButton
+    {
+        id: chooseNewAccountBtn
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: stockTradeInterface.top
+        anchors.bottomMargin: parent.height*0.1
     }
 
     /**
@@ -130,7 +131,6 @@ ApplicationWindow {
             onClicked:
             {
                 AuthClient.storeNextApiKey("PublicsTradingInterface", userInputField.text)
-                printUserSecretKey(userInputField.text)
                 userInputField.clear()
             }
         }
