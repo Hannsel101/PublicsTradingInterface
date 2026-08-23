@@ -113,8 +113,9 @@ Item
                     onClicked:
                     {
                         keysListView.currentIndex = index
-                        // Optional: trigger your C++ backend method here
-                        // backend.onKeySelected(model.targetName)
+                        AuthClient.secretKey = apiKeyValue
+                        ApiWorker.clearSubAccountsList();
+                        AuthClient.clearUserSession();
                     }
                 }
             }

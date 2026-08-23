@@ -7,33 +7,7 @@
 #include <windows.h>
 #include <wincred.h>
 
-/*
- * Grabs a publics api key from windows credential manager
- *
- * Name must be setup as PublicsApiKey in order for the key
- * be grabbed
- * */
-QString getPublicsApiKey()
-{
-    PCREDENTIALW pCred = nullptr;
-
-    // Read the secret securely from Windows Credential Manager
-    if (CredReadW(L"PublicsApiKey0", CRED_TYPE_GENERIC, 0, &pCred))
-    {
-        // Convert the raw bytes from the credential blob into a QString
-        QString key = QString::fromWCharArray(
-            reinterpret_cast<wchar_t*>(pCred->CredentialBlob),
-            pCred->CredentialBlobSize / sizeof(wchar_t)
-            );
-        CredFree(pCred);
-        return key;
-    }
-
-    qWarning() << "Failed to retrieve the API key from Credential Manager.";
-    return QString();
-}
-
-// Retrieve a list of target names that start with "ApiKey"
+// Retrieve a list of target names that start with "PublicsApiKey"
 QStringList listStoredApiKeys()
 {
     QStringList matchingKeys;
@@ -77,8 +51,7 @@ int main(int argc, char *argv[])
      *
      * these will persist between runs unless removed by the user
      * */
-    QString mySecretKey = getPublicsApiKey();
-    PublicAuthClient authClient(mySecretKey);
+    PublicAuthClient authClient("");
     authClient.listStoredApiKeys();
 
 

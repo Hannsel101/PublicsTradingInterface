@@ -39,11 +39,23 @@ public:
     void fetchAllSubaccountsConcurrently();
 
 
+    /*
+     * Preflight is a test function to test sending a request for any type of trade
+     *
+     * Trade performs an actual market buy or sell on equities
+     * */
     Q_INVOKABLE void executePreflight(const QString &symbol,    // Ticker Symbol
                                       const QString &side);     // BUY or SELL
 
     Q_INVOKABLE void executeTrade(const QString &symbol,        // Ticker Symbol
                                   const QString &side);         // BUY or SELL
+
+    /*
+     * Clears the sub account list to ensure accounts don't linger when attempting
+     * to use different API keys. Also clears the authorization token to ensure
+     * incorrectly configured token use when swapping between keys does not occur.
+     * */
+    Q_INVOKABLE void clearSubAccountsList();
 
 public slots:
     /*

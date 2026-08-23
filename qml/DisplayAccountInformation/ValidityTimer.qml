@@ -11,6 +11,23 @@ Item
     property bool validSecretKey: false
     property bool sessionActive: AuthClient.sessionActive
 
+    /**
+      * When the session changes the timer needs to start or stop
+      */
+    onSessionActiveChanged:
+    {
+        if(sessionActive)
+        {
+            secondsRemaining = initialSeconds
+            countdownTimer.start()
+        }
+        else
+        {
+            secondsRemaining = 0
+            countdownTimer.stop() // Halt the repeats
+            performTimeoutAction() // Execute your final action
+        }
+    }
 
 
     /**
@@ -58,11 +75,7 @@ Item
             enabled: !sessionActive
             onClicked:
             {
-                    // Set the starting point and begin
                     AuthClient.requestToken()
-                    secondsRemaining = initialSeconds
-                    countdownTimer.start()
-                    sessionActive = true
             }
         }
     }
@@ -101,7 +114,7 @@ Item
     // runs when the timer expires
     function performTimeoutAction()
     {
-        sessionActive = false
+        AuthClient.sessionActive = false
         StockSearchController.tokenActive = false
     }
 }

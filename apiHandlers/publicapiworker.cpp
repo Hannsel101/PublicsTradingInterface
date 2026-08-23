@@ -95,6 +95,12 @@ void PublicApiWorker::executeTrade(const QString &symbol, const QString &side)
     }
 }
 
+void PublicApiWorker::clearSubAccountsList()
+{
+    m_accountList.clear();
+    m_token = "";
+}
+
 void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QString &symbol, const QString &side, bool isPreflight)
 {
     QNetworkAccessManager *manager = new QNetworkAccessManager(this);

@@ -149,8 +149,11 @@ void StockSearchController::onNetworkReply(QNetworkReply *reply) {
 void StockSearchController::storeAuthorizationToken(QString newToken)
 {
     m_accessToken = newToken;
-    setTokenActive(true);
 
+    if(newToken == "")
+        setTokenActive(false);
+    else
+        setTokenActive(true);
 }
 
 QNetworkRequest StockSearchController::createAuthorizedRequest(const QUrl &url)

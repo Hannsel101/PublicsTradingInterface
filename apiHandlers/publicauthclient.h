@@ -5,6 +5,8 @@
 #include <QObject>
 #include <QCoreApplication>
 #include <QNetworkAccessManager>
+#include <QNetworkCookieJar>
+#include <QAbstractNetworkCache>
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QJsonObject>
@@ -23,12 +25,13 @@ public:
     // session active is set to true when tokens are returned by the authorization request
     Q_PROPERTY(bool sessionActive READ sessionActive WRITE setSessionActive NOTIFY sessionActiveChanged FINAL)
     Q_PROPERTY(QStringList secretKeys READ secretKeys WRITE setSecretKeys NOTIFY secretKeysChanged FINAL)
+    Q_PROPERTY(QString secretKey READ secretKey WRITE setSecretKey NOTIFY secretKeyChanged FINAL)
 
     /*
      * Default constructor which accepts a secret key or can be left as empty
      * */
     PublicAuthClient(const QString secretKey = "", QObject *parent = nullptr)
-        : QObject(parent), m_secretKey(secretKey) {}
+        : QObject(parent), m_secretKey(secretKey) {m_manager = new QNetworkAccessManager();}
 
     /*
      * If a non empty secret key has been passed in by the user then a network request
@@ -43,7 +46,13 @@ public:
      * List and securely store API keys into windows credential manager
      * */
     QStringList listStoredApiKeys();
-    bool storeNextApiKey(const QString &userName, const QString &apiKey);
+    Q_INVOKABLE bool storeNextApiKey(const QString &userName, const QString &apiKey);
+
+    /*
+     * Clears QNetwork access and cookies cache to ensure smooth transition
+     * between api keys and TCP connections to Public's API Endpoints
+     * */
+    Q_INVOKABLE void clearUserSession();
 
 
     /*
@@ -54,6 +63,9 @@ public:
 
     QStringList secretKeys() const;
     void setSecretKeys(const QStringList &newSecretKeys);
+
+    QString secretKey() const;
+    void setSecretKey(const QString &newSecretKey);
 
 private slots:
     /*
@@ -80,12 +92,20 @@ signals:
      * */
     void sessionActiveChanged();
 
+    /*
+     * emits signal for the UI to update when the list of secret api keys changes
+     * */
     void secretKeysChanged();
+
+    /*
+     * emits signal to ensure the UI knows which secret key is now being used
+     * */
+    void secretKeyChanged();
 
 private:
     QString m_secretKey;
     QStringList m_secretKeys;
-    QNetworkAccessManager m_manager;
+    QNetworkAccessManager *m_manager;
     bool m_sessionActive = false;
 };
 

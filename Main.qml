@@ -22,9 +22,10 @@ ApplicationWindow {
 
 
     /**
-      * When the
+      * If a token is granted from public servers then trades and transactions
+      * can occur. If false a valid token is needed to continue
       */
-    property bool tokenValid: false
+    property bool tokenActive: StockSearchController.tokenActive
 
     // Custom Action Function
     function printUserSecretKey(secretKey)
@@ -35,7 +36,7 @@ ApplicationWindow {
 
     ValidityTimer
     {
-        id: testTimer
+        id: sessionTimer
         anchors.top: parent.top
         anchors.left: parent.left
         width: 100
@@ -49,11 +50,10 @@ ApplicationWindow {
     {
         id: stockTradeInterface
         anchors.centerIn: parent
-        visible: StockSearchController.tokenActive
+        visible: tokenActive
 
         onPerformBuy:
         {
-
             if(isDebugMode)
             {
                 ApiWorker.executePreflight(inputFieldText, "BUY")
@@ -77,7 +77,7 @@ ApplicationWindow {
     ApiKeyList
     {
         id: apiKeys
-        visible: !StockSearchController.tokenActive
+        visible: !tokenActive
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
         anchors.topMargin: parent.height*0.10
@@ -106,29 +106,32 @@ ApplicationWindow {
         anchors.top: apiKeys.bottom
         anchors.topMargin: 10
         spacing: 15
-        visible: !AuthClient.sessionActive
+        visible: !tokenActive
 
         TextField
         {
             id: userInputField
-            placeholderText: "Enter your secret key here..."
+            placeholderText: "Enter a new secret key here..."
             width: 250
 
             // Triggered automatically when the user presses Enter/Return
             onAccepted:
             {
-               printUserSecretKey(userInputField.text)
+                storeKeyBtn.click()
             }
         }
 
         Button
         {
+            id: storeKeyBtn
             text: "Store New Key"
 
             // Triggered when clicking the button manually
             onClicked:
             {
+                AuthClient.storeNextApiKey("PublicsTradingInterface", userInputField.text)
                 printUserSecretKey(userInputField.text)
+                userInputField.clear()
             }
         }
         z:3

@@ -25,14 +25,14 @@ void PublicAuthClient::requestToken()
 
     // Construct the JSON payload
     QJsonObject jsonObj;
-    jsonObj["secret"] = m_secretKey;
+    jsonObj["secret"] = secretKey();
     jsonObj["validityInMinutes"] = 5; // Adjust as needed
 
     QJsonDocument doc(jsonObj);
     QByteArray data = doc.toJson();
 
     // Send asynchronous POST request
-    QNetworkReply *reply = m_manager.post(request, data);
+    QNetworkReply *reply = m_manager->post(request, data);
 
     // Connect reply finished signal to our slot/lambda
     connect(reply, &QNetworkReply::finished, this, [this, reply]()
@@ -70,16 +70,22 @@ QStringList PublicAuthClient::listStoredApiKeys()
 
 bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &apiKey)
 {
-    // Determine the next index based on the count of existing keys
     int nextIndex = secretKeys().size();
     QString targetName = QString("PublicsApiKey%1").arg(nextIndex);
 
+    // 1. Convert everything to stable wide strings (UTF-16)
+    std::wstring wTargetName = targetName.toStdWString();
+    std::wstring wUserName = userName.toStdWString();
+    std::wstring wApiKey = apiKey.toStdWString(); // Convert key to wide string
+
     CREDENTIALW cred = {};
     cred.Type = CRED_TYPE_GENERIC;
-    cred.TargetName = (LPWSTR)targetName.utf16();
-    cred.UserName = (LPWSTR)userName.utf16();
-    cred.CredentialBlobSize = (DWORD)(apiKey.toUtf8().size());
-    cred.CredentialBlob = (LPBYTE)apiKey.toUtf8().data();
+    cred.TargetName = const_cast<LPWSTR>(wTargetName.c_str());
+    cred.UserName = const_cast<LPWSTR>(wUserName.c_str());
+
+    // 2. Pass the data pointer and calculate the size in total BYTES
+    cred.CredentialBlobSize = (DWORD)(wApiKey.size() * sizeof(wchar_t));
+    cred.CredentialBlob = reinterpret_cast<LPBYTE>(const_cast<wchar_t*>(wApiKey.c_str()));
     cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
 
     if(CredWriteW(&cred, 0) == TRUE)
@@ -89,6 +95,29 @@ bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &a
         return true;
     }
     return false;
+}
+
+void PublicAuthClient::clearUserSession()
+{
+    if (!m_manager) return;
+
+    // 1. Wipe Qt's underlying connection pool & authentication cache
+    // This destroys any open sockets or cached session states.
+    m_manager->clearAccessCache();       // Flushes auth tokens & SSL tickets
+    m_manager->clearConnectionCache();   // Drops active TCP connections to the API server
+
+    // 2. Purge the HTTP Cookie Jar (if the API sets any cookie data)
+    if (m_manager->cookieJar())
+    {
+        QNetworkCookieJar *emptyJar = new QNetworkCookieJar(m_manager);
+        m_manager->setCookieJar(emptyJar); // Overwriting deletes the old cookie cache
+    }
+
+    // 3. Wipe physical disk cache
+    if (m_manager->cache())
+    {
+        m_manager->cache()->clear();
+    }
 }
 
 void PublicAuthClient::handleReply(QNetworkReply *reply)
@@ -110,10 +139,12 @@ void PublicAuthClient::handleReply(QNetworkReply *reply)
         qDebug() << "Successfully retrieved Access Token:" << accessToken;
         setSessionActive(true);
         emit tokenReceived(accessToken);
-    } else
+    }
+    else
     {
         qWarning() << "Authorization failed:" << reply->errorString();
         qWarning() << "Server response:" << reply->readAll();
+        setSessionActive(false);
     }
 
     reply->deleteLater();
@@ -130,4 +161,17 @@ void PublicAuthClient::setSecretKeys(const QStringList &newSecretKeys)
         return;
     m_secretKeys = newSecretKeys;
     emit secretKeysChanged();
+}
+
+QString PublicAuthClient::secretKey() const
+{
+    return m_secretKey;
+}
+
+void PublicAuthClient::setSecretKey(const QString &newSecretKey)
+{
+    if (m_secretKey == newSecretKey)
+        return;
+    m_secretKey = newSecretKey;
+    emit secretKeyChanged();
 }
