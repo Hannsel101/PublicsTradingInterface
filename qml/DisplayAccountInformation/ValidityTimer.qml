@@ -1,119 +1,100 @@
-import QtQuick 2.15
-import QtQuick.Controls
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
 
-Item
-{
+Item {
     id: root
 
-    // Custom properties to manage the time state
+    implicitWidth: 640
+    implicitHeight: compactLayout ? 104 : 78
+
+    readonly property bool compactLayout: width < 560
+    readonly property int initialSeconds: 300
     property int secondsRemaining: 0
-    property int initialSeconds: 300 // session stays active for 5min
-    property bool validSecretKey: false
     property bool sessionActive: AuthClient.sessionActive
 
-    /**
-      * When the session changes the timer needs to start or stop
-      */
-    onSessionActiveChanged:
-    {
-        if(sessionActive)
-        {
-            secondsRemaining = initialSeconds
+    readonly property color primaryText: "#f7f8f8"
+    readonly property color mutedText: "#8a8f98"
+    readonly property color warningColor: "#ff5c7a"
+    readonly property color successColor: "#10b981"
+
+    visible: root.sessionActive
+
+    onSessionActiveChanged: {
+        if (root.sessionActive) {
+            root.secondsRemaining = root.initialSeconds
             countdownTimer.start()
-        }
-        else
-        {
-            secondsRemaining = 0
-            countdownTimer.stop() // Halt the repeats
-            performTimeoutAction() // Execute your final action
+        } else {
+            root.secondsRemaining = 0
+            countdownTimer.stop()
         }
     }
 
+    RowLayout {
+        anchors.fill: parent
+        spacing: 12
 
-    /**
-      * When a valid secret key is introduced the timer will be displayed
-      */
-    onValidSecretKeyChanged:
-    {
-        root.visible = validSecretKey
-    }
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 4
 
-    Column
-    {
-        anchors.top: parent.top
-        anchors.left: parent.left
-        spacing: 0
+            RowLayout {
+                spacing: 8
 
-        // 1. Session Clock Label
-        Text
-        {
-            id: sessionLabel
-            text: "Note: When this timer goes to 0 the Publics API session tokens have expired"
-            font.pointSize: 10
-            verticalAlignment: Text.AlignBottom
-            color: "black"
-        }
+                Rectangle {
+                    Layout.preferredWidth: 9
+                    Layout.preferredHeight: 9
+                    radius: 5
+                    color: root.successColor
+                }
 
-        // 2. The Visual Clock Display
-        Text
-        {
-            id: timerDisplay
-            text: formatTime(secondsRemaining)
-            font.pointSize: 48
-            font.bold: true
-            color: secondsRemaining <= 60 && countdownTimer.running ? "red" : "black" // Turns red for warning
-            anchors.left: parent.left
-            verticalAlignment: Text.AlignTop
-        }
+                Label {
+                    text: qsTr("Session active")
+                    color: root.successColor
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                }
+            }
 
-        // 1. Control Button
-        Button
-        {
-            id: refreshSessionButton
-            text: "Start Session"
-            anchors.left: parent.left
-            enabled: !sessionActive
-            onClicked:
-            {
-                    AuthClient.requestToken()
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Public.com access tokens expire when this timer reaches zero.")
+                color: root.mutedText
+                wrapMode: Text.WordWrap
+                font.pixelSize: 13
             }
         }
+
+        Label {
+            Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+            text: root.formatTime(root.secondsRemaining)
+            color: root.secondsRemaining <= 60 && countdownTimer.running ? root.warningColor : root.primaryText
+            font.pixelSize: root.compactLayout ? 34 : 42
+            font.weight: Font.DemiBold
+            font.family: "Menlo"
+        }
     }
 
-    // 3. The Core Timer Engine
     Timer {
         id: countdownTimer
-        interval: 1000  // Fires every 1 second (1000 milliseconds)
-        repeat: true    // Must repeat to update the clock display every second
-
-        onTriggered:
-        {
-            secondsRemaining -= 1
-
-            // Check if time has completely run out
-            if (secondsRemaining <= 0) {
-                countdownTimer.stop() // Halt the repeats
-                performTimeoutAction() // Execute your final action
+        interval: 1000
+        repeat: true
+        onTriggered: {
+            root.secondsRemaining -= 1
+            if (root.secondsRemaining <= 0) {
+                countdownTimer.stop()
+                root.performTimeoutAction()
             }
         }
     }
 
-    // JavaScript Helper to format raw seconds into a clean "00:00" string
-    function formatTime(totalSeconds)
-    {
+    function formatTime(totalSeconds) {
         let minutes = Math.floor(totalSeconds / 60)
         let seconds = totalSeconds % 60
-
-        // Adds a leading zero if the number is a single digit (e.g., "5" becomes "05")
-        let paddedMinutes = minutes.toString().padStart(2, '0')
-        let paddedSeconds = seconds.toString().padStart(2, '0')
-
-        return paddedMinutes + ":" + paddedSeconds
+        return minutes.toString().padStart(2, "0") + ":" + seconds.toString().padStart(2, "0")
     }
 
-    // runs when the timer expires
-    function performTimeoutAction()
-    {
+    function performTimeoutAction() {
         AuthClient.sessionActive = false
         StockSearchController.tokenActive = false
     }

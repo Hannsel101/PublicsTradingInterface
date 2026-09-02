@@ -1,4 +1,4 @@
-#include "AccountFetcher.h"
+#include "accountfetcher.h"
 #include <QNetworkRequest>
 #include <QJsonDocument>
 #include <QJsonObject>

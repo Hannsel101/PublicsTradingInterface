@@ -4,33 +4,6 @@
 #include "publicauthclient.h"
 #include "publicapiworker.h"
 #include "stocksearchcontroller.h"
-#include <windows.h>
-#include <wincred.h>
-
-// Retrieve a list of target names that start with "PublicsApiKey"
-QStringList listStoredApiKeys()
-{
-    QStringList matchingKeys;
-    PCREDENTIALW *pCreds = nullptr;
-    DWORD count = 0;
-
-    // "ApiKey*" acts as a wildcard filter for Windows Credential Manager
-    LPCWSTR filter = L"PublicsApiKey*";
-
-    // Enumerate only generic credentials matching the filter
-    if (CredEnumerateW(filter, 0, &count, &pCreds) && pCreds) {
-        for (DWORD i = 0; i < count; ++i) {
-            if (pCreds[i]->Type == CRED_TYPE_GENERIC && pCreds[i]->TargetName) {
-                matchingKeys.append(QString::fromWCharArray(
-                    reinterpret_cast<wchar_t*>(pCreds[i]->CredentialBlob),
-                    pCreds[i]->CredentialBlobSize / sizeof(wchar_t)
-                    ));
-            }
-        }
-        CredFree(pCreds);
-    }
-    return matchingKeys;
-}
 
 /*
  * Main entry point into the application
@@ -38,16 +11,14 @@ QStringList listStoredApiKeys()
 int main(int argc, char *argv[])
 {
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+#if defined(Q_OS_ANDROID)
+    qputenv("ANDROID_OPENSSL_SUFFIX", "_3");
+#endif
     QGuiApplication app(argc, argv);
     QQmlApplicationEngine engine;
 
     /*
-     * Test Pulling in stored api keys
-     * */
-    qDebug() << listStoredApiKeys();
-
-    /*
-     * Grab an initial set of Public Brokerage Api Keys from Windows Credential Manager
+     * Grab an initial set of Public Brokerage Api Key labels from the platform keychain index.
      *
      * these will persist between runs unless removed by the user
      * */
@@ -88,7 +59,7 @@ int main(int argc, char *argv[])
         []() { QCoreApplication::exit(-1); },
         Qt::QueuedConnection);
 
-    engine.load(QUrl("qrc:/Main.qml"));
+    engine.loadFromModule("PublicsTradingInterface", "Main");
 
     return QGuiApplication::exec();
 }

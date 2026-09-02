@@ -1,6 +1,29 @@
 #include "publicauthclient.h"
 
+#include <algorithm>
+#include <QRegularExpression>
+#include <QSet>
 
+PublicAuthClient::PublicAuthClient(const QString &secretKey, QObject *parent)
+    : PublicAuthClient(secretKey,
+                       QString::fromLatin1(defaultKeychainService),
+                       QString::fromLatin1(defaultSettingsGroup),
+                       parent)
+{
+}
+
+PublicAuthClient::PublicAuthClient(const QString &secretKey,
+                                   const QString &keychainServiceName,
+                                   const QString &settingsGroupName,
+                                   QObject *parent)
+    : QObject(parent),
+      m_secretKey(secretKey),
+      m_keychainService(keychainServiceName),
+      m_settingsGroup(settingsGroupName)
+{
+    m_manager = new QNetworkAccessManager(this);
+    setApiKeyReady(!m_secretKey.trimmed().isEmpty());
+}
 
 bool PublicAuthClient::sessionActive() const
 {
@@ -17,6 +40,12 @@ void PublicAuthClient::setSessionActive(bool newSessionActive)
 
 void PublicAuthClient::requestToken()
 {
+    if (!apiKeyReady() || secretKey().isEmpty()) {
+        qWarning() << "Authorization skipped: no API key is selected or loaded.";
+        setSessionActive(false);
+        return;
+    }
+
     QUrl url("https://api.public.com/userapiauthservice/personal/access-tokens");
     QNetworkRequest request(url);
 
@@ -41,64 +70,175 @@ void PublicAuthClient::requestToken()
             });
 }
 
-QStringList PublicAuthClient::listStoredApiKeys()
+QStringList PublicAuthClient::normalizedStoredApiKeyLabels(const QStringList &labels)
 {
-    QStringList matchingKeys;
-    PCREDENTIALW *pCreds = nullptr;
-    DWORD count = 0;
+    QSet<int> usedIndexes;
+    const QRegularExpression labelPattern(QStringLiteral("^PublicsApiKey(\\d+)$"));
 
-    // "ApiKey*" acts as a wildcard filter for Windows Credential Manager
-    LPCWSTR filter = L"PublicsApiKey*";
-
-    // Enumerate only generic credentials matching the filter
-    if (CredEnumerateW(filter, 0, &count, &pCreds) && pCreds) {
-        for (DWORD i = 0; i < count; ++i) {
-            if (pCreds[i]->Type == CRED_TYPE_GENERIC && pCreds[i]->TargetName) {
-                matchingKeys.append(QString::fromWCharArray(
-                    reinterpret_cast<wchar_t*>(pCreds[i]->CredentialBlob),
-                    pCreds[i]->CredentialBlobSize / sizeof(wchar_t)
-                    ));
-            }
+    for (const QString &label : labels) {
+        const QRegularExpressionMatch match = labelPattern.match(label.trimmed());
+        if (!match.hasMatch()) {
+            continue;
         }
-        CredFree(pCreds);
+        bool ok = false;
+        const int index = match.captured(1).toInt(&ok);
+        if (ok && index >= 0) {
+            usedIndexes.insert(index);
+        }
     }
 
-    // Store the new list of api keys
-    setSecretKeys(matchingKeys);
+    QList<int> sortedIndexes = usedIndexes.values();
+    std::sort(sortedIndexes.begin(), sortedIndexes.end());
+
+    QStringList normalizedLabels;
+    normalizedLabels.reserve(sortedIndexes.size());
+    for (int index : sortedIndexes) {
+        normalizedLabels.append(QStringLiteral("PublicsApiKey%1").arg(index));
+    }
+    return normalizedLabels;
+}
+
+QString PublicAuthClient::nextApiKeyLabel(const QStringList &labels)
+{
+    const QStringList normalizedLabels = normalizedStoredApiKeyLabels(labels);
+    QSet<int> usedIndexes;
+    const QRegularExpression labelPattern(QStringLiteral("^PublicsApiKey(\\d+)$"));
+
+    for (const QString &label : normalizedLabels) {
+        const QRegularExpressionMatch match = labelPattern.match(label);
+        if (!match.hasMatch()) {
+            continue;
+        }
+        usedIndexes.insert(match.captured(1).toInt());
+    }
+
+    int nextIndex = 0;
+    while (usedIndexes.contains(nextIndex)) {
+        ++nextIndex;
+    }
+    return QStringLiteral("PublicsApiKey%1").arg(nextIndex);
+}
+
+QStringList PublicAuthClient::listStoredApiKeys()
+{
+    QSettings settings;
+    settings.beginGroup(m_settingsGroup);
+    QStringList labels = normalizedStoredApiKeyLabels(settings.value("labels").toStringList());
+    settings.setValue("labels", labels);
+    settings.endGroup();
+
+    setSecretKeys(labels);
     return secretKeys();
+}
+
+QString PublicAuthClient::keychainKeyForLabel(const QString &label) const
+{
+    return label.trimmed();
+}
+
+void PublicAuthClient::readApiKeyFromKeychain(const QString &label)
+{
+    const QString trimmedLabel = label.trimmed();
+    if (trimmedLabel.isEmpty()) {
+        m_secretKey.clear();
+        emit secretKeyChanged();
+        setSelectedApiKeyLabel(QString());
+        setApiKeyLoading(false);
+        setApiKeyReady(false);
+        return;
+    }
+
+    setSelectedApiKeyLabel(trimmedLabel);
+    setApiKeyError(QString());
+    setApiKeyReady(false);
+    setApiKeyLoading(true);
+
+    auto *job = new QKeychain::ReadPasswordJob(m_keychainService);
+    job->setAutoDelete(false);
+    job->setInsecureFallback(false);
+    job->setKey(keychainKeyForLabel(trimmedLabel));
+
+    connect(job, &QKeychain::ReadPasswordJob::finished, this, [this, job, trimmedLabel]() {
+        setApiKeyLoading(false);
+        if (job->error() == QKeychain::NoError) {
+            m_secretKey = job->textData();
+            setApiKeyReady(!m_secretKey.trimmed().isEmpty());
+            emit secretKeyChanged();
+            job->deleteLater();
+            return;
+        }
+
+        qWarning() << "Failed to load API key" << trimmedLabel << ":" << job->errorString();
+        if (m_selectedApiKeyLabel == trimmedLabel) {
+            m_secretKey.clear();
+            setApiKeyReady(false);
+            setApiKeyError(QStringLiteral("Could not load %1 from the system keychain.").arg(trimmedLabel));
+            emit secretKeyChanged();
+        }
+        job->deleteLater();
+    });
+    job->start();
 }
 
 bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &apiKey)
 {
-    int nextIndex = secretKeys().size();
-    QString targetName = QString("PublicsApiKey%1").arg(nextIndex);
+    Q_UNUSED(userName)
 
-    // 1. Convert everything to stable wide strings (UTF-16)
-    std::wstring wTargetName = targetName.toStdWString();
-    std::wstring wUserName = userName.toStdWString();
-    std::wstring wApiKey = apiKey.toStdWString(); // Convert key to wide string
-
-    CREDENTIALW cred = {};
-    cred.Type = CRED_TYPE_GENERIC;
-    cred.TargetName = const_cast<LPWSTR>(wTargetName.c_str());
-    cred.UserName = const_cast<LPWSTR>(wUserName.c_str());
-
-    // 2. Pass the data pointer and calculate the size in total BYTES
-    cred.CredentialBlobSize = (DWORD)(wApiKey.size() * sizeof(wchar_t));
-    cred.CredentialBlob = reinterpret_cast<LPBYTE>(const_cast<wchar_t*>(wApiKey.c_str()));
-    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
-
-    if(CredWriteW(&cred, 0) == TRUE)
-    {
-        m_secretKeys.append(apiKey);
-        emit secretKeysChanged();
-        return true;
+    const QString trimmedApiKey = apiKey.trimmed();
+    if (trimmedApiKey.isEmpty()) {
+        qWarning() << "Refusing to store an empty API key.";
+        return false;
     }
-    return false;
+
+    QStringList labels = secretKeys();
+    QSettings settings;
+    settings.beginGroup(m_settingsGroup);
+    labels.append(settings.value("labels").toStringList());
+    settings.endGroup();
+    labels = normalizedStoredApiKeyLabels(labels);
+    const QString label = nextApiKeyLabel(labels);
+
+    auto *job = new QKeychain::WritePasswordJob(m_keychainService);
+    job->setAutoDelete(false);
+    job->setInsecureFallback(false);
+    job->setKey(keychainKeyForLabel(label));
+    job->setTextData(trimmedApiKey);
+
+    connect(job, &QKeychain::WritePasswordJob::finished, this, [this, job, label, trimmedApiKey]() {
+        if (job->error() != QKeychain::NoError) {
+            qWarning() << "Failed to store API key" << label << ":" << job->errorString();
+            setApiKeyError(QStringLiteral("Could not store the API key in the system keychain."));
+            job->deleteLater();
+            return;
+        }
+
+        QSettings settings;
+        settings.beginGroup(m_settingsGroup);
+        QStringList labels = normalizedStoredApiKeyLabels(settings.value("labels").toStringList());
+        if (!labels.contains(label)) {
+            labels.append(label);
+            labels = normalizedStoredApiKeyLabels(labels);
+            settings.setValue("labels", labels);
+        }
+        settings.endGroup();
+
+        setSecretKeys(labels);
+        setSelectedApiKeyLabel(label);
+        m_secretKey = trimmedApiKey;
+        setApiKeyError(QString());
+        setApiKeyLoading(false);
+        setApiKeyReady(true);
+        emit secretKeyChanged();
+        job->deleteLater();
+    });
+    job->start();
+
+    return true;
 }
 
 void PublicAuthClient::clearUserSession()
 {
+    setSessionActive(false);
     if (!m_manager) return;
 
     // 1. Wipe Qt's underlying connection pool & authentication cache
@@ -136,14 +276,12 @@ void PublicAuthClient::handleReply(QNetworkReply *reply)
             accessToken = jsonObj["token"].toString();
         }
 
-        qDebug() << "Successfully retrieved Access Token:" << accessToken;
-        setSessionActive(true);
+        setSessionActive(!accessToken.isEmpty());
         emit tokenReceived(accessToken);
     }
     else
     {
         qWarning() << "Authorization failed:" << reply->errorString();
-        qWarning() << "Server response:" << reply->readAll();
         setSessionActive(false);
     }
 
@@ -157,9 +295,10 @@ QStringList PublicAuthClient::secretKeys() const
 
 void PublicAuthClient::setSecretKeys(const QStringList &newSecretKeys)
 {
-    if (m_secretKeys == newSecretKeys)
+    const QStringList normalizedKeys = normalizedStoredApiKeyLabels(newSecretKeys);
+    if (m_secretKeys == normalizedKeys)
         return;
-    m_secretKeys = newSecretKeys;
+    m_secretKeys = normalizedKeys;
     emit secretKeysChanged();
 }
 
@@ -170,8 +309,73 @@ QString PublicAuthClient::secretKey() const
 
 void PublicAuthClient::setSecretKey(const QString &newSecretKey)
 {
-    if (m_secretKey == newSecretKey)
+    const QString trimmedKeyOrLabel = newSecretKey.trimmed();
+    if (m_secretKeys.contains(trimmedKeyOrLabel)) {
+        if (m_selectedApiKeyLabel == trimmedKeyOrLabel && m_apiKeyReady) {
+            return;
+        }
+        readApiKeyFromKeychain(trimmedKeyOrLabel);
         return;
-    m_secretKey = newSecretKey;
+    }
+
+    if (m_secretKey == trimmedKeyOrLabel)
+        return;
+
+    m_secretKey = trimmedKeyOrLabel;
+    setSelectedApiKeyLabel(QString());
+    setApiKeyLoading(false);
+    setApiKeyReady(!m_secretKey.isEmpty());
     emit secretKeyChanged();
+}
+
+QString PublicAuthClient::selectedApiKeyLabel() const
+{
+    return m_selectedApiKeyLabel;
+}
+
+bool PublicAuthClient::apiKeyReady() const
+{
+    return m_apiKeyReady;
+}
+
+bool PublicAuthClient::apiKeyLoading() const
+{
+    return m_apiKeyLoading;
+}
+
+QString PublicAuthClient::apiKeyError() const
+{
+    return m_apiKeyError;
+}
+
+void PublicAuthClient::setSelectedApiKeyLabel(const QString &label)
+{
+    if (m_selectedApiKeyLabel == label)
+        return;
+    m_selectedApiKeyLabel = label;
+    emit selectedApiKeyLabelChanged();
+}
+
+void PublicAuthClient::setApiKeyReady(bool ready)
+{
+    if (m_apiKeyReady == ready)
+        return;
+    m_apiKeyReady = ready;
+    emit apiKeyReadyChanged();
+}
+
+void PublicAuthClient::setApiKeyLoading(bool loading)
+{
+    if (m_apiKeyLoading == loading)
+        return;
+    m_apiKeyLoading = loading;
+    emit apiKeyLoadingChanged();
+}
+
+void PublicAuthClient::setApiKeyError(const QString &error)
+{
+    if (m_apiKeyError == error)
+        return;
+    m_apiKeyError = error;
+    emit apiKeyErrorChanged();
 }

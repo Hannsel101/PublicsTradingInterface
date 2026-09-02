@@ -1,51 +1,33 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 
-Button
-{
+Button {
     id: chooseAccountButton
-    text: qsTr("Choose Another Account")
+
+    text: qsTr("Switch key")
     visible: AuthClient.sessionActive
+    implicitWidth: 180
+    implicitHeight: 46
 
-    // Layout and Padding
-    implicitWidth: 240
-    implicitHeight: 48
-    anchors.horizontalCenter: parent.horizontalCenter
-
-    // 1. Text Styling (Ensures text stands out sharply)
-    contentItem: Text
-    {
+    contentItem: Text {
         text: chooseAccountButton.text
-        font.pointSize: 14
-        font.bold: true
-        color: "#FFFFFF" // Crisp white text to contrast the vibrant background
+        color: "#f7f8f8"
+        font.pixelSize: 14
+        font.weight: Font.DemiBold
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
     }
 
-    // 2. Button Background Styling (Pops against greys/darks)
-    background: Rectangle
-    {
-        // Dynamic color shifting for hover/press states
-        color: chooseAccountButton.down ? "#0056b3" :
-               chooseAccountButton.hovered ? "#007bff" : "#0066ee"
-
-        radius: 8 // Smooth, modern rounded corners
-
-        // Soft outer shadow to physically separate it from the flat background
-        layer.enabled: true
-        layer.effect: ShaderEffect {
-            // Optional: Adds a native drop-shadow effect if MultiEffect is imported,
-            // otherwise radius handles the basic flat pop nicely.
-        }
+    background: Rectangle {
+        radius: 14
+        color: chooseAccountButton.down ? "#25285f" : chooseAccountButton.hovered ? "#202126" : "#17181c"
+        border.color: chooseAccountButton.hovered ? "#7170ff" : "#2f3138"
+        border.width: 1
     }
 
-    onClicked:
-    {
+    onClicked: {
         AuthClient.sessionActive = false
         StockSearchController.tokenActive = false
-        console.log("Redirecting user to account selection screen...")
     }
 }
-

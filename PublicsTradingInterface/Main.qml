@@ -26,10 +26,9 @@ ApplicationWindow {
       */
     property bool tokenValid: false
 
-    // Custom Action Function
+    // Custom action for submitted secret keys. Never log key material.
     function printUserSecretKey(secretKey)
     {
-        console.log("User submitted key:", secretKey)
         userInputField.clear()
     }
 
@@ -63,8 +62,8 @@ ApplicationWindow {
     }
 
     /**
-      * Api Key List displays a list of securely stored Public Brokerage
-      * Api Keys that are stored in Windows Credential Manager
+      * Api Key List displays labels for securely stored Public Brokerage
+      * API keys in the platform keychain.
       */
     ApiKeyList
     {

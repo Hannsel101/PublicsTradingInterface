@@ -1,130 +1,122 @@
-import QtQuick
-import QtQuick.Controls
+pragma ComponentBehavior: Bound
 
-Item
-{
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
+
+Item {
     id: root
-    width: 400
-    height: 500
+
+    implicitWidth: 420
+    implicitHeight: 300
+
+    readonly property color surfaceColor: "#101115"
+    readonly property color elevatedColor: "#202126"
+    readonly property color primaryText: "#f7f8f8"
+    readonly property color secondaryText: "#d0d6e0"
+    readonly property color mutedText: "#8a8f98"
+    readonly property color accentColor: "#7170ff"
+    readonly property color borderColor: "#2f3138"
 
     property var apiKeysModel: AuthClient.secretKeys
 
-    Text
-    {
-        id: titleText
-        text: "Choose or Store an API Key"
-        height: parent.height*0.1
-        width: parent.width
-        anchors.top: parent.top
-        anchors.horizontalCenter: parent.horizontalCenter
-        horizontalAlignment: Text.AlignHCenter
-        font.pointSize: 20
-        color: "black"
-    }
+    Rectangle {
+        anchors.fill: parent
+        radius: 18
+        color: root.surfaceColor
+        border.color: root.borderColor
+        border.width: 1
 
-    Rectangle
-    {
-        id: listContainer
-        width: parent.width
-        height: parent.height*0.90
-        anchors.top: titleText.bottom
-        anchors.horizontalCenter: parent.horizontalCenter
-        color: "#1e1e24" // Dark sleek background
+        Label {
+            id: emptyState
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 36, 360)
+            visible: keysListView.count === 0
+            text: qsTr("No API keys stored yet. Add one below to begin.")
+            color: root.mutedText
+            font.pixelSize: 15
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
+        }
 
-        ListView
-        {
+        ListView {
             id: keysListView
             anchors.fill: parent
-            anchors.margins: 20
-            model: apiKeysModel
-            spacing: 8
-            clip: true // Ensures content stays inside scroll boundary
-            currentIndex: -1 // Nothing selected by default
+            anchors.margins: 12
+            model: root.apiKeysModel
+            spacing: 10
+            clip: true
+            currentIndex: -1
 
-            delegate: Rectangle
-            {
+            delegate: Rectangle {
                 id: delegateRoot
+
+                required property int index
+                required property string modelData
+
                 width: keysListView.width
-                height: 55
-                radius: 8
+                height: 64
+                radius: 16
+                color: delegateRoot.isSelected ? "#25285f" : root.elevatedColor
+                border.color: delegateRoot.isSelected ? root.accentColor : root.borderColor
+                border.width: delegateRoot.isSelected ? 2 : 1
 
-                // Core logic: Evaluate if this specific item is the active selection
-                readonly property bool isSelected: index === keysListView.currentIndex
+                readonly property bool isSelected: delegateRoot.modelData === AuthClient.selectedApiKeyLabel
+                readonly property string apiKeyLabel: delegateRoot.modelData
 
-                readonly property string apiKeyValue: modelData
+                Behavior on color { ColorAnimation { duration: 140 } }
+                Behavior on border.color { ColorAnimation { duration: 140 } }
 
-                // Soft transition animations for background and tint changes
-                Behavior on color { ColorAnimation { duration: 200 } }
-
-                // Dynamic color handling based on selection status
-                color: isSelected ? "#2ecc71" : "#2d2d35"
-                border.color: isSelected ? "#27ae60" : "#3f3f4a"
-                border.width: 1
-
-                Row
-                {
+                RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 15
-                    anchors.rightMargin: 15
+                    anchors.leftMargin: 14
+                    anchors.rightMargin: 14
                     spacing: 12
 
-
-                    // Status Indicator
-                    Rectangle
-                    {
-                        width: 10
-                        height: 10
-                        radius: 5
-                        color: delegateRoot.isSelected ? "#ffffff" : "#7f8c8d"
-                        anchors.verticalCenter: parent.verticalCenter
+                    Rectangle {
+                        Layout.preferredWidth: 12
+                        Layout.preferredHeight: 12
+                        radius: 6
+                        color: delegateRoot.isSelected ? root.accentColor : root.mutedText
                     }
 
-                    // API Key Name Label
-                    Text
-                    {
-                        text: "Public Api Key " + index
-                        color: delegateRoot.isSelected ? "#ffffff" : "#dcdde1"
-                        font.pixelSize: 15
-                        font.bold: delegateRoot.isSelected
-                        anchors.verticalCenter: parent.verticalCenter
-                        verticalAlignment: Text.AlignVCenter
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
 
-                        // Dimming opacity rule when not active
-                        opacity: delegateRoot.isSelected ? 1.0 : 0.65
-                        Behavior on opacity { NumberAnimation { duration: 200 } }
+                        Label {
+                            Layout.fillWidth: true
+                            text: delegateRoot.apiKeyLabel
+                            color: root.primaryText
+                            font.pixelSize: 15
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: delegateRoot.isSelected ? qsTr("Selected for session") : qsTr("Tap to select")
+                            color: delegateRoot.isSelected ? root.secondaryText : root.mutedText
+                            font.pixelSize: 12
+                            elide: Text.ElideRight
+                        }
                     }
                 }
 
-                // Foreground Grey Tint overlay for unselected elements
-                Rectangle
-                {
+                MouseArea {
                     anchors.fill: parent
-                    radius: parent.radius
-                    color: "#111116"
-                    opacity: delegateRoot.isSelected ? 0.0 : 0.25
-                    visible: keysListView.currentIndex !== -1 // Only dim if a selection exists
-                    Behavior on opacity { NumberAnimation { duration: 200 } }
-                }
-
-                // Click interaction interceptor
-                MouseArea
-                {
-                    anchors.fill: parent
-                    onClicked:
-                    {
-                        keysListView.currentIndex = index
-                        AuthClient.secretKey = apiKeyValue
-                        ApiWorker.clearSubAccountsList();
-                        AuthClient.clearUserSession();
+                    onClicked: {
+                        keysListView.currentIndex = delegateRoot.index
+                        AuthClient.secretKey = delegateRoot.apiKeyLabel
+                        ApiWorker.clearSubAccountsList()
+                        AuthClient.clearUserSession()
+                        StockSearchController.tokenActive = false
                     }
                 }
             }
 
-            // Standard Scrollbar implementation for desktop platforms
-            ScrollBar.vertical: ScrollBar
-            {
+            ScrollBar.vertical: ScrollBar {
                 policy: ScrollBar.AsNeeded
-                active: true
             }
         }
     }

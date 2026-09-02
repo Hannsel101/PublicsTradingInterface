@@ -2,11 +2,43 @@ cmake_minimum_required(VERSION 3.16)
 project(PublicsTradingInterface VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTOUIC ON)
-set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick Network Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Quick Gui Network Concurrent Test)
+find_package(Qt6Keychain CONFIG QUIET)
+
+if(NOT Qt6Keychain_FOUND)
+    include(FetchContent)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build QtKeychain as a static library" FORCE)
+    set(BUILD_WITH_QT6 ON CACHE BOOL "Build QtKeychain with Qt 6" FORCE)
+    set(BUILD_TEST_APPLICATION OFF CACHE BOOL "Disable QtKeychain test app" FORCE)
+    set(BUILD_TRANSLATIONS OFF CACHE BOOL "Disable QtKeychain translations" FORCE)
+    FetchContent_Declare(
+        qtkeychain
+        GIT_REPOSITORY https://github.com/frankosterfeld/qtkeychain.git
+        GIT_TAG 38ff50766c7e4ec490fecb2d9939b7cdc4b74b8e
+    )
+    FetchContent_MakeAvailable(qtkeychain)
+endif()
+
+if(ANDROID)
+    include(FetchContent)
+    FetchContent_Declare(
+        android_openssl
+        GIT_REPOSITORY https://github.com/KDAB/android_openssl.git
+        GIT_TAG b71f1470962019bd89534a2919f5925f93bc5779
+    )
+    FetchContent_MakeAvailable(android_openssl)
+    include(${android_openssl_SOURCE_DIR}/android_openssl.cmake)
+endif()
+
+set(PUBLICS_QTKEYCHAIN_TARGET "")
+if(TARGET Qt6Keychain::Qt6Keychain)
+    set(PUBLICS_QTKEYCHAIN_TARGET Qt6Keychain::Qt6Keychain)
+elseif(TARGET qt6keychain)
+    set(PUBLICS_QTKEYCHAIN_TARGET qt6keychain)
+else()
+    message(FATAL_ERROR "QtKeychain was found or fetched, but no Qt 6 target was exported")
+endif()
 
 qt_standard_project_setup(REQUIRES 6.10)
 
@@ -24,7 +56,6 @@ qt_add_executable(appPublicsTradingInterface
     main.cpp
     ${API_HANDLERS}
     vcpkg.json
-    resources.qrc
 )
 
 qt_add_qml_module(appPublicsTradingInterface
@@ -35,8 +66,14 @@ qt_add_qml_module(appPublicsTradingInterface
         apiHandlers/publicauthclient.h apiHandlers/publicauthclient.cpp
         apiHandlers/publicapiworker.h apiHandlers/publicapiworker.cpp
         apiHandlers/stocksearchcontroller.h apiHandlers/stocksearchcontroller.cpp
-    RESOURCES
-        resources.qrc
+    QML_FILES
+        Main.qml
+        qml/DisplayAccountInformation/ApiKeyList.qml
+        qml/DisplayAccountInformation/ChooseAccountButton.qml
+        qml/DisplayAccountInformation/ValidityTimer.qml
+        qml/PerformTrades/StockTrade.qml
+        qml/PerformTrades/TradeResultScreen.qml
+        qml/StockSearchAutoComplete/StockSearchAutoComplete.qml
 
 )
 
@@ -53,6 +90,9 @@ set_target_properties(appPublicsTradingInterface PROPERTIES
 
 target_include_directories(appPublicsTradingInterface PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/apiHandlers
+    ${QTKEYCHAIN_INCLUDE_DIRS}
+    ${qtkeychain_SOURCE_DIR}
+    ${qtkeychain_BINARY_DIR}
 )
 
 target_link_libraries(appPublicsTradingInterface
@@ -60,8 +100,12 @@ target_link_libraries(appPublicsTradingInterface
         Qt6::Quick
         Qt6::Network
         Qt6::Concurrent
-        Advapi32
+        ${PUBLICS_QTKEYCHAIN_TARGET}
 )
+
+if(ANDROID)
+    add_android_openssl_libraries(appPublicsTradingInterface)
+endif()
 
 # When in release mode real trades will occur. Where in debug mode only
 # preflight trades occur.
@@ -74,3 +118,53 @@ install(TARGETS appPublicsTradingInterface
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    qt_add_executable(test_publicauthclient
+        tests/test_publicauthclient.cpp
+        apiHandlers/publicauthclient.h
+        apiHandlers/publicauthclient.cpp
+    )
+
+    target_include_directories(test_publicauthclient PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/apiHandlers
+        ${QTKEYCHAIN_INCLUDE_DIRS}
+        ${qtkeychain_SOURCE_DIR}
+        ${qtkeychain_BINARY_DIR}
+    )
+
+    target_link_libraries(test_publicauthclient
+        PRIVATE
+            Qt6::Test
+            Qt6::Gui
+            Qt6::Network
+            Qt6::Concurrent
+            ${PUBLICS_QTKEYCHAIN_TARGET}
+    )
+
+    add_test(NAME test_publicauthclient COMMAND test_publicauthclient)
+
+    qt_add_executable(test_publicapiworker
+        tests/test_publicapiworker.cpp
+        apiHandlers/publicapiworker.h
+        apiHandlers/publicapiworker.cpp
+    )
+
+    target_include_directories(test_publicapiworker PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/apiHandlers
+    )
+
+    target_link_libraries(test_publicapiworker
+        PRIVATE
+            Qt6::Test
+            Qt6::Network
+            Qt6::Concurrent
+    )
+
+    if(ANDROID)
+        add_android_openssl_libraries(test_publicapiworker)
+    endif()
+
+    add_test(NAME test_publicapiworker COMMAND test_publicapiworker)
+endif()

@@ -9,9 +9,12 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 #include <QPromise>
 #include <QFuture>
+#include <QVariantList>
+#include <QVariantMap>
 #include <QtConcurrent>
 
 // For Debugging
@@ -24,13 +27,20 @@
 // Helper structure to bundle results
 struct AccountData {
     QString accountId;
+    QString accountType;
     //QJsonObject data;
 };
 
 class PublicApiWorker : public QObject {
     Q_OBJECT
 public:
-    PublicApiWorker(QObject *parent = nullptr) : QObject(parent), manager(new QNetworkAccessManager(this)) {}
+    explicit PublicApiWorker(QObject *parent = nullptr) : QObject(parent), manager(new QNetworkAccessManager(this)) {}
+
+    Q_PROPERTY(QVariantList tradeResults READ tradeResults NOTIFY tradeResultsChanged FINAL)
+    Q_PROPERTY(QString currentTransactionTitle READ currentTransactionTitle NOTIFY currentTransactionTitleChanged FINAL)
+    Q_PROPERTY(bool tradeResultsVisible READ tradeResultsVisible WRITE setTradeResultsVisible NOTIFY tradeResultsVisibleChanged FINAL)
+    Q_PROPERTY(bool tradeResultsComplete READ tradeResultsComplete NOTIFY tradeResultsCompleteChanged FINAL)
+    Q_PROPERTY(bool tradeResultsBusy READ tradeResultsBusy NOTIFY tradeResultsBusyChanged FINAL)
 
     /*
      * Performs a pull of all the available accounts and their base level data such as
@@ -50,12 +60,22 @@ public:
     Q_INVOKABLE void executeTrade(const QString &symbol,        // Ticker Symbol
                                   const QString &side);         // BUY or SELL
 
+    Q_INVOKABLE void dismissTradeResults();
+
     /*
      * Clears the sub account list to ensure accounts don't linger when attempting
      * to use different API keys. Also clears the authorization token to ensure
      * incorrectly configured token use when swapping between keys does not occur.
      * */
     Q_INVOKABLE void clearSubAccountsList();
+
+    QVariantList tradeResults() const;
+    QString currentTransactionTitle() const;
+    bool tradeResultsVisible() const;
+    void setTradeResultsVisible(bool visible);
+    bool tradeResultsComplete() const;
+    bool tradeResultsBusy() const;
+    static QString displayLabelForAccount(const QString &accountId, const QString &accountType);
 
 public slots:
     /*
@@ -67,10 +87,20 @@ signals:
     void transactionFailed(QString reason);
     void preflightPassed(QString summary);
     void orderExecuted(QString details);
+    void tradeResultsChanged();
+    void currentTransactionTitleChanged();
+    void tradeResultsVisibleChanged();
+    void tradeResultsCompleteChanged();
+    void tradeResultsBusyChanged();
 
 private:
     QNetworkAccessManager *manager;
     QString m_token;
+    QVariantList m_tradeResults;
+    QString m_currentTransactionTitle;
+    bool m_tradeResultsVisible = false;
+    bool m_tradeResultsComplete = true;
+    int m_pendingTradeResults = 0;
 
     /*
      * List of accounts that can perform a trade
@@ -89,14 +119,14 @@ private:
      * if a new id is passed in then it will be appended
      * otherwise, it will be skipped
      * */
-    void addAccountToList(QString id);
+    void addAccountToList(QString id, QString accountType = QString());
 
 
     /*
      * Pulls data from multiple accounts in parallel using QFutures and an event loop that runs in
      * the background
      * */
-    void executeConcurrentQueries(const QStringList &accountIds, const QString &baseUrl, const QString &token);
+    void executeConcurrentQueries(const QList<AccountData> &accounts, const QString &baseUrl, const QString &token);
 
     /*
      * Sets up the base headers for the publics api
@@ -122,6 +152,13 @@ private:
                                  const QString &symbol,        // Ticker Symbol
                                  const QString &side,          // "BUY" or "SELL"
                                  bool isPreflight);            // isPreflight = true means this will be a preflight
+
+    void beginTradeResults(const QString &symbol, const QString &side, bool isPreflight);
+    void updateTradeResult(const QString &accountId, bool success, const QString &message);
+    void setCurrentTransactionTitle(const QString &title);
+    void setTradeResultsComplete(bool complete);
+    QString transactionTitle(const QString &symbol, const QString &side, bool isPreflight) const;
+    QString apiErrorMessage(const QNetworkReply *reply, const QByteArray &responseData) const;
 };
 
 

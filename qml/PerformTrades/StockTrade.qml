@@ -1,172 +1,157 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-Item
-{
+Item {
     id: root
-    width: 440
-    height: 320
-    visible: true
 
-    property color errorColor: "#ff3b30"    // red error
-    property color successColor: "#34c759"  // Green success
+    implicitWidth: 640
+    implicitHeight: 320
+
     property alias inputFieldText: inputField.text
+    signal performBuy()
+    signal performSell()
 
-    signal performBuy();
-    signal performSell();
+    readonly property bool compactLayout: width < 520
+    readonly property color primaryText: "#f7f8f8"
+    readonly property color secondaryText: "#d0d6e0"
+    readonly property color mutedText: "#8a8f98"
+    readonly property color accentColor: "#7170ff"
+    readonly property color buyColor: "#10b981"
+    readonly property color sellColor: "#ff5c7a"
+    readonly property color surfaceColor: "#101115"
+    readonly property color elevatedColor: "#202126"
+    readonly property color borderColor: "#2f3138"
 
-    // Main layout container holding all structural UI rows sequentially
-    ColumnLayout
-    {
-        anchors.centerIn: parent
-        width: parent.width * 0.85
-        spacing: 16
+    Rectangle {
+        anchors.fill: parent
+        radius: 18
+        color: surfaceColor
+        border.color: borderColor
+        border.width: 1
 
-        // SECTION 1: Result Display Area (Positioned above the text input field)
-        Rectangle
-        {
-            id: resultContainer
-            Layout.fillWidth: true
-            height: 70
-            color: "#ffffff"
-            radius: 8
-            border.color: "#e5e5ea"
-            border.width: 1
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: compactLayout ? 14 : 18
+            spacing: compactLayout ? 14 : 18
 
-            ColumnLayout
-            {
-                anchors.centerIn: parent
-                width: parent.width * 0.9
-                spacing: 4
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: outputLayout.implicitHeight + 24
+                radius: 16
+                color: elevatedColor
+                border.color: borderColor
+                border.width: 1
 
-                Label
-                {
-                    text: "OUTPUT CHANNEL"
-                    font.pixelSize: 10
-                    font.bold: true
-                    color: "#8e8e93" // Muted gray accent for structural labeling
-                    Layout.alignment: Qt.AlignHCenter
+                ColumnLayout {
+                    id: outputLayout
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 6
+
+                    Label {
+                        text: qsTr("Execution mode")
+                        color: mutedText
+                        font.pixelSize: 12
+                        font.weight: Font.DemiBold
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Buy runs live only in release builds; sell currently preflights. All actions target every eligible account for the selected API key.")
+                        color: secondaryText
+                        font.pixelSize: 14
+                        wrapMode: Text.WordWrap
+                        lineHeight: 1.15
+                    }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Label {
+                    text: qsTr("Ticker symbol")
+                    color: secondaryText
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
                 }
 
-                Label
-                {
-                    id: resultLabel
-                    text: "Awaiting execution request..."
-                    font.pixelSize: 15
-                    font.weight: Font.Medium
-                    color: "#1c1c1e" // Standard clean dark text
-                    horizontalAlignment: Text.AlignHCenter
+                TextField {
+                    id: inputField
                     Layout.fillWidth: true
-                    wrapMode: Text.Wrap
+                    Layout.minimumHeight: 52
+                    placeholderText: qsTr("AAPL, TSLA, MSFT…")
+                    selectByMouse: true
+                    font.pixelSize: 18
+                    font.capitalization: Font.AllUppercase
+                    color: primaryText
+                    placeholderTextColor: mutedText
+                    leftPadding: 16
+                    rightPadding: 16
+
+                    background: Rectangle {
+                        radius: 15
+                        color: "#08090a"
+                        border.color: inputField.activeFocus ? accentColor : borderColor
+                        border.width: inputField.activeFocus ? 2 : 1
+                    }
                 }
             }
-        }
 
-        // Decorative separating line to distinct output from input
-        Rectangle
-        {
-            Layout.fillWidth: true
-            height: 1
-            color: "#d1d1d6"
-        }
-
-        // SECTION 2: User Input Field
-        ColumnLayout
-        {
-            Layout.fillWidth: true
-            spacing: 6
-
-            Label
-            {
-                text: "Source String Input"
-                font.pixelSize: 12
-                font.bold: true
-                color: "#1c1c1e"
-            }
-
-            TextField
-            {
-                id: inputField
-                placeholderText: "Type text data here..."
+            RowLayout {
                 Layout.fillWidth: true
-                font.pixelSize: 14
-                padding: 12
-                selectByMouse: true
+                spacing: 12
 
-                // Custom look and feel mimicking modern application frames
-                background: Rectangle {
-                    radius: 6
-                    border.color: inputField.activeFocus ? "#007aff" : "#c7c7cc"
-                    border.width: inputField.activeFocus ? 2 : 1
-                    color: "#ffffff"
-                }
-            }
-        }
+                Button {
+                    id: buyButton
+                    Layout.fillWidth: true
+                    Layout.minimumHeight: 52
+                    enabled: inputField.text.trim() !== ""
+                    text: qsTr("Buy")
 
-        // SECTION 3: Operation Actions Container (Two distinctive button routines)
-        RowLayout
-        {
-            Layout.fillWidth: true
-            spacing: 12
+                    contentItem: Text {
+                        text: buyButton.text
+                        color: buyButton.enabled ? "white" : mutedText
+                        font.pixelSize: 16
+                        font.weight: Font.DemiBold
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
 
-            // Button Routine A: Buy a single stock across all accounts
-            Button
-            {
-                id: btnUppercase
-                text: "BUY"
-                Layout.fillWidth: true
-                enabled: inputField.text.trim() !== ""
+                    background: Rectangle {
+                        radius: 15
+                        color: !buyButton.enabled ? elevatedColor : buyButton.down ? "#0f8d68" : buyColor
+                        opacity: buyButton.enabled ? 1 : 0.65
+                    }
 
-                contentItem: Text
-                {
-                    text: btnUppercase.text
-                    font.pixelSize: 13
-                    font.bold: true
-                    color: "white"
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                    onClicked: performBuy()
                 }
 
-                background: Rectangle
-                {
-                    radius: 6
-                    color: btnUppercase.down ? "#0051a8" : (btnUppercase.hovered ? "#0062cc" : "#007aff")
-                }
+                Button {
+                    id: sellButton
+                    Layout.fillWidth: true
+                    Layout.minimumHeight: 52
+                    enabled: inputField.text.trim() !== ""
+                    text: qsTr("Sell")
 
-                onClicked:
-                {
-                    performBuy()
-                }
-            }
+                    contentItem: Text {
+                        text: sellButton.text
+                        color: sellButton.enabled ? "white" : mutedText
+                        font.pixelSize: 16
+                        font.weight: Font.DemiBold
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
 
-            // Button Routine B: Selling a single stock across all accounts
-            Button
-            {
-                id: btnReverse
-                text: "SELL"
-                Layout.fillWidth: true
-                enabled: inputField.text.trim() !== ""
+                    background: Rectangle {
+                        radius: 15
+                        color: !sellButton.enabled ? elevatedColor : sellButton.down ? "#d64562" : sellColor
+                        opacity: sellButton.enabled ? 1 : 0.65
+                    }
 
-                contentItem: Text
-                {
-                    text: btnReverse.text
-                    font.pixelSize: 13
-                    font.bold: true
-                    color: "white"
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                background: Rectangle
-                {
-                    radius: 6
-                    color: btnReverse.down ? "#434190" : (btnReverse.hovered ? "#4c49a1" : "#5856d6")
-                }
-
-                onClicked:
-                {
-                    performSell()
+                    onClicked: performSell()
                 }
             }
         }

@@ -11,12 +11,17 @@
 #include <QNetworkReply>
 #include <QJsonObject>
 #include <QJsonDocument>
-#include <QtQml>
 #include <QDebug>
+#include <QSettings>
+#include <QStringList>
 
-// Windows API
-#include <windows.h>
-#include <wincred.h>
+#if __has_include(<qt6keychain/keychain.h>)
+#include <qt6keychain/keychain.h>
+#elif __has_include(<qtkeychain/keychain.h>)
+#include <qtkeychain/keychain.h>
+#else
+#include <keychain.h>
+#endif
 
 class PublicAuthClient : public QObject {
     Q_OBJECT
@@ -26,12 +31,19 @@ public:
     Q_PROPERTY(bool sessionActive READ sessionActive WRITE setSessionActive NOTIFY sessionActiveChanged FINAL)
     Q_PROPERTY(QStringList secretKeys READ secretKeys WRITE setSecretKeys NOTIFY secretKeysChanged FINAL)
     Q_PROPERTY(QString secretKey READ secretKey WRITE setSecretKey NOTIFY secretKeyChanged FINAL)
+    Q_PROPERTY(QString selectedApiKeyLabel READ selectedApiKeyLabel NOTIFY selectedApiKeyLabelChanged FINAL)
+    Q_PROPERTY(bool apiKeyReady READ apiKeyReady NOTIFY apiKeyReadyChanged FINAL)
+    Q_PROPERTY(bool apiKeyLoading READ apiKeyLoading NOTIFY apiKeyLoadingChanged FINAL)
+    Q_PROPERTY(QString apiKeyError READ apiKeyError NOTIFY apiKeyErrorChanged FINAL)
 
     /*
      * Default constructor which accepts a secret key or can be left as empty
      * */
-    PublicAuthClient(const QString secretKey = "", QObject *parent = nullptr)
-        : QObject(parent), m_secretKey(secretKey) {m_manager = new QNetworkAccessManager();}
+    explicit PublicAuthClient(const QString &secretKey = "", QObject *parent = nullptr);
+    PublicAuthClient(const QString &secretKey,
+                     const QString &keychainServiceName,
+                     const QString &settingsGroupName,
+                     QObject *parent = nullptr);
 
     /*
      * If a non empty secret key has been passed in by the user then a network request
@@ -43,10 +55,13 @@ public:
     Q_INVOKABLE void requestToken();
 
     /*
-     * List and securely store API keys into windows credential manager
+     * List API key labels and securely store API keys in the platform keychain.
      * */
-    QStringList listStoredApiKeys();
+    Q_INVOKABLE QStringList listStoredApiKeys();
     Q_INVOKABLE bool storeNextApiKey(const QString &userName, const QString &apiKey);
+
+    static QStringList normalizedStoredApiKeyLabels(const QStringList &labels);
+    static QString nextApiKeyLabel(const QStringList &labels);
 
     /*
      * Clears QNetwork access and cookies cache to ensure smooth transition
@@ -66,6 +81,11 @@ public:
 
     QString secretKey() const;
     void setSecretKey(const QString &newSecretKey);
+
+    QString selectedApiKeyLabel() const;
+    bool apiKeyReady() const;
+    bool apiKeyLoading() const;
+    QString apiKeyError() const;
 
 private slots:
     /*
@@ -101,12 +121,32 @@ signals:
      * emits signal to ensure the UI knows which secret key is now being used
      * */
     void secretKeyChanged();
+    void selectedApiKeyLabelChanged();
+    void apiKeyReadyChanged();
+    void apiKeyLoadingChanged();
+    void apiKeyErrorChanged();
 
 private:
+    static constexpr const char *defaultKeychainService = "PublicsTradingInterface";
+    static constexpr const char *defaultSettingsGroup = "publicsApiKeys";
+
     QString m_secretKey;
     QStringList m_secretKeys;
-    QNetworkAccessManager *m_manager;
+    QNetworkAccessManager *m_manager = nullptr;
     bool m_sessionActive = false;
+    QString m_selectedApiKeyLabel;
+    bool m_apiKeyReady = false;
+    bool m_apiKeyLoading = false;
+    QString m_apiKeyError;
+    QString m_keychainService;
+    QString m_settingsGroup;
+
+    QString keychainKeyForLabel(const QString &label) const;
+    void readApiKeyFromKeychain(const QString &label);
+    void setSelectedApiKeyLabel(const QString &label);
+    void setApiKeyReady(bool ready);
+    void setApiKeyLoading(bool loading);
+    void setApiKeyError(const QString &error);
 };
 
 #endif // PUBLICAUTHCLIENT_H

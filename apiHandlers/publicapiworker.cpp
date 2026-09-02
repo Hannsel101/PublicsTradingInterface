@@ -1,4 +1,9 @@
 #include "publicapiworker.h"
+#include <QUuid>
+
+namespace {
+constexpr int tradeRequestTimeoutMs = 30000;
+}
 
 void PublicApiWorker::processToken(QString newToken)
 {
@@ -6,7 +11,181 @@ void PublicApiWorker::processToken(QString newToken)
     fetchAllSubaccountsConcurrently();
 }
 
-void PublicApiWorker::addAccountToList(QString id)
+QVariantList PublicApiWorker::tradeResults() const
+{
+    return m_tradeResults;
+}
+
+QString PublicApiWorker::currentTransactionTitle() const
+{
+    return m_currentTransactionTitle;
+}
+
+bool PublicApiWorker::tradeResultsVisible() const
+{
+    return m_tradeResultsVisible;
+}
+
+void PublicApiWorker::setTradeResultsVisible(bool visible)
+{
+    if (m_tradeResultsVisible == visible)
+        return;
+    m_tradeResultsVisible = visible;
+    emit tradeResultsVisibleChanged();
+}
+
+bool PublicApiWorker::tradeResultsComplete() const
+{
+    return m_tradeResultsComplete;
+}
+
+bool PublicApiWorker::tradeResultsBusy() const
+{
+    return !m_tradeResultsComplete;
+}
+
+void PublicApiWorker::dismissTradeResults()
+{
+    setTradeResultsVisible(false);
+}
+
+void PublicApiWorker::setCurrentTransactionTitle(const QString &title)
+{
+    if (m_currentTransactionTitle == title)
+        return;
+    m_currentTransactionTitle = title;
+    emit currentTransactionTitleChanged();
+}
+
+void PublicApiWorker::setTradeResultsComplete(bool complete)
+{
+    if (m_tradeResultsComplete == complete)
+        return;
+    m_tradeResultsComplete = complete;
+    emit tradeResultsCompleteChanged();
+    emit tradeResultsBusyChanged();
+}
+
+QString PublicApiWorker::transactionTitle(const QString &symbol, const QString &side, bool isPreflight) const
+{
+    const QString transactionType = isPreflight ? QStringLiteral("Preflight") : QStringLiteral("Market");
+    const QString direction = side.compare(QStringLiteral("SELL"), Qt::CaseInsensitive) == 0
+                                  ? QStringLiteral("Sell")
+                                  : QStringLiteral("Buy");
+    return QStringLiteral("%1 %2 of %3")
+        .arg(transactionType, direction, symbol.trimmed().toUpper());
+}
+
+QString PublicApiWorker::apiErrorMessage(const QNetworkReply *reply, const QByteArray &responseData) const
+{
+    if (!responseData.trimmed().isEmpty()) {
+        const QJsonDocument errorDoc = QJsonDocument::fromJson(responseData);
+        if (errorDoc.isObject()) {
+            const QJsonObject errorObj = errorDoc.object();
+            const QString message = errorObj.value(QStringLiteral("message")).toString();
+            if (!message.isEmpty()) {
+                return message;
+            }
+            const QString error = errorObj.value(QStringLiteral("error")).toString();
+            if (!error.isEmpty()) {
+                return error;
+            }
+            const QString detail = errorObj.value(QStringLiteral("detail")).toString();
+            if (!detail.isEmpty()) {
+                return detail;
+            }
+        }
+        return QString::fromUtf8(responseData).left(240);
+    }
+
+    return reply ? reply->errorString() : QStringLiteral("Unknown transaction error");
+}
+
+QString PublicApiWorker::displayLabelForAccount(const QString &accountId, const QString &accountType)
+{
+    const QString normalizedType = accountType.trimmed().toUpper();
+    QString typeLabel;
+    if (normalizedType == QStringLiteral("BROKERAGE")) {
+        typeLabel = QStringLiteral("Standard Brokerage");
+    } else if (normalizedType == QStringLiteral("ROTH_IRA")) {
+        typeLabel = QStringLiteral("ROTH IRA");
+    } else if (normalizedType == QStringLiteral("TRADITIONAL_IRA")) {
+        typeLabel = QStringLiteral("IRA");
+    } else if (!accountType.trimmed().isEmpty()) {
+        typeLabel = accountType.trimmed();
+    } else {
+        typeLabel = QStringLiteral("Account");
+    }
+
+    return QStringLiteral("%1: %2").arg(typeLabel, accountId);
+}
+
+void PublicApiWorker::beginTradeResults(const QString &symbol, const QString &side, bool isPreflight)
+{
+    setCurrentTransactionTitle(transactionTitle(symbol, side, isPreflight));
+    m_tradeResults.clear();
+    m_pendingTradeResults = static_cast<int>(m_accountList.size());
+
+    for (const auto &accountData : m_accountList) {
+        QVariantMap result;
+        result.insert(QStringLiteral("accountId"), accountData.accountId);
+        result.insert(QStringLiteral("accountType"), accountData.accountType);
+        result.insert(QStringLiteral("accountLabel"), displayLabelForAccount(accountData.accountId, accountData.accountType));
+        result.insert(QStringLiteral("status"), QStringLiteral("pending"));
+        result.insert(QStringLiteral("success"), false);
+        result.insert(QStringLiteral("message"), QStringLiteral("Waiting for Public.com response…"));
+        m_tradeResults.append(result);
+    }
+
+    if (m_accountList.isEmpty()) {
+        QVariantMap result;
+        result.insert(QStringLiteral("accountId"), QStringLiteral("No loaded account"));
+        result.insert(QStringLiteral("accountType"), QString());
+        result.insert(QStringLiteral("accountLabel"), QStringLiteral("No loaded account"));
+        result.insert(QStringLiteral("status"), QStringLiteral("failed"));
+        result.insert(QStringLiteral("success"), false);
+        result.insert(QStringLiteral("message"), QStringLiteral("No eligible brokerage accounts are loaded for the selected API key. Start a new session and try again."));
+        m_tradeResults.append(result);
+        m_pendingTradeResults = 0;
+        setTradeResultsComplete(true);
+    } else {
+        setTradeResultsComplete(false);
+    }
+
+    emit tradeResultsChanged();
+    setTradeResultsVisible(true);
+}
+
+void PublicApiWorker::updateTradeResult(const QString &accountId, bool success, const QString &message)
+{
+    for (int i = 0; i < m_tradeResults.size(); ++i) {
+        QVariantMap result = m_tradeResults.at(i).toMap();
+        if (result.value(QStringLiteral("accountId")).toString() != accountId) {
+            continue;
+        }
+
+        const QString previousStatus = result.value(QStringLiteral("status")).toString();
+        if (previousStatus != QStringLiteral("pending")) {
+            return;
+        }
+
+        result.insert(QStringLiteral("status"), success ? QStringLiteral("success") : QStringLiteral("failed"));
+        result.insert(QStringLiteral("success"), success);
+        result.insert(QStringLiteral("message"), message);
+        m_tradeResults[i] = result;
+        if (m_pendingTradeResults > 0) {
+            --m_pendingTradeResults;
+        }
+        emit tradeResultsChanged();
+
+        if (m_pendingTradeResults == 0) {
+            setTradeResultsComplete(true);
+        }
+        return;
+    }
+}
+
+void PublicApiWorker::addAccountToList(QString id, QString accountType)
 {
     if(id == "")
         return;
@@ -21,13 +200,12 @@ void PublicApiWorker::addAccountToList(QString id)
     }
 
     // store new account
-    m_accountList.append(AccountData{id});
+    m_accountList.append(AccountData{id, accountType});
 }
 
 void PublicApiWorker::fetchAllSubaccountsConcurrently() {
     QString baseUrl = "https://public.com";
     QString token = m_token;
-    qDebug() << "token: " << token;
     qDebug() << "baseURL: " << baseUrl;
 
     // 1. Prepare initial request for all accounts
@@ -48,38 +226,42 @@ void PublicApiWorker::fetchAllSubaccountsConcurrently() {
         QJsonDocument doc = QJsonDocument::fromJson(responseData);
         QJsonArray accounts = doc.object().value("accounts").toArray();
 
-        QStringList accountIds;
+        QList<AccountData> accountsToQuery;
         for (const QJsonValue &val : accounts)
         {
-            if(val.toObject().value("accountType").toString() == "BROKERAGE" ||
-               val.toObject().value("accountType").toString() == "ROTH_IRA"  ||
-               val.toObject().value("accountType").toString() == "TRADITIONAL_IRA")
+            const QJsonObject accountObject = val.toObject();
+            const QString accountType = accountObject.value("accountType").toString();
+            if(accountType == "BROKERAGE" ||
+               accountType == "ROTH_IRA"  ||
+               accountType == "TRADITIONAL_IRA")
             {
-                accountIds.append(val.toObject().value("accountId").toString());
+                accountsToQuery.append(AccountData{accountObject.value("accountId").toString(), accountType});
             }
             else
             {
-                qDebug() << val.toObject().value("accountId").toString() << "of account type" <<
-                    val.toObject().value("accountType").toString() << "which is not a supported account type";
+                qDebug() << accountObject.value("accountId").toString() << "of account type" <<
+                    accountType << "which is not a supported account type";
             }
         }
 
-        if (accountIds.isEmpty()) return;
+        if (accountsToQuery.isEmpty()) return;
 
         QString baseUrl2 = "https://api.public.com";
         // 2. Dispatch concurrent queries
-        executeConcurrentQueries(accountIds, baseUrl2, token);
+        executeConcurrentQueries(accountsToQuery, baseUrl2, token);
     });
 }
 
 void PublicApiWorker::executePreflight(const QString &symbol, const QString &side)
 {
-    // Execute a preflight for all accounts in the account list
+    const QString normalizedSymbol = symbol.trimmed().toUpper();
+    beginTradeResults(normalizedSymbol, side, true);
+
     for(auto &accountData: m_accountList)
     {
-        qDebug() << "Executing Preflight for" << accountData.accountId << ":" << symbol << side;
+        qDebug() << "Executing Preflight for" << accountData.accountId << ":" << normalizedSymbol << side;
         executeTradeOrPreflight(accountData.accountId,
-                                symbol,
+                                normalizedSymbol,
                                 side,
                                 true);
 
@@ -91,12 +273,14 @@ void PublicApiWorker::executePreflight(const QString &symbol, const QString &sid
 
 void PublicApiWorker::executeTrade(const QString &symbol, const QString &side)
 {
-    // Execute a trade for all accounts in the account list
+    const QString normalizedSymbol = symbol.trimmed().toUpper();
+    beginTradeResults(normalizedSymbol, side, false);
+
     for(auto &accountData: m_accountList)
     {
-        qDebug() << "Executing Trade for" << accountData.accountId << ":" << symbol << side;
+        qDebug() << "Executing Trade for" << accountData.accountId << ":" << normalizedSymbol << side;
         executeTradeOrPreflight(accountData.accountId,
-                                symbol,
+                                normalizedSymbol,
                                 side,
                                 false);
 
@@ -110,6 +294,7 @@ void PublicApiWorker::clearSubAccountsList()
 {
     m_accountList.clear();
     m_token = "";
+    dismissTradeResults();
 }
 
 void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QString &symbol, const QString &side, bool isPreflight)
@@ -144,19 +329,47 @@ void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QS
     QByteArray payload = doc.toJson();
 
     QNetworkReply *reply = manager->post(request, payload);
+    QTimer *timeoutTimer = new QTimer(reply);
+    timeoutTimer->setSingleShot(true);
+    timeoutTimer->setInterval(tradeRequestTimeoutMs);
+
+    connect(timeoutTimer, &QTimer::timeout, this, [this, reply, accountId]() {
+        if (!reply->isFinished()) {
+            updateTradeResult(accountId, false, QStringLiteral("Timed out waiting for Public.com to return a transaction result."));
+            emit transactionFailed(QStringLiteral("Transaction timed out for account %1").arg(accountId));
+            reply->abort();
+        }
+    });
+    timeoutTimer->start();
 
     // Connect asynchronous response
     connect(reply, &QNetworkReply::finished, this, [=]() {
+        timeoutTimer->stop();
         reply->deleteLater();
         manager->deleteLater();
 
+        const QByteArray responseData = reply->readAll();
         if (reply->error() != QNetworkReply::NoError) {
-            emit transactionFailed(QString("Network Error: %1").arg(reply->errorString()));
-            qDebug() << "Transaction failed!\n" << QString("Network Error: %1").arg(reply->errorString());
+            if (reply->error() == QNetworkReply::OperationCanceledError) {
+                return;
+            }
+            const QString message = apiErrorMessage(reply, responseData);
+            updateTradeResult(accountId, false, message);
+            emit transactionFailed(QStringLiteral("%1: %2").arg(accountId, message));
+            qDebug() << "Transaction failed for" << accountId << message;
             return;
         }
 
-        QJsonDocument responseDoc = QJsonDocument::fromJson(reply->readAll());
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (httpStatus >= 400) {
+            const QString message = apiErrorMessage(reply, responseData);
+            updateTradeResult(accountId, false, message);
+            emit transactionFailed(QStringLiteral("%1: %2").arg(accountId, message));
+            qDebug() << "Transaction failed for" << accountId << message;
+            return;
+        }
+
+        QJsonDocument responseDoc = QJsonDocument::fromJson(responseData);
         QJsonObject responseObj = responseDoc.object();
 
         if (isPreflight) {
@@ -165,24 +378,27 @@ void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QS
                                   .arg(responseObj["orderValue"].toString())
                                   .arg(responseObj["estimatedExecutionFee"].toString());
             qDebug() << summary;
+            updateTradeResult(accountId, true, summary);
             emit preflightPassed(summary);
         } else {
-            emit orderExecuted(QString("Live Order Placed! Status: %1")
-                                   .arg(responseObj["status"].toString()));
+            const QString details = QString("Live Order Placed! Status: %1")
+                                        .arg(responseObj["status"].toString());
+            updateTradeResult(accountId, true, details);
+            emit orderExecuted(details);
         }
     });
 }
 
-void PublicApiWorker::executeConcurrentQueries(const QStringList &accountIds, const QString &baseUrl, const QString &token) {
+void PublicApiWorker::executeConcurrentQueries(const QList<AccountData> &accounts, const QString &baseUrl, const QString &token) {
     // Create an array of futures—one for each account network request
-    QList<QFuture<QString>> futures;
+    QList<QFuture<AccountData>> futures;
 
-    for (const QString &id : accountIds) {
+    for (const AccountData &account : accounts) {
         // QtConcurrent::run handles the parallel wrapper safely
-        QFuture<QString> future = QtConcurrent::run([this, id, baseUrl, token]() {
+        QFuture<AccountData> future = QtConcurrent::run([this, account, baseUrl, token]() {
             // Set up a local event loop for this specific background thread query
             QEventLoop loop;
-            QString requestString = baseUrl + "/userapigateway/trading/" + id + "/portfolio/v2";
+            QString requestString = baseUrl + "/userapigateway/trading/" + account.accountId + "/portfolio/v2";
             QNetworkRequest req(requestString);
             req.setRawHeader("Authorization", "Bearer " + token.toUtf8());
             req.setRawHeader(QByteArray("User-Agent"), QByteArray("public-dev-docs"));
@@ -190,7 +406,7 @@ void PublicApiWorker::executeConcurrentQueries(const QStringList &accountIds, co
             QNetworkReply *subReply = manager->get(req);
             connect(subReply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
             loop.exec(); // Blocks only this background worker thread, not the GUI/Main thread
-            QString result = id;
+            AccountData result = account;
             //AccountData result{id};//, QJsonObject()};
             // if (subReply->error() == QNetworkReply::NoError) {
             //     result.data = QJsonDocument::fromJson(subReply->readAll()).object();
@@ -206,10 +422,11 @@ void PublicApiWorker::executeConcurrentQueries(const QStringList &accountIds, co
     // 3. Monitor all concurrent tasks and wait for them to finish
     // QtFuture::whenAll maps nicely to JavaScript's Promise.all()
     QtFuture::whenAll(futures.begin(), futures.end())
-        .then(this, [this](QList<QFuture<QString>> completedFutures) {
+        .then(this, [this](QList<QFuture<AccountData>> completedFutures) {
             qDebug() << "--- All concurrent subaccount queries finished! ---";
             for (auto &future : completedFutures) {
-                addAccountToList(future.result());
+                const AccountData result = future.result();
+                addAccountToList(result.accountId, result.accountType);
             }
 
             for(auto &accountData: m_accountList)
