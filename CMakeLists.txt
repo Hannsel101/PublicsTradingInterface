@@ -81,7 +81,7 @@ qt_add_qml_module(appPublicsTradingInterface
 # If you are developing for iOS or macOS you should consider setting an
 # explicit, fixed bundle identifier manually though.
 set_target_properties(appPublicsTradingInterface PROPERTIES
-#    MACOSX_BUNDLE_GUI_IDENTIFIER com.example.appPublicsTradingInterface
+    MACOSX_BUNDLE_GUI_IDENTIFIER trb.appPublicsTradingInterface
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
     MACOSX_BUNDLE TRUE
@@ -107,10 +107,14 @@ if(ANDROID)
     add_android_openssl_libraries(appPublicsTradingInterface)
 endif()
 
-# When in release mode real trades will occur. Where in debug mode only
-# preflight trades occur.
+# Standard Release builds perform real trades. RELEASE_BUILD remains available
+# for build systems that use a custom configuration name.
 if(RELEASE_BUILD)
-    add_compile_definitions(RELEASE)
+    target_compile_definitions(appPublicsTradingInterface PRIVATE RELEASE)
+else()
+    target_compile_definitions(appPublicsTradingInterface PRIVATE
+        $<$<CONFIG:Release>:RELEASE>
+    )
 endif()
 
 install(TARGETS appPublicsTradingInterface
