@@ -31,6 +31,8 @@ struct AccountData {
     //QJsonObject data;
 };
 
+class PublicApiWorkerTest;
+
 class PublicApiWorker : public QObject {
     Q_OBJECT
 public:
@@ -94,6 +96,8 @@ signals:
     void tradeResultsBusyChanged();
 
 private:
+    friend class PublicApiWorkerTest;
+
     QNetworkAccessManager *manager;
     QString m_token;
     QVariantList m_tradeResults;
@@ -101,6 +105,7 @@ private:
     bool m_tradeResultsVisible = false;
     bool m_tradeResultsComplete = true;
     int m_pendingTradeResults = 0;
+    quint64 m_accountLoadGeneration = 0;
 
     /*
      * List of accounts that can perform a trade
@@ -126,7 +131,14 @@ private:
      * Pulls data from multiple accounts in parallel using QFutures and an event loop that runs in
      * the background
      * */
-    void executeConcurrentQueries(const QList<AccountData> &accounts, const QString &baseUrl, const QString &token);
+    void executeConcurrentQueries(const QList<AccountData> &accounts,
+                                  const QString &baseUrl,
+                                  const QString &token,
+                                  quint64 accountLoadGeneration);
+
+    void applyDiscoveredAccounts(const QList<AccountData> &accounts,
+                                 quint64 accountLoadGeneration,
+                                 const QString &token);
 
     /*
      * Sets up the base headers for the publics api

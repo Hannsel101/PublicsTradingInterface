@@ -53,6 +53,37 @@ private slots:
         worker.dismissTradeResults();
         QVERIFY(!worker.tradeResultsVisible());
     }
+
+    void staleAccountDiscoveryCannotRepopulateAReplacedSession()
+    {
+        PublicApiWorker worker;
+        worker.m_token = QStringLiteral("old-session-token");
+        worker.m_accountLoadGeneration = 1;
+        worker.addAccountToList(QStringLiteral("OLD-ACCOUNT"), QStringLiteral("BROKERAGE"));
+
+        const quint64 oldAccountLoadGeneration = worker.m_accountLoadGeneration;
+        worker.clearSubAccountsList();
+        worker.m_token = QStringLiteral("new-session-token");
+
+        const QList<AccountData> oldSessionAccounts = {
+            {QStringLiteral("OLD-ACCOUNT"), QStringLiteral("BROKERAGE")}
+        };
+        worker.applyDiscoveredAccounts(oldSessionAccounts,
+                                       oldAccountLoadGeneration,
+                                       QStringLiteral("old-session-token"));
+
+        QVERIFY(worker.m_accountList.isEmpty());
+
+        const QList<AccountData> currentSessionAccounts = {
+            {QStringLiteral("NEW-ACCOUNT"), QStringLiteral("BROKERAGE")}
+        };
+        worker.applyDiscoveredAccounts(currentSessionAccounts,
+                                       worker.m_accountLoadGeneration,
+                                       QStringLiteral("new-session-token"));
+
+        QCOMPARE(worker.m_accountList.size(), 1);
+        QCOMPARE(worker.m_accountList.first().accountId, QStringLiteral("NEW-ACCOUNT"));
+    }
 };
 
 QTEST_MAIN(PublicApiWorkerTest)

@@ -14,6 +14,7 @@
 #include <QDebug>
 #include <QSettings>
 #include <QStringList>
+#include <functional>
 
 #if __has_include(<qt6keychain/keychain.h>)
 #include <qt6keychain/keychain.h>
@@ -22,6 +23,8 @@
 #else
 #include <keychain.h>
 #endif
+
+class PublicAuthClientTest;
 
 class PublicAuthClient : public QObject {
     Q_OBJECT
@@ -34,6 +37,7 @@ public:
     Q_PROPERTY(QString selectedApiKeyLabel READ selectedApiKeyLabel NOTIFY selectedApiKeyLabelChanged FINAL)
     Q_PROPERTY(bool apiKeyReady READ apiKeyReady NOTIFY apiKeyReadyChanged FINAL)
     Q_PROPERTY(bool apiKeyLoading READ apiKeyLoading NOTIFY apiKeyLoadingChanged FINAL)
+    Q_PROPERTY(bool apiKeyIndexLoading READ apiKeyIndexLoading NOTIFY apiKeyIndexLoadingChanged FINAL)
     Q_PROPERTY(QString apiKeyError READ apiKeyError NOTIFY apiKeyErrorChanged FINAL)
 
     /*
@@ -85,6 +89,7 @@ public:
     QString selectedApiKeyLabel() const;
     bool apiKeyReady() const;
     bool apiKeyLoading() const;
+    bool apiKeyIndexLoading() const;
     QString apiKeyError() const;
 
 private slots:
@@ -97,7 +102,9 @@ private slots:
      *
      * TO DO: Add an error indicator for the end user so they know what error occurred
      * */
-    void handleReply(QNetworkReply *reply);
+    void handleReply(QNetworkReply *reply,
+                     const QString &apiKeyLabel,
+                     quint64 generation);
 
 signals:
     /*
@@ -124,11 +131,15 @@ signals:
     void selectedApiKeyLabelChanged();
     void apiKeyReadyChanged();
     void apiKeyLoadingChanged();
+    void apiKeyIndexLoadingChanged();
     void apiKeyErrorChanged();
 
 private:
+    friend class PublicAuthClientTest;
+
     static constexpr const char *defaultKeychainService = "PublicsTradingInterface";
     static constexpr const char *defaultSettingsGroup = "publicsApiKeys";
+    static constexpr const char *keychainLabelIndexKey = "PublicsApiKeyLabelIndexV1";
 
     QString m_secretKey;
     QStringList m_secretKeys;
@@ -137,15 +148,31 @@ private:
     QString m_selectedApiKeyLabel;
     bool m_apiKeyReady = false;
     bool m_apiKeyLoading = false;
+    bool m_apiKeyIndexLoading = false;
+    quint64 m_apiKeyReadGeneration = 0;
+    quint64 m_tokenRequestGeneration = 0;
     QString m_apiKeyError;
     QString m_keychainService;
     QString m_settingsGroup;
 
     QString keychainKeyForLabel(const QString &label) const;
+    static QString serializeApiKeyLabels(const QStringList &labels);
+    static bool deserializeApiKeyLabels(const QString &serializedLabels, QStringList *labels);
+    void readApiKeyLabelIndex(const QStringList &localLabels);
+    void writeApiKeyLabelIndex(const QStringList &labels,
+                               const std::function<void(bool)> &completion = {});
+    void deleteApiKeyFromKeychain(
+        const QString &label,
+        const std::function<void()> &completion = {});
     void readApiKeyFromKeychain(const QString &label);
+    bool applyLoadedApiKey(const QString &label, quint64 generation, const QString &apiKey);
+    bool applyAccessToken(const QString &apiKeyLabel,
+                          quint64 generation,
+                          const QString &accessToken);
     void setSelectedApiKeyLabel(const QString &label);
     void setApiKeyReady(bool ready);
     void setApiKeyLoading(bool loading);
+    void setApiKeyIndexLoading(bool loading);
     void setApiKeyError(const QString &error);
 };
 

@@ -298,8 +298,8 @@ ApplicationWindow {
                                     id: storeKeyButton
                                     Layout.preferredWidth: window.compactLayout ? 116 : 150
                                     Layout.minimumHeight: 48
-                                    enabled: userInputField.text.trim() !== ""
-                                    text: qsTr("Store key")
+                                    enabled: userInputField.text.trim() !== "" && !AuthClient.apiKeyIndexLoading
+                                    text: AuthClient.apiKeyIndexLoading ? qsTr("Loading keys…") : qsTr("Store key")
 
                                     contentItem: Text {
                                         text: storeKeyButton.text
@@ -317,8 +317,9 @@ ApplicationWindow {
                                     }
 
                                     onClicked: {
-                                        AuthClient.storeNextApiKey("", userInputField.text)
-                                        userInputField.clear()
+                                        if (AuthClient.storeNextApiKey("", userInputField.text)) {
+                                            userInputField.clear()
+                                        }
                                     }
                                 }
                             }

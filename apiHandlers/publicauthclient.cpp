@@ -1,6 +1,7 @@
 #include "publicauthclient.h"
 
 #include <algorithm>
+#include <QJsonArray>
 #include <QRegularExpression>
 #include <QSet>
 
@@ -40,6 +41,7 @@ void PublicAuthClient::setSessionActive(bool newSessionActive)
 
 void PublicAuthClient::requestToken()
 {
+    const quint64 generation = ++m_tokenRequestGeneration;
     if (!apiKeyReady() || secretKey().isEmpty()) {
         qWarning() << "Authorization skipped: no API key is selected or loaded.";
         setSessionActive(false);
@@ -64,9 +66,10 @@ void PublicAuthClient::requestToken()
     QNetworkReply *reply = m_manager->post(request, data);
 
     // Connect reply finished signal to our slot/lambda
-    connect(reply, &QNetworkReply::finished, this, [this, reply]()
+    const QString apiKeyLabel = m_selectedApiKeyLabel;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, apiKeyLabel, generation]()
             {
-                handleReply(reply);
+                handleReply(reply, apiKeyLabel, generation);
             });
 }
 
@@ -121,6 +124,10 @@ QString PublicAuthClient::nextApiKeyLabel(const QStringList &labels)
 
 QStringList PublicAuthClient::listStoredApiKeys()
 {
+    if (apiKeyIndexLoading()) {
+        return secretKeys();
+    }
+
     QSettings settings;
     settings.beginGroup(m_settingsGroup);
     QStringList labels = normalizedStoredApiKeyLabels(settings.value("labels").toStringList());
@@ -128,6 +135,8 @@ QStringList PublicAuthClient::listStoredApiKeys()
     settings.endGroup();
 
     setSecretKeys(labels);
+    setApiKeyIndexLoading(true);
+    readApiKeyLabelIndex(labels);
     return secretKeys();
 }
 
@@ -136,8 +145,148 @@ QString PublicAuthClient::keychainKeyForLabel(const QString &label) const
     return label.trimmed();
 }
 
+QString PublicAuthClient::serializeApiKeyLabels(const QStringList &labels)
+{
+    QJsonArray serializedLabels;
+    for (const QString &label : normalizedStoredApiKeyLabels(labels)) {
+        serializedLabels.append(label);
+    }
+    return QString::fromUtf8(QJsonDocument(serializedLabels).toJson(QJsonDocument::Compact));
+}
+
+bool PublicAuthClient::deserializeApiKeyLabels(
+    const QString &serializedLabels,
+    QStringList *labels)
+{
+    if (!labels) {
+        return false;
+    }
+    labels->clear();
+
+    const QJsonDocument document = QJsonDocument::fromJson(serializedLabels.toUtf8());
+    if (!document.isArray()) {
+        return false;
+    }
+
+    QStringList parsedLabels;
+    for (const QJsonValue &value : document.array()) {
+        if (!value.isString()) {
+            return false;
+        }
+        parsedLabels.append(value.toString());
+    }
+
+    const QStringList normalizedLabels = normalizedStoredApiKeyLabels(parsedLabels);
+    if (normalizedLabels.size() != parsedLabels.size()) {
+        return false;
+    }
+    *labels = normalizedLabels;
+    return true;
+}
+
+void PublicAuthClient::readApiKeyLabelIndex(const QStringList &localLabels)
+{
+    auto *job = new QKeychain::ReadPasswordJob(m_keychainService, this);
+    job->setAutoDelete(false);
+    job->setInsecureFallback(false);
+    job->setKey(QString::fromLatin1(keychainLabelIndexKey));
+
+    connect(job, &QKeychain::ReadPasswordJob::finished, this, [this, job, localLabels]() {
+        if (job->error() == QKeychain::NoError) {
+            QStringList storedLabels;
+            if (!deserializeApiKeyLabels(job->textData(), &storedLabels)) {
+                qWarning() << "The API key label index is malformed.";
+                setApiKeyError(QStringLiteral("Saved API key labels could not be read safely."));
+                setApiKeyIndexLoading(false);
+                job->deleteLater();
+                return;
+            }
+
+            QStringList labels = storedLabels;
+            labels.append(localLabels);
+            labels = normalizedStoredApiKeyLabels(labels);
+
+            QSettings settings;
+            settings.beginGroup(m_settingsGroup);
+            settings.setValue("labels", labels);
+            settings.endGroup();
+            setSecretKeys(labels);
+
+            if (labels != storedLabels) {
+                writeApiKeyLabelIndex(labels, [this](bool) {
+                    setApiKeyIndexLoading(false);
+                });
+            } else {
+                setApiKeyIndexLoading(false);
+            }
+        } else if (job->error() == QKeychain::EntryNotFound) {
+            if (!localLabels.isEmpty()) {
+                writeApiKeyLabelIndex(localLabels, [this](bool) {
+                    setApiKeyIndexLoading(false);
+                });
+            } else {
+                setApiKeyIndexLoading(false);
+            }
+        } else {
+            qWarning() << "Failed to load the API key label index:" << job->errorString();
+            setApiKeyError(QStringLiteral("Could not load saved API key labels from the system keychain."));
+            setApiKeyIndexLoading(false);
+        }
+        job->deleteLater();
+    });
+    job->start();
+}
+
+void PublicAuthClient::writeApiKeyLabelIndex(
+    const QStringList &labels,
+    const std::function<void(bool)> &completion)
+{
+    auto *job = new QKeychain::WritePasswordJob(m_keychainService, this);
+    job->setAutoDelete(false);
+    job->setInsecureFallback(false);
+    job->setKey(QString::fromLatin1(keychainLabelIndexKey));
+    job->setTextData(serializeApiKeyLabels(labels));
+
+    connect(job, &QKeychain::WritePasswordJob::finished, this, [this, job, completion]() {
+        const bool succeeded = job->error() == QKeychain::NoError;
+        if (!succeeded) {
+            qWarning() << "Failed to store the API key label index:" << job->errorString();
+            setApiKeyError(QStringLiteral("Could not preserve the API key list in the system keychain."));
+        }
+        if (completion) {
+            completion(succeeded);
+        }
+        job->deleteLater();
+    });
+    job->start();
+}
+
+void PublicAuthClient::deleteApiKeyFromKeychain(
+    const QString &label,
+    const std::function<void()> &completion)
+{
+    auto *job = new QKeychain::DeletePasswordJob(m_keychainService, this);
+    job->setAutoDelete(false);
+    job->setInsecureFallback(false);
+    job->setKey(keychainKeyForLabel(label));
+
+    connect(job, &QKeychain::DeletePasswordJob::finished, this, [job, label, completion]() {
+        if (job->error() != QKeychain::NoError
+            && job->error() != QKeychain::EntryNotFound) {
+            qWarning() << "Failed to roll back API key" << label << ":" << job->errorString();
+        }
+        if (completion) {
+            completion();
+        }
+        job->deleteLater();
+    });
+    job->start();
+}
+
 void PublicAuthClient::readApiKeyFromKeychain(const QString &label)
 {
+    const quint64 generation = ++m_apiKeyReadGeneration;
+    ++m_tokenRequestGeneration;
     const QString trimmedLabel = label.trimmed();
     if (trimmedLabel.isEmpty()) {
         m_secretKey.clear();
@@ -153,21 +302,24 @@ void PublicAuthClient::readApiKeyFromKeychain(const QString &label)
     setApiKeyReady(false);
     setApiKeyLoading(true);
 
-    auto *job = new QKeychain::ReadPasswordJob(m_keychainService);
+    auto *job = new QKeychain::ReadPasswordJob(m_keychainService, this);
     job->setAutoDelete(false);
     job->setInsecureFallback(false);
     job->setKey(keychainKeyForLabel(trimmedLabel));
 
-    connect(job, &QKeychain::ReadPasswordJob::finished, this, [this, job, trimmedLabel]() {
-        setApiKeyLoading(false);
-        if (job->error() == QKeychain::NoError) {
-            m_secretKey = job->textData();
-            setApiKeyReady(!m_secretKey.trimmed().isEmpty());
-            emit secretKeyChanged();
+    connect(job, &QKeychain::ReadPasswordJob::finished, this, [this, job, trimmedLabel, generation]() {
+        if (m_selectedApiKeyLabel != trimmedLabel || m_apiKeyReadGeneration != generation) {
             job->deleteLater();
             return;
         }
 
+        if (job->error() == QKeychain::NoError) {
+            applyLoadedApiKey(trimmedLabel, generation, job->textData());
+            job->deleteLater();
+            return;
+        }
+
+        setApiKeyLoading(false);
         qWarning() << "Failed to load API key" << trimmedLabel << ":" << job->errorString();
         if (m_selectedApiKeyLabel == trimmedLabel) {
             m_secretKey.clear();
@@ -180,6 +332,22 @@ void PublicAuthClient::readApiKeyFromKeychain(const QString &label)
     job->start();
 }
 
+bool PublicAuthClient::applyLoadedApiKey(
+    const QString &label,
+    quint64 generation,
+    const QString &apiKey)
+{
+    if (m_selectedApiKeyLabel != label || m_apiKeyReadGeneration != generation) {
+        return false;
+    }
+
+    setApiKeyLoading(false);
+    m_secretKey = apiKey;
+    setApiKeyReady(!m_secretKey.trimmed().isEmpty());
+    emit secretKeyChanged();
+    return true;
+}
+
 bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &apiKey)
 {
     Q_UNUSED(userName)
@@ -187,6 +355,10 @@ bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &a
     const QString trimmedApiKey = apiKey.trimmed();
     if (trimmedApiKey.isEmpty()) {
         qWarning() << "Refusing to store an empty API key.";
+        return false;
+    }
+    if (apiKeyIndexLoading()) {
+        setApiKeyError(QStringLiteral("Please wait for the saved API key list to finish loading."));
         return false;
     }
 
@@ -197,8 +369,9 @@ bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &a
     settings.endGroup();
     labels = normalizedStoredApiKeyLabels(labels);
     const QString label = nextApiKeyLabel(labels);
+    setApiKeyIndexLoading(true);
 
-    auto *job = new QKeychain::WritePasswordJob(m_keychainService);
+    auto *job = new QKeychain::WritePasswordJob(m_keychainService, this);
     job->setAutoDelete(false);
     job->setInsecureFallback(false);
     job->setKey(keychainKeyForLabel(label));
@@ -208,27 +381,39 @@ bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &a
         if (job->error() != QKeychain::NoError) {
             qWarning() << "Failed to store API key" << label << ":" << job->errorString();
             setApiKeyError(QStringLiteral("Could not store the API key in the system keychain."));
+            setApiKeyIndexLoading(false);
             job->deleteLater();
             return;
         }
 
-        QSettings settings;
-        settings.beginGroup(m_settingsGroup);
-        QStringList labels = normalizedStoredApiKeyLabels(settings.value("labels").toStringList());
-        if (!labels.contains(label)) {
-            labels.append(label);
-            labels = normalizedStoredApiKeyLabels(labels);
-            settings.setValue("labels", labels);
-        }
-        settings.endGroup();
+        QStringList labels = secretKeys();
+        labels.append(label);
+        labels = normalizedStoredApiKeyLabels(labels);
 
-        setSecretKeys(labels);
-        setSelectedApiKeyLabel(label);
-        m_secretKey = trimmedApiKey;
-        setApiKeyError(QString());
-        setApiKeyLoading(false);
-        setApiKeyReady(true);
-        emit secretKeyChanged();
+        writeApiKeyLabelIndex(labels, [this, label, trimmedApiKey, labels](bool succeeded) {
+            if (!succeeded) {
+                deleteApiKeyFromKeychain(label, [this]() {
+                    setApiKeyIndexLoading(false);
+                });
+                return;
+            }
+
+            setApiKeyIndexLoading(false);
+
+            QSettings settings;
+            settings.beginGroup(m_settingsGroup);
+            settings.setValue("labels", labels);
+            settings.endGroup();
+
+            setSecretKeys(labels);
+            setSelectedApiKeyLabel(label);
+            ++m_tokenRequestGeneration;
+            m_secretKey = trimmedApiKey;
+            setApiKeyError(QString());
+            setApiKeyLoading(false);
+            setApiKeyReady(true);
+            emit secretKeyChanged();
+        });
         job->deleteLater();
     });
     job->start();
@@ -238,6 +423,7 @@ bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &a
 
 void PublicAuthClient::clearUserSession()
 {
+    ++m_tokenRequestGeneration;
     setSessionActive(false);
     if (!m_manager) return;
 
@@ -260,8 +446,16 @@ void PublicAuthClient::clearUserSession()
     }
 }
 
-void PublicAuthClient::handleReply(QNetworkReply *reply)
+void PublicAuthClient::handleReply(QNetworkReply *reply,
+                                   const QString &apiKeyLabel,
+                                   quint64 generation)
 {
+    if (m_selectedApiKeyLabel != apiKeyLabel
+        || m_tokenRequestGeneration != generation) {
+        reply->deleteLater();
+        return;
+    }
+
     if (reply->error() == QNetworkReply::NoError)
     {
         QByteArray responseData = reply->readAll();
@@ -276,8 +470,7 @@ void PublicAuthClient::handleReply(QNetworkReply *reply)
             accessToken = jsonObj["token"].toString();
         }
 
-        setSessionActive(!accessToken.isEmpty());
-        emit tokenReceived(accessToken);
+        applyAccessToken(apiKeyLabel, generation, accessToken);
     }
     else
     {
@@ -286,6 +479,20 @@ void PublicAuthClient::handleReply(QNetworkReply *reply)
     }
 
     reply->deleteLater();
+}
+
+bool PublicAuthClient::applyAccessToken(const QString &apiKeyLabel,
+                                        quint64 generation,
+                                        const QString &accessToken)
+{
+    if (m_selectedApiKeyLabel != apiKeyLabel
+        || m_tokenRequestGeneration != generation) {
+        return false;
+    }
+
+    setSessionActive(!accessToken.isEmpty());
+    emit tokenReceived(accessToken);
+    return true;
 }
 
 QStringList PublicAuthClient::secretKeys() const
@@ -321,6 +528,7 @@ void PublicAuthClient::setSecretKey(const QString &newSecretKey)
     if (m_secretKey == trimmedKeyOrLabel)
         return;
 
+    ++m_tokenRequestGeneration;
     m_secretKey = trimmedKeyOrLabel;
     setSelectedApiKeyLabel(QString());
     setApiKeyLoading(false);
@@ -341,6 +549,11 @@ bool PublicAuthClient::apiKeyReady() const
 bool PublicAuthClient::apiKeyLoading() const
 {
     return m_apiKeyLoading;
+}
+
+bool PublicAuthClient::apiKeyIndexLoading() const
+{
+    return m_apiKeyIndexLoading;
 }
 
 QString PublicAuthClient::apiKeyError() const
@@ -370,6 +583,14 @@ void PublicAuthClient::setApiKeyLoading(bool loading)
         return;
     m_apiKeyLoading = loading;
     emit apiKeyLoadingChanged();
+}
+
+void PublicAuthClient::setApiKeyIndexLoading(bool loading)
+{
+    if (m_apiKeyIndexLoading == loading)
+        return;
+    m_apiKeyIndexLoading = loading;
+    emit apiKeyIndexLoadingChanged();
 }
 
 void PublicAuthClient::setApiKeyError(const QString &error)

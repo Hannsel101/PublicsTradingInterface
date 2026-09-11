@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(PublicsTradingInterface VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(PUBLICS_IOS_BUILD_NUMBER "2" CACHE STRING "iOS bundle build number")
 
 find_package(Qt6 REQUIRED COMPONENTS Quick Gui Network Concurrent Test)
 find_package(Qt6Keychain CONFIG QUIET)
@@ -58,6 +59,18 @@ qt_add_executable(appPublicsTradingInterface
     vcpkg.json
 )
 
+if(IOS)
+    set(PUBLICS_IOS_ASSET_CATALOG
+        "${CMAKE_CURRENT_SOURCE_DIR}/ios/Assets.xcassets"
+    )
+    target_sources(appPublicsTradingInterface PRIVATE
+        "${PUBLICS_IOS_ASSET_CATALOG}"
+    )
+    set_source_files_properties("${PUBLICS_IOS_ASSET_CATALOG}" PROPERTIES
+        MACOSX_PACKAGE_LOCATION Resources
+    )
+endif()
+
 qt_add_qml_module(appPublicsTradingInterface
     URI PublicsTradingInterface
     VERSION 1.0
@@ -82,10 +95,11 @@ qt_add_qml_module(appPublicsTradingInterface
 # explicit, fixed bundle identifier manually though.
 set_target_properties(appPublicsTradingInterface PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER trb.appPublicsTradingInterface
-    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PUBLICS_IOS_BUILD_NUMBER}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
     MACOSX_BUNDLE TRUE
     WIN32_EXECUTABLE TRUE
+    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME AppIcon
 )
 
 target_include_directories(appPublicsTradingInterface PRIVATE

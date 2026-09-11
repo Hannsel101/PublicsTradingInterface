@@ -7,7 +7,13 @@ constexpr int tradeRequestTimeoutMs = 30000;
 
 void PublicApiWorker::processToken(QString newToken)
 {
+    ++m_accountLoadGeneration;
+    m_accountList.clear();
     m_token = newToken;
+    dismissTradeResults();
+    if (m_token.isEmpty()) {
+        return;
+    }
     fetchAllSubaccountsConcurrently();
 }
 
@@ -206,6 +212,7 @@ void PublicApiWorker::addAccountToList(QString id, QString accountType)
 void PublicApiWorker::fetchAllSubaccountsConcurrently() {
     QString baseUrl = "https://public.com";
     QString token = m_token;
+    const quint64 accountLoadGeneration = m_accountLoadGeneration;
     qDebug() << "baseURL: " << baseUrl;
 
     // 1. Prepare initial request for all accounts
@@ -213,8 +220,11 @@ void PublicApiWorker::fetchAllSubaccountsConcurrently() {
     QNetworkReply *reply = manager->get(request);
 
     // Connect to handling the initial account list
-    connect(reply, &QNetworkReply::finished, this, [this, reply, baseUrl, token]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, baseUrl, token, accountLoadGeneration]() {
         reply->deleteLater();
+        if (accountLoadGeneration != m_accountLoadGeneration || token != m_token) {
+            return;
+        }
         if (reply->error() != QNetworkReply::NoError) {
             qDebug() << "Failed to fetch accounts:" << reply->errorString();
             return;
@@ -248,7 +258,7 @@ void PublicApiWorker::fetchAllSubaccountsConcurrently() {
 
         QString baseUrl2 = "https://api.public.com";
         // 2. Dispatch concurrent queries
-        executeConcurrentQueries(accountsToQuery, baseUrl2, token);
+        executeConcurrentQueries(accountsToQuery, baseUrl2, token, accountLoadGeneration);
     });
 }
 
@@ -292,6 +302,7 @@ void PublicApiWorker::executeTrade(const QString &symbol, const QString &side)
 
 void PublicApiWorker::clearSubAccountsList()
 {
+    ++m_accountLoadGeneration;
     m_accountList.clear();
     m_token = "";
     dismissTradeResults();
@@ -389,7 +400,10 @@ void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QS
     });
 }
 
-void PublicApiWorker::executeConcurrentQueries(const QList<AccountData> &accounts, const QString &baseUrl, const QString &token) {
+void PublicApiWorker::executeConcurrentQueries(const QList<AccountData> &accounts,
+                                               const QString &baseUrl,
+                                               const QString &token,
+                                               quint64 accountLoadGeneration) {
     // Create an array of futures—one for each account network request
     QList<QFuture<AccountData>> futures;
 
@@ -422,12 +436,15 @@ void PublicApiWorker::executeConcurrentQueries(const QList<AccountData> &account
     // 3. Monitor all concurrent tasks and wait for them to finish
     // QtFuture::whenAll maps nicely to JavaScript's Promise.all()
     QtFuture::whenAll(futures.begin(), futures.end())
-        .then(this, [this](QList<QFuture<AccountData>> completedFutures) {
+        .then(this, [this, accountLoadGeneration, token](QList<QFuture<AccountData>> completedFutures) {
             qDebug() << "--- All concurrent subaccount queries finished! ---";
+            QList<AccountData> discoveredAccounts;
+            discoveredAccounts.reserve(completedFutures.size());
             for (auto &future : completedFutures) {
-                const AccountData result = future.result();
-                addAccountToList(result.accountId, result.accountType);
+                discoveredAccounts.append(future.result());
             }
+
+            applyDiscoveredAccounts(discoveredAccounts, accountLoadGeneration, token);
 
             for(auto &accountData: m_accountList)
             {
@@ -440,6 +457,19 @@ void PublicApiWorker::executeConcurrentQueries(const QList<AccountData> &account
 
             }
         });
+}
+
+void PublicApiWorker::applyDiscoveredAccounts(const QList<AccountData> &accounts,
+                                              quint64 accountLoadGeneration,
+                                              const QString &token)
+{
+    if (accountLoadGeneration != m_accountLoadGeneration || token.isEmpty() || token != m_token) {
+        return;
+    }
+
+    for (const AccountData &account : accounts) {
+        addAccountToList(account.accountId, account.accountType);
+    }
 }
 
 QNetworkRequest PublicApiWorker::setPublicBrokerageHeaders(QString requestType)

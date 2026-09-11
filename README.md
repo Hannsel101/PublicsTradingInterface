@@ -90,7 +90,8 @@ A preflight asks Public.com whether an order would be accepted and can return an
 ## Security and privacy
 
 - API secrets are stored in the operating system's protected keychain.
-- The app shows key labels after saving, not the secret values.
+- The app shows key labels after saving, not the secret values. The label list is also kept in the protected keychain so an update or reinstall can find the saved credentials again.
+- Existing labels from older versions are migrated automatically the first time the updated app is opened. Persistence requires the same signing team and bundle identifier.
 - Insecure keychain fallback is disabled.
 - Switching keys clears the previous account list and authorization state before the new session begins.
 - The app talks directly to Public.com's API over HTTPS.

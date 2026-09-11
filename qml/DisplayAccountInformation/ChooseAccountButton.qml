@@ -29,5 +29,6 @@ Button {
     onClicked: {
         AuthClient.sessionActive = false
         StockSearchController.tokenActive = false
+        ApiWorker.clearSubAccountsList()
     }
 }
