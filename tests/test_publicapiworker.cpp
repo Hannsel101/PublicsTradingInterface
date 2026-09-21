@@ -54,6 +54,83 @@ private slots:
         QVERIFY(!worker.tradeResultsVisible());
     }
 
+    void portfolioResponseStoresStockShareBalances()
+    {
+        const QByteArray response = R"json(
+            {
+                "positions": [
+                    {"instrument": {"symbol": "AAPL", "type": "EQUITY"}, "quantity": "12.5"},
+                    {"instrument": {"symbol": "msft", "type": "EQUITY"}, "quantity": "3"},
+                    {"instrument": {"symbol": "AAPL260116C00150000", "type": "OPTION"}, "quantity": "1"},
+                    {"instrument": {"symbol": "INVALID", "type": "EQUITY"}, "quantity": "not-a-number"}
+                ]
+            }
+        )json";
+
+        const QHash<QString, float> balances = PublicApiWorker::stockShareBalancesFromPortfolio(response);
+
+        QCOMPARE(balances.size(), 2);
+        QCOMPARE(balances.value(QStringLiteral("AAPL")), 12.5F);
+        QCOMPARE(balances.value(QStringLiteral("MSFT")), 3.0F);
+        QVERIFY(!balances.contains(QStringLiteral("AAPL260116C00150000")));
+        QVERIFY(!balances.contains(QStringLiteral("INVALID")));
+    }
+
+    void discoveredAccountsKeepStockShareBalances()
+    {
+        PublicApiWorker worker;
+        worker.m_token = QStringLiteral("current-session-token");
+        worker.m_accountLoadGeneration = 4;
+
+        AccountData account{QStringLiteral("ACCOUNT-1"), QStringLiteral("BROKERAGE")};
+        account.stockShareBalances.insert(QStringLiteral("AAPL"), 7.25F);
+
+        worker.applyDiscoveredAccounts({account},
+                                       worker.m_accountLoadGeneration,
+                                       worker.m_token);
+
+        QCOMPARE(worker.m_accountList.size(), 1);
+        QCOMPARE(worker.m_accountList.first().stockShareBalances.value(QStringLiteral("AAPL")), 7.25F);
+    }
+
+    void sellAllSelectsRequestedTickerBalancePerAccount()
+    {
+        AccountData firstAccount{QStringLiteral("ACCOUNT-1"), QStringLiteral("BROKERAGE")};
+        firstAccount.stockShareBalances.insert(QStringLiteral("AAPL"), 2.75F);
+        firstAccount.stockShareBalances.insert(QStringLiteral("MSFT"), 9.0F);
+
+        AccountData secondAccount{QStringLiteral("ACCOUNT-2"), QStringLiteral("ROTH_IRA")};
+        secondAccount.stockShareBalances.insert(QStringLiteral("AAPL"), 1.25F);
+
+        AccountData accountWithoutAapl{QStringLiteral("ACCOUNT-3"), QStringLiteral("TRADITIONAL_IRA")};
+        accountWithoutAapl.stockShareBalances.insert(QStringLiteral("MSFT"), 4.0F);
+
+        const QHash<QString, float> quantities = PublicApiWorker::sellQuantitiesForAccounts(
+            {firstAccount, secondAccount, accountWithoutAapl},
+            QStringLiteral(" aapl "));
+
+        QCOMPARE(quantities.size(), 2);
+        QCOMPARE(quantities.value(QStringLiteral("ACCOUNT-1")), 2.75F);
+        QCOMPARE(quantities.value(QStringLiteral("ACCOUNT-2")), 1.25F);
+        QVERIFY(!quantities.contains(QStringLiteral("ACCOUNT-3")));
+    }
+
+    void sellAllPayloadUsesHeldShareQuantity()
+    {
+        const QJsonObject payload = PublicApiWorker::orderPayload(
+            QStringLiteral("AAPL"), QStringLiteral("SELL"), 2.75F);
+
+        QCOMPARE(payload.value(QStringLiteral("quantity")).toString(), QStringLiteral("2.75"));
+    }
+
+    void sellAllPayloadAvoidsBinaryFloatArtifacts()
+    {
+        const QJsonObject payload = PublicApiWorker::orderPayload(
+            QStringLiteral("AAPL"), QStringLiteral("SELL"), 0.1F);
+
+        QCOMPARE(payload.value(QStringLiteral("quantity")).toString(), QStringLiteral("0.1"));
+    }
+
     void staleAccountDiscoveryCannotRepopulateAReplacedSession()
     {
         PublicApiWorker worker;

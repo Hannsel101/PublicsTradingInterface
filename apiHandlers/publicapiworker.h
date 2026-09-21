@@ -1,6 +1,7 @@
 #ifndef PUBLICAPIWORKER_H
 #define PUBLICAPIWORKER_H
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
@@ -13,6 +14,7 @@
 #include <QUrl>
 #include <QPromise>
 #include <QFuture>
+#include <QHash>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtConcurrent>
@@ -28,7 +30,7 @@
 struct AccountData {
     QString accountId;
     QString accountType;
-    //QJsonObject data;
+    QHash<QString, float> stockShareBalances;
 };
 
 class PublicApiWorkerTest;
@@ -110,11 +112,8 @@ private:
     /*
      * List of accounts that can perform a trade
      *
-     * Uses a custom AccountData struct which in its current form
-     * has a single QString parameter for the account ID but
-     * more data such as buying power stocks available to sell
-     * can be added for a more complete set of options that
-     * the end user can perform
+     * Each AccountData entry stores its ID, type, and a ticker-to-share-balance
+     * map populated from the account portfolio response.
      * */
     QList<AccountData> m_accountList;
 
@@ -124,7 +123,16 @@ private:
      * if a new id is passed in then it will be appended
      * otherwise, it will be skipped
      * */
-    void addAccountToList(QString id, QString accountType = QString());
+    void addAccountToList(QString id,
+                          QString accountType = QString(),
+                          const QHash<QString, float> &stockShareBalances = {});
+
+    static QHash<QString, float> stockShareBalancesFromPortfolio(const QByteArray &responseData);
+    static QHash<QString, float> sellQuantitiesForAccounts(const QList<AccountData> &accounts,
+                                                           const QString &symbol);
+    static QJsonObject orderPayload(const QString &symbol,
+                                    const QString &side,
+                                    float quantity);
 
 
     /*
@@ -163,6 +171,7 @@ private:
     void executeTradeOrPreflight(const QString &accountId,     // Account to perform trade
                                  const QString &symbol,        // Ticker Symbol
                                  const QString &side,          // "BUY" or "SELL"
+                                 float quantity,                // Number of shares to trade
                                  bool isPreflight);            // isPreflight = true means this will be a preflight
 
     void beginTradeResults(const QString &symbol, const QString &side, bool isPreflight);

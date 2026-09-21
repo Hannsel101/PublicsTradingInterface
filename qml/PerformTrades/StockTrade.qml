@@ -58,7 +58,7 @@ Item {
 
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("Buy runs live only in release builds; sell currently preflights. All actions target every eligible account for the selected API key.")
+                        text: qsTr("Buy trades one share per account. Sell All uses each account's complete held balance for the entered ticker. Live orders run only in release builds.")
                         color: secondaryText
                         font.pixelSize: 14
                         wrapMode: Text.WordWrap
@@ -134,7 +134,7 @@ Item {
                     Layout.fillWidth: true
                     Layout.minimumHeight: 52
                     enabled: inputField.text.trim() !== ""
-                    text: qsTr("Sell")
+                    text: qsTr("Sell All")
 
                     contentItem: Text {
                         text: sellButton.text

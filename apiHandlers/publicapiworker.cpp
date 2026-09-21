@@ -1,8 +1,20 @@
 #include "publicapiworker.h"
 #include <QUuid>
+#include <array>
+#include <charconv>
 
 namespace {
 constexpr int tradeRequestTimeoutMs = 30000;
+
+QString quantityString(float quantity)
+{
+    std::array<char, 32> buffer{};
+    const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), quantity);
+    if (result.ec != std::errc()) {
+        return QString();
+    }
+    return QString::fromLatin1(buffer.data(), static_cast<qsizetype>(result.ptr - buffer.data()));
+}
 }
 
 void PublicApiWorker::processToken(QString newToken)
@@ -191,7 +203,9 @@ void PublicApiWorker::updateTradeResult(const QString &accountId, bool success, 
     }
 }
 
-void PublicApiWorker::addAccountToList(QString id, QString accountType)
+void PublicApiWorker::addAccountToList(QString id,
+                                       QString accountType,
+                                       const QHash<QString, float> &stockShareBalances)
 {
     if(id == "")
         return;
@@ -206,7 +220,71 @@ void PublicApiWorker::addAccountToList(QString id, QString accountType)
     }
 
     // store new account
-    m_accountList.append(AccountData{id, accountType});
+    m_accountList.append(AccountData{id, accountType, stockShareBalances});
+}
+
+QHash<QString, float> PublicApiWorker::stockShareBalancesFromPortfolio(const QByteArray &responseData)
+{
+    QHash<QString, float> stockShareBalances;
+    const QJsonDocument portfolioDocument = QJsonDocument::fromJson(responseData);
+    if (!portfolioDocument.isObject()) {
+        return stockShareBalances;
+    }
+
+    const QJsonArray positions = portfolioDocument.object().value(QStringLiteral("positions")).toArray();
+    for (const QJsonValue &positionValue : positions) {
+        const QJsonObject position = positionValue.toObject();
+        const QJsonObject instrument = position.value(QStringLiteral("instrument")).toObject();
+        if (instrument.value(QStringLiteral("type")).toString().compare(
+                QStringLiteral("EQUITY"), Qt::CaseInsensitive) != 0) {
+            continue;
+        }
+
+        const QString symbol = instrument.value(QStringLiteral("symbol")).toString().trimmed().toUpper();
+        bool quantityIsValid = false;
+        const float quantity = position.value(QStringLiteral("quantity")).toVariant().toFloat(&quantityIsValid);
+        if (!symbol.isEmpty() && quantityIsValid) {
+            stockShareBalances.insert(symbol, quantity);
+        }
+    }
+
+    return stockShareBalances;
+}
+
+QHash<QString, float> PublicApiWorker::sellQuantitiesForAccounts(const QList<AccountData> &accounts,
+                                                                 const QString &symbol)
+{
+    QHash<QString, float> quantities;
+    const QString normalizedSymbol = symbol.trimmed().toUpper();
+    for (const AccountData &account : accounts) {
+        const float quantity = account.stockShareBalances.value(normalizedSymbol, 0.0F);
+        if (quantity > 0.0F) {
+            quantities.insert(account.accountId, quantity);
+        }
+    }
+    return quantities;
+}
+
+QJsonObject PublicApiWorker::orderPayload(const QString &symbol,
+                                          const QString &side,
+                                          float quantity)
+{
+    QJsonObject orderObject;
+    orderObject[QStringLiteral("orderId")] = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    orderObject[QStringLiteral("orderSide")] = side.trimmed().toUpper();
+    orderObject[QStringLiteral("orderType")] = QStringLiteral("MARKET");
+    orderObject[QStringLiteral("quantity")] = quantityString(quantity);
+    orderObject[QStringLiteral("validateOrder")] = QStringLiteral("true");
+
+    QJsonObject instrumentObject;
+    instrumentObject[QStringLiteral("symbol")] = symbol.trimmed().toUpper();
+    instrumentObject[QStringLiteral("type")] = QStringLiteral("EQUITY");
+    orderObject[QStringLiteral("instrument")] = instrumentObject;
+
+    QJsonObject expirationObject;
+    expirationObject[QStringLiteral("timeInForce")] = QStringLiteral("DAY");
+    orderObject[QStringLiteral("expiration")] = expirationObject;
+    return orderObject;
 }
 
 void PublicApiWorker::fetchAllSubaccountsConcurrently() {
@@ -265,14 +343,28 @@ void PublicApiWorker::fetchAllSubaccountsConcurrently() {
 void PublicApiWorker::executePreflight(const QString &symbol, const QString &side)
 {
     const QString normalizedSymbol = symbol.trimmed().toUpper();
+    const bool isSellAll = side.compare(QStringLiteral("SELL"), Qt::CaseInsensitive) == 0;
+    const QHash<QString, float> sellQuantities = isSellAll
+                                                     ? sellQuantitiesForAccounts(m_accountList, normalizedSymbol)
+                                                     : QHash<QString, float>();
     beginTradeResults(normalizedSymbol, side, true);
 
     for(auto &accountData: m_accountList)
     {
+        if (isSellAll && !sellQuantities.contains(accountData.accountId)) {
+            updateTradeResult(accountData.accountId,
+                              false,
+                              QStringLiteral("No %1 shares are held in this account; no sell order was submitted.")
+                                  .arg(normalizedSymbol));
+            continue;
+        }
+
+        const float quantity = isSellAll ? sellQuantities.value(accountData.accountId) : 1.0F;
         qDebug() << "Executing Preflight for" << accountData.accountId << ":" << normalizedSymbol << side;
         executeTradeOrPreflight(accountData.accountId,
                                 normalizedSymbol,
                                 side,
+                                quantity,
                                 true);
 
         QEventLoop loop;
@@ -284,14 +376,28 @@ void PublicApiWorker::executePreflight(const QString &symbol, const QString &sid
 void PublicApiWorker::executeTrade(const QString &symbol, const QString &side)
 {
     const QString normalizedSymbol = symbol.trimmed().toUpper();
+    const bool isSellAll = side.compare(QStringLiteral("SELL"), Qt::CaseInsensitive) == 0;
+    const QHash<QString, float> sellQuantities = isSellAll
+                                                     ? sellQuantitiesForAccounts(m_accountList, normalizedSymbol)
+                                                     : QHash<QString, float>();
     beginTradeResults(normalizedSymbol, side, false);
 
     for(auto &accountData: m_accountList)
     {
+        if (isSellAll && !sellQuantities.contains(accountData.accountId)) {
+            updateTradeResult(accountData.accountId,
+                              false,
+                              QStringLiteral("No %1 shares are held in this account; no sell order was submitted.")
+                                  .arg(normalizedSymbol));
+            continue;
+        }
+
+        const float quantity = isSellAll ? sellQuantities.value(accountData.accountId) : 1.0F;
         qDebug() << "Executing Trade for" << accountData.accountId << ":" << normalizedSymbol << side;
         executeTradeOrPreflight(accountData.accountId,
                                 normalizedSymbol,
                                 side,
+                                quantity,
                                 false);
 
         QEventLoop loop;
@@ -308,7 +414,11 @@ void PublicApiWorker::clearSubAccountsList()
     dismissTradeResults();
 }
 
-void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QString &symbol, const QString &side, bool isPreflight)
+void PublicApiWorker::executeTradeOrPreflight(const QString &accountId,
+                                              const QString &symbol,
+                                              const QString &side,
+                                              float quantity,
+                                              bool isPreflight)
 {
     QNetworkAccessManager *manager = new QNetworkAccessManager(this);
 
@@ -319,24 +429,8 @@ void PublicApiWorker::executeTradeOrPreflight(const QString &accountId, const QS
                                                         "/" +
                                                         endpoint);
 
-    // Construct Order Payload
-    QJsonObject orderObj;
-    orderObj["orderId"] = QUuid::createUuid().toString(QUuid::WithoutBraces); // Generate dynamic UUIDv4
-    orderObj["orderSide"] = side.toUpper(); // "BUY" or "SELL"
-    orderObj["orderType"] = "MARKET";
-    orderObj["quantity"] = "1"; // Always trade in single stock amounts
-    orderObj["validateOrder"] = "true"; // Validate the order against current account state
-
-    QJsonObject instrumentObj;
-    instrumentObj["symbol"] = symbol.toUpper().trimmed();
-    instrumentObj["type"] = "EQUITY";
-    orderObj["instrument"] = instrumentObj;
-
-    QJsonObject expirationObj;
-    expirationObj["timeInForce"] = "DAY";
-    orderObj["expiration"] = expirationObj;
-
-    QJsonDocument doc(orderObj);
+    const QJsonObject orderObject = orderPayload(symbol, side, quantity);
+    QJsonDocument doc(orderObject);
     QByteArray payload = doc.toJson();
 
     QNetworkReply *reply = manager->post(request, payload);
@@ -409,7 +503,7 @@ void PublicApiWorker::executeConcurrentQueries(const QList<AccountData> &account
 
     for (const AccountData &account : accounts) {
         // QtConcurrent::run handles the parallel wrapper safely
-        QFuture<AccountData> future = QtConcurrent::run([this, account, baseUrl, token]() {
+        QFuture<AccountData> future = QtConcurrent::run([account, baseUrl, token]() {
             // Set up a local event loop for this specific background thread query
             QEventLoop loop;
             QString requestString = baseUrl + "/userapigateway/trading/" + account.accountId + "/portfolio/v2";
@@ -417,17 +511,17 @@ void PublicApiWorker::executeConcurrentQueries(const QList<AccountData> &account
             req.setRawHeader("Authorization", "Bearer " + token.toUtf8());
             req.setRawHeader(QByteArray("User-Agent"), QByteArray("public-dev-docs"));
 
-            QNetworkReply *subReply = manager->get(req);
+            QNetworkAccessManager requestManager;
+            QNetworkReply *subReply = requestManager.get(req);
             connect(subReply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
             loop.exec(); // Blocks only this background worker thread, not the GUI/Main thread
             AccountData result = account;
-            //AccountData result{id};//, QJsonObject()};
-            // if (subReply->error() == QNetworkReply::NoError) {
-            //     result.data = QJsonDocument::fromJson(subReply->readAll()).object();
-            // } else {
-            //     qDebug() << "Error fetching subaccount" << id << ":" << subReply->errorString();
-            // }
-            subReply->deleteLater();
+            if (subReply->error() == QNetworkReply::NoError) {
+                result.stockShareBalances = stockShareBalancesFromPortfolio(subReply->readAll());
+            } else {
+                qDebug() << "Error fetching portfolio for account" << account.accountId
+                         << ":" << subReply->errorString();
+            }
             return result;
         });
         futures.append(future);
@@ -468,7 +562,7 @@ void PublicApiWorker::applyDiscoveredAccounts(const QList<AccountData> &accounts
     }
 
     for (const AccountData &account : accounts) {
-        addAccountToList(account.accountId, account.accountType);
+        addAccountToList(account.accountId, account.accountType, account.stockShareBalances);
     }
 }
 
