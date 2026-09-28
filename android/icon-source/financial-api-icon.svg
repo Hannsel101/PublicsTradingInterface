@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+  <linearGradient id="pipe" x1="260" y1="280" x2="676" y2="750" gradientUnits="userSpaceOnUse"><stop stop-color="#BBFFF2"/><stop offset=".42" stop-color="#57DBD0"/><stop offset="1" stop-color="#199CAC"/></linearGradient>
+  <linearGradient id="rim" x1="515" y1="375" x2="775" y2="649" gradientUnits="userSpaceOnUse"><stop stop-color="#D7FFF8"/><stop offset=".48" stop-color="#79EBDB"/><stop offset="1" stop-color="#26A9B8"/></linearGradient>
+  <linearGradient id="core" x1="580" y1="441" x2="714" y2="590" gradientUnits="userSpaceOnUse"><stop stop-color="#25435A"/><stop offset="1" stop-color="#11253D"/></linearGradient>
+  <linearGradient id="gem" x1="621" y1="472" x2="666" y2="552" gradientUnits="userSpaceOnUse"><stop stop-color="#F0FFF9"/><stop offset="1" stop-color="#8DEDD7"/></linearGradient>
+</defs>
+<path fill="#091629" d="M0 0h1024v1024H0z"/>
+<!-- Recessed, softly bevelled three-channel junction -->
+<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M286 300h68c48 0 70 25 70 70v43c0 62 39 99 105 99h50M250 512h329M286 724h68c48 0 70-25 70-70v-43c0-62 39-99 105-99" stroke="#040D1B" stroke-width="78" transform="translate(0 13)"/>
+  <path d="M286 300h68c48 0 70 25 70 70v43c0 62 39 99 105 99h50M250 512h329M286 724h68c48 0 70-25 70-70v-43c0-62 39-99 105-99" stroke="#187B90" stroke-width="68" transform="translate(0 5)"/>
+  <path d="M286 300h68c48 0 70 25 70 70v43c0 62 39 99 105 99h50M250 512h329M286 724h68c48 0 70-25 70-70v-43c0-62 39-99 105-99" stroke="url(#pipe)" stroke-width="64"/>
+</g>
+<!-- A closed hexagonal vault and coin-like central value node -->
+<path d="M670 351l108 63q18 10 18 32v133q0 22-18 32l-108 63q-18 11-37 0l-108-63q-18-10-18-32V446q0-22 18-32l108-63q19-11 37 0z" fill="#040D1B" transform="translate(0 14)"/>
+<path d="M670 351l108 63q18 10 18 32v133q0 22-18 32l-108 63q-18 11-37 0l-108-63q-18-10-18-32V446q0-22 18-32l108-63q19-11 37 0z" fill="url(#rim)"/>
+<path d="M651 402l91 53v115l-91 53-91-53V455z" fill="url(#core)"/>
+<path d="M651 403l91 53v5l-91-52-91 52v-5z" fill="#061326" opacity=".65"/>
+<path d="M651 464l43 48-43 49-43-49z" fill="url(#gem)"/>
+<path d="M651 464v97l-43-49z" fill="#C6FFF0" opacity=".42"/>
+</svg>

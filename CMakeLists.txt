@@ -118,6 +118,15 @@ target_link_libraries(appPublicsTradingInterface
 )
 
 if(ANDROID)
+    set_target_properties(appPublicsTradingInterface PROPERTIES
+        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
+        QT_ANDROID_PACKAGE_NAME "org.qtproject.example.appPublicsTradingInterface"
+        QT_ANDROID_APP_NAME "Publics Trading Interface"
+        QT_ANDROID_VERSION_NAME "${PROJECT_VERSION}"
+        QT_ANDROID_VERSION_CODE 1
+        QT_ANDROID_MIN_SDK_VERSION 28
+        QT_ANDROID_TARGET_SDK_VERSION 36
+    )
     add_android_openssl_libraries(appPublicsTradingInterface)
 endif()
 
