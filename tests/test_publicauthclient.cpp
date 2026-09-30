@@ -10,6 +10,20 @@ class PublicAuthClientTest : public QObject
     Q_OBJECT
 
 private slots:
+    void clearingSelectionInvalidatesPendingKeyRead()
+    {
+        PublicAuthClient client;
+        client.setSelectedApiKeyLabel(QStringLiteral("PublicsApiKey0"));
+        client.m_apiKeyReadGeneration = 3;
+
+        client.setSecretKey(QString());
+
+        QVERIFY(client.selectedApiKeyLabel().isEmpty());
+        QVERIFY(!client.applyLoadedApiKey(QStringLiteral("PublicsApiKey0"), 3,
+                                         QStringLiteral("stale-test-secret")));
+        QVERIFY(client.secretKey().isEmpty());
+    }
+
     void normalizesOnlyPublicsApiKeyLabelsNumerically()
     {
         const QStringList labels = {

@@ -17,6 +17,7 @@ ApplicationWindow {
     color: window.backgroundColor
 
     readonly property bool tokenActive: StockSearchController.tokenActive
+    property bool autoMode: false
     readonly property bool compactLayout: width < 720
     readonly property bool keySelected: AuthClient.selectedApiKeyLabel !== ""
     readonly property bool canStartSession: window.keySelected && AuthClient.apiKeyReady && !AuthClient.apiKeyLoading && !AuthClient.sessionActive
@@ -88,7 +89,7 @@ ApplicationWindow {
                     }
 
                     Label {
-                        text: qsTr("Multi-Account Brokerage Console")
+                        text: window.autoMode ? qsTr("All-Key Brokerage Console") : qsTr("Multi-Account Brokerage Console")
                         color: window.primaryText
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
@@ -97,7 +98,7 @@ ApplicationWindow {
                     }
 
                     Label {
-                        visible: !ApiWorker.tradeResultsVisible
+                        visible: !window.autoMode && !ApiWorker.tradeResultsVisible
                         text: qsTr("Store Public.com API keys once, choose a saved key, then start a short-lived session that loads every eligible brokerage account for that key")
                         color: window.mutedText
                         wrapMode: Text.WordWrap
@@ -111,7 +112,7 @@ ApplicationWindow {
             TradeResultScreen {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.max(500, page.height - contentColumn.y - 140)
-                visible: ApiWorker.tradeResultsVisible
+                visible: !window.autoMode && ApiWorker.tradeResultsVisible
             }
 
             Rectangle {
@@ -121,7 +122,7 @@ ApplicationWindow {
                 color: window.panelColor
                 border.color: window.borderColor
                 border.width: 1
-                visible: AuthClient.sessionActive && !ApiWorker.tradeResultsVisible
+                visible: !window.autoMode && AuthClient.sessionActive && !ApiWorker.tradeResultsVisible
                 Layout.minimumHeight: visible ? implicitHeight : 0
 
                 ValidityTimer {
@@ -138,7 +139,7 @@ ApplicationWindow {
                 color: window.surfaceColor
                 border.color: window.borderColor
                 border.width: 1
-                visible: !ApiWorker.tradeResultsVisible
+                visible: !window.autoMode && !ApiWorker.tradeResultsVisible
 
                 ColumnLayout {
                     id: keyColumn
@@ -389,6 +390,44 @@ ApplicationWindow {
                             }
                         }
                     }
+                }
+            }
+
+            Button {
+                id: autoModeButton
+                Layout.fillWidth: true
+                Layout.minimumHeight: 56
+                visible: !window.autoMode && !window.tokenActive && !ApiWorker.tradeResultsVisible
+                text: qsTr("Auto Mode")
+                contentItem: Text {
+                    text: autoModeButton.text
+                    color: "white"
+                    font.pixelSize: 17
+                    font.weight: Font.DemiBold
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    radius: 16
+                    color: autoModeButton.down ? window.accentPressed : window.accentColor
+                }
+                onClicked: {
+                    AuthClient.clearUserSession()
+                    AuthClient.secretKey = ""
+                    ApiWorker.clearSubAccountsList()
+                    StockSearchController.tokenActive = false
+                    window.autoMode = true
+                    page.contentY = 0
+                }
+            }
+
+            AutoTradeScreen {
+                Layout.fillWidth: true
+                Layout.preferredHeight: implicitHeight
+                visible: window.autoMode
+                onLeaveMode: {
+                    window.autoMode = false
+                    page.contentY = 0
                 }
             }
         }

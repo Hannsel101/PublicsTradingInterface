@@ -288,23 +288,23 @@ QJsonObject PublicApiWorker::orderPayload(const QString &symbol,
 }
 
 void PublicApiWorker::fetchAllSubaccountsConcurrently() {
-    QString baseUrl = "https://public.com";
     QString token = m_token;
     const quint64 accountLoadGeneration = m_accountLoadGeneration;
-    qDebug() << "baseURL: " << baseUrl;
 
     // 1. Prepare initial request for all accounts
     QNetworkRequest request = setPublicBrokerageHeaders("userapigateway/trading/account");
+    request.setTransferTimeout(30000);
     QNetworkReply *reply = manager->get(request);
 
     // Connect to handling the initial account list
-    connect(reply, &QNetworkReply::finished, this, [this, reply, baseUrl, token, accountLoadGeneration]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, token, accountLoadGeneration]() {
         reply->deleteLater();
         if (accountLoadGeneration != m_accountLoadGeneration || token != m_token) {
             return;
         }
         if (reply->error() != QNetworkReply::NoError) {
             qDebug() << "Failed to fetch accounts:" << reply->errorString();
+            emit accountLoadFinished(false, QStringLiteral("Could not load accounts: %1").arg(reply->errorString()));
             return;
         }
 
@@ -332,11 +332,13 @@ void PublicApiWorker::fetchAllSubaccountsConcurrently() {
             }
         }
 
-        if (accountsToQuery.isEmpty()) return;
+        if (accountsToQuery.isEmpty()) {
+            emit accountLoadFinished(false, QStringLiteral("No eligible brokerage accounts were found for this key."));
+            return;
+        }
 
-        QString baseUrl2 = "https://api.public.com";
         // 2. Dispatch concurrent queries
-        executeConcurrentQueries(accountsToQuery, baseUrl2, token, accountLoadGeneration);
+        executeConcurrentQueries(accountsToQuery, m_apiBaseUrl.toString(), token, accountLoadGeneration);
     });
 }
 
@@ -349,7 +351,8 @@ void PublicApiWorker::executePreflight(const QString &symbol, const QString &sid
                                                      : QHash<QString, float>();
     beginTradeResults(normalizedSymbol, side, true);
 
-    for(auto &accountData: m_accountList)
+    const QList<AccountData> accounts = m_accountList;
+    for(const auto &accountData: accounts)
     {
         if (isSellAll && !sellQuantities.contains(accountData.accountId)) {
             updateTradeResult(accountData.accountId,
@@ -382,7 +385,8 @@ void PublicApiWorker::executeTrade(const QString &symbol, const QString &side)
                                                      : QHash<QString, float>();
     beginTradeResults(normalizedSymbol, side, false);
 
-    for(auto &accountData: m_accountList)
+    const QList<AccountData> accounts = m_accountList;
+    for(const auto &accountData: accounts)
     {
         if (isSellAll && !sellQuantities.contains(accountData.accountId)) {
             updateTradeResult(accountData.accountId,
@@ -506,8 +510,9 @@ void PublicApiWorker::executeConcurrentQueries(const QList<AccountData> &account
         QFuture<AccountData> future = QtConcurrent::run([account, baseUrl, token]() {
             // Set up a local event loop for this specific background thread query
             QEventLoop loop;
-            QString requestString = baseUrl + "/userapigateway/trading/" + account.accountId + "/portfolio/v2";
+            QString requestString = baseUrl + "userapigateway/trading/" + account.accountId + "/portfolio/v2";
             QNetworkRequest req(requestString);
+            req.setTransferTimeout(30000);
             req.setRawHeader("Authorization", "Bearer " + token.toUtf8());
             req.setRawHeader(QByteArray("User-Agent"), QByteArray("public-dev-docs"));
 
@@ -538,7 +543,9 @@ void PublicApiWorker::executeConcurrentQueries(const QList<AccountData> &account
                 discoveredAccounts.append(future.result());
             }
 
+            if (accountLoadGeneration != m_accountLoadGeneration || token != m_token) return;
             applyDiscoveredAccounts(discoveredAccounts, accountLoadGeneration, token);
+            emit accountLoadFinished(true, {});
 
             for(auto &accountData: m_accountList)
             {
@@ -568,7 +575,7 @@ void PublicApiWorker::applyDiscoveredAccounts(const QList<AccountData> &accounts
 
 QNetworkRequest PublicApiWorker::setPublicBrokerageHeaders(QString requestType)
 {
-    QNetworkRequest request(QUrl("https://api.public.com/" + requestType));
+    QNetworkRequest request(m_apiBaseUrl.resolved(QUrl(requestType)));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QByteArray("application/json"));
     request.setRawHeader(QByteArray("Authorization"), QString("Bearer %1").arg(m_token).toUtf8());
     request.setRawHeader(QByteArray("User-Agent"), QByteArray("public-dev-docs"));

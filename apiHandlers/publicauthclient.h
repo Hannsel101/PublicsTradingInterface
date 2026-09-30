@@ -14,6 +14,7 @@
 #include <QDebug>
 #include <QSettings>
 #include <QStringList>
+#include <QUrl>
 #include <functional>
 
 #if __has_include(<qt6keychain/keychain.h>)
@@ -29,6 +30,8 @@ class PublicAuthClientTest;
 class PublicAuthClient : public QObject {
     Q_OBJECT
 public:
+    using CredentialCallback = std::function<void(const QString &secret, const QString &error)>;
+    using CredentialLoader = std::function<void(const QString &label, const CredentialCallback &done)>;
 
     // session active is set to true when tokens are returned by the authorization request
     Q_PROPERTY(bool sessionActive READ sessionActive WRITE setSessionActive NOTIFY sessionActiveChanged FINAL)
@@ -47,6 +50,12 @@ public:
     PublicAuthClient(const QString &secretKey,
                      const QString &keychainServiceName,
                      const QString &settingsGroupName,
+                     QObject *parent = nullptr);
+    PublicAuthClient(const QString &secretKey,
+                     const QString &keychainServiceName,
+                     const QString &settingsGroupName,
+                     const QUrl &authBaseUrl,
+                     CredentialLoader credentialLoader,
                      QObject *parent = nullptr);
 
     /*
@@ -133,6 +142,7 @@ signals:
     void apiKeyLoadingChanged();
     void apiKeyIndexLoadingChanged();
     void apiKeyErrorChanged();
+    void authorizationFailed(const QString &reason);
 
 private:
     friend class PublicAuthClientTest;
@@ -154,6 +164,8 @@ private:
     QString m_apiKeyError;
     QString m_keychainService;
     QString m_settingsGroup;
+    QUrl m_authBaseUrl;
+    CredentialLoader m_credentialLoader;
 
     QString keychainKeyForLabel(const QString &label) const;
     static QString serializeApiKeyLabels(const QStringList &labels);

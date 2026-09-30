@@ -7,6 +7,8 @@ import QtQuick.Layouts
 Item {
     id: root
 
+    property var resultController: ApiWorker
+
     implicitWidth: 720
     implicitHeight: 520
 
@@ -44,7 +46,7 @@ Item {
 
                     Label {
                         Layout.fillWidth: true
-                        text: ApiWorker.currentTransactionTitle
+                        text: root.resultController.currentTransactionTitle
                         color: root.primaryText
                         font.pixelSize: root.compactLayout ? 24 : 32
                         font.weight: Font.DemiBold
@@ -53,10 +55,10 @@ Item {
 
                     Label {
                         Layout.fillWidth: true
-                        text: ApiWorker.tradeResultsBusy
+                        text: root.resultController.tradeResultsBusy
                               ? qsTr("Waiting for each loaded account to return a result…")
                               : qsTr("Every loaded account has returned a transaction result.")
-                        color: ApiWorker.tradeResultsBusy ? root.mutedText : root.successColor
+                        color: root.resultController.tradeResultsBusy ? root.mutedText : root.successColor
                         font.pixelSize: 14
                         wrapMode: Text.WordWrap
                     }
@@ -69,7 +71,7 @@ Item {
                 Layout.fillHeight: true
                 clip: true
                 spacing: 12
-                model: ApiWorker.tradeResults
+                model: root.resultController.tradeResults
 
                 delegate: Rectangle {
                     id: resultDelegate
@@ -173,8 +175,8 @@ Item {
                 id: doneButton
                 Layout.fillWidth: true
                 Layout.minimumHeight: 52
-                enabled: ApiWorker.tradeResultsComplete
-                text: ApiWorker.tradeResultsBusy ? qsTr("Waiting for accounts…") : qsTr("Done")
+                enabled: root.resultController.tradeResultsComplete
+                text: root.resultController.tradeResultsBusy ? qsTr("Waiting for accounts…") : qsTr("Done")
 
                 contentItem: Text {
                     text: doneButton.text
@@ -191,7 +193,7 @@ Item {
                     opacity: doneButton.enabled ? 1 : 0.7
                 }
 
-                onClicked: ApiWorker.dismissTradeResults()
+                onClicked: root.resultController.dismissTradeResults()
             }
         }
     }

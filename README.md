@@ -1,11 +1,11 @@
 # Publics Trading Interface
 
-Publics Trading Interface is a desktop and mobile app for placing the same stock order across the eligible Public.com accounts connected to one API key.
+Publics Trading Interface is a desktop and mobile app for placing stock orders across eligible Public.com accounts connected to one selected API key or all saved keys in Auto Mode.
 
 The app is intended for people who manage more than one supported Public.com brokerage account and want to see the result for each account in one place.
 
 > [!CAUTION]
-> A Release build places real market orders. Pressing Buy or Sell sends an order to every eligible account loaded for the selected API key. There is no final confirmation screen. Debug builds use Public.com's preflight check instead and do not place the order.
+> A Release build places real market orders. In the standard workspace, Buy or Sell reaches every eligible account for the selected key; in Auto Mode, it reaches every eligible account across **all saved keys**. There is no final confirmation screen. Debug builds use Public.com's preflight check instead and do not place the order.
 
 ## What the app does
 
@@ -15,10 +15,11 @@ The app is intended for people who manage more than one supported Public.com bro
 | Supports more than one API key | Saved keys appear as simple labels such as `PublicsApiKey0` and `PublicsApiKey1`. You can choose which key to use for a session. |
 | Starts a short session | The selected key is exchanged for a Public.com access token that lasts five minutes. Trading controls appear only after the session starts. |
 | Finds connected accounts | The app loads the eligible accounts connected to the selected key. It supports standard brokerage, Roth IRA, and traditional IRA accounts. |
-| Sends one order to every eligible account | A Buy or Sell action is sent separately to each loaded account. The order is always for one share of the entered stock symbol. |
+| Sends one order to every eligible account | A Buy action is for one share per account. Sell All sells the account's held balance of the entered stock symbol. |
 | Shows every account result | A results screen lists each account as waiting, successful, or failed. Public.com's response or error is shown for each account. |
 | Handles slow requests | If Public.com does not return an order result within 30 seconds, that account is marked as failed. |
 | Lets you switch keys | You can end the current session, return to the saved-key list, and start another session with a different key. |
+| Auto Mode | Open it from the bottom of the main menu to trade across every saved key without selecting one. The screen lists key labels, authenticates each key on submission, and shows results for each eligible account. |
 | Adapts to different screen sizes | The interface rearranges itself for phones, tablets, and desktop windows. |
 
 ## How a session flows
@@ -55,16 +56,18 @@ The same flow as a short list:
 6. Review the result for every account.
 7. Tap Done to return to the trading screen, or switch keys to start a different session.
 
+Auto Mode is an alternative to steps 1–3: save keys in the main menu, select Auto Mode, enter a ticker, then Buy or Sell All. For each key in order, the app loads the saved secret, obtains its own authorization token, finds its eligible accounts, and waits for every buy or sell result before closing that key's session. It waits **3 seconds after session closure** before starting the next key; there is no delay after the final key. Sell All first checks each account's portfolio and sells its entire held balance for that ticker; accounts with no holdings show a failure/no-order row. Key loading, authorization, or account-loading failures appear under that key's label, and processing continues with the other keys after the same pause. No countdown is shown; short-lived access tokens are requested as each key is processed.
+
 ## Order details
 
 Every submitted order currently uses these fixed settings:
 
-- One share
+- One share for Buy; the account's full held ticker balance for Sell All
 - Stock/equity
 - Market order
 - Day order, which expires at the end of the trading day if it does not fill
 - Order validation enabled
-- All eligible accounts linked to the selected API key
+- All eligible accounts linked to the selected API key (standard mode), or all saved API keys (Auto Mode)
 
 The app does not currently offer a quantity selector, limit prices, stop orders, extended-hours settings, or a way to choose only some of the loaded accounts.
 

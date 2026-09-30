@@ -17,10 +17,23 @@ PublicAuthClient::PublicAuthClient(const QString &secretKey,
                                    const QString &keychainServiceName,
                                    const QString &settingsGroupName,
                                    QObject *parent)
+    : PublicAuthClient(secretKey, keychainServiceName, settingsGroupName,
+                       QUrl(QStringLiteral("https://api.public.com/")), {}, parent)
+{
+}
+
+PublicAuthClient::PublicAuthClient(const QString &secretKey,
+                                   const QString &keychainServiceName,
+                                   const QString &settingsGroupName,
+                                   const QUrl &authBaseUrl,
+                                   CredentialLoader credentialLoader,
+                                   QObject *parent)
     : QObject(parent),
       m_secretKey(secretKey),
       m_keychainService(keychainServiceName),
-      m_settingsGroup(settingsGroupName)
+      m_settingsGroup(settingsGroupName),
+      m_authBaseUrl(authBaseUrl),
+      m_credentialLoader(std::move(credentialLoader))
 {
     m_manager = new QNetworkAccessManager(this);
     setApiKeyReady(!m_secretKey.trimmed().isEmpty());
@@ -45,11 +58,13 @@ void PublicAuthClient::requestToken()
     if (!apiKeyReady() || secretKey().isEmpty()) {
         qWarning() << "Authorization skipped: no API key is selected or loaded.";
         setSessionActive(false);
+        emit authorizationFailed(QStringLiteral("API key is not ready."));
         return;
     }
 
-    QUrl url("https://api.public.com/userapiauthservice/personal/access-tokens");
+    QUrl url = m_authBaseUrl.resolved(QUrl(QStringLiteral("userapiauthservice/personal/access-tokens")));
     QNetworkRequest request(url);
+    request.setTransferTimeout(30000);
 
     // Set required headers
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -302,6 +317,22 @@ void PublicAuthClient::readApiKeyFromKeychain(const QString &label)
     setApiKeyReady(false);
     setApiKeyLoading(true);
 
+    if (m_credentialLoader) {
+        m_credentialLoader(trimmedLabel, [this, trimmedLabel, generation](const QString &secret, const QString &error) {
+            if (m_selectedApiKeyLabel != trimmedLabel || m_apiKeyReadGeneration != generation) return;
+            if (!error.isEmpty() || secret.trimmed().isEmpty()) {
+                m_secretKey.clear();
+                setApiKeyReady(false);
+                setApiKeyLoading(false);
+                setApiKeyError(error.isEmpty() ? QStringLiteral("Could not load the API key.") : error);
+                emit secretKeyChanged();
+            } else {
+                applyLoadedApiKey(trimmedLabel, generation, secret);
+            }
+        });
+        return;
+    }
+
     auto *job = new QKeychain::ReadPasswordJob(m_keychainService, this);
     job->setAutoDelete(false);
     job->setInsecureFallback(false);
@@ -476,6 +507,7 @@ void PublicAuthClient::handleReply(QNetworkReply *reply,
     {
         qWarning() << "Authorization failed:" << reply->errorString();
         setSessionActive(false);
+        emit authorizationFailed(QStringLiteral("Authorization failed: %1").arg(reply->errorString()));
     }
 
     reply->deleteLater();
@@ -491,7 +523,10 @@ bool PublicAuthClient::applyAccessToken(const QString &apiKeyLabel,
     }
 
     setSessionActive(!accessToken.isEmpty());
-    emit tokenReceived(accessToken);
+    if (accessToken.isEmpty())
+        emit authorizationFailed(QStringLiteral("Authorization returned no access token."));
+    else
+        emit tokenReceived(accessToken);
     return true;
 }
 
@@ -525,9 +560,10 @@ void PublicAuthClient::setSecretKey(const QString &newSecretKey)
         return;
     }
 
-    if (m_secretKey == trimmedKeyOrLabel)
+    if (m_secretKey == trimmedKeyOrLabel && m_selectedApiKeyLabel.isEmpty())
         return;
 
+    ++m_apiKeyReadGeneration;
     ++m_tokenRequestGeneration;
     m_secretKey = trimmedKeyOrLabel;
     setSelectedApiKeyLabel(QString());

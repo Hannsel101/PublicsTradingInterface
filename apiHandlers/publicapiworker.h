@@ -38,7 +38,10 @@ class PublicApiWorkerTest;
 class PublicApiWorker : public QObject {
     Q_OBJECT
 public:
-    explicit PublicApiWorker(QObject *parent = nullptr) : QObject(parent), manager(new QNetworkAccessManager(this)) {}
+    explicit PublicApiWorker(QObject *parent = nullptr)
+        : PublicApiWorker(QUrl(QStringLiteral("https://api.public.com/")), parent) {}
+    explicit PublicApiWorker(const QUrl &apiBaseUrl, QObject *parent = nullptr)
+        : QObject(parent), manager(new QNetworkAccessManager(this)), m_apiBaseUrl(apiBaseUrl) {}
 
     Q_PROPERTY(QVariantList tradeResults READ tradeResults NOTIFY tradeResultsChanged FINAL)
     Q_PROPERTY(QString currentTransactionTitle READ currentTransactionTitle NOTIFY currentTransactionTitleChanged FINAL)
@@ -96,11 +99,13 @@ signals:
     void tradeResultsVisibleChanged();
     void tradeResultsCompleteChanged();
     void tradeResultsBusyChanged();
+    void accountLoadFinished(bool success, const QString &reason);
 
 private:
     friend class PublicApiWorkerTest;
 
     QNetworkAccessManager *manager;
+    QUrl m_apiBaseUrl;
     QString m_token;
     QVariantList m_tradeResults;
     QString m_currentTransactionTitle;

@@ -3,6 +3,7 @@
 #include <QQmlContext>
 #include "publicauthclient.h"
 #include "publicapiworker.h"
+#include "autotradecontroller.h"
 #include "stocksearchcontroller.h"
 
 /*
@@ -35,10 +36,18 @@ int main(int argc, char *argv[])
                      &publicsApiWorker, &PublicApiWorker::processToken);
     QObject::connect(&authClient, &PublicAuthClient::tokenReceived,
                      &stockSearchController, &StockSearchController::storeAuthorizationToken);
+    QObject::connect(&authClient, &PublicAuthClient::sessionActiveChanged,
+                     &stockSearchController, [&authClient, &stockSearchController]() {
+        if (!authClient.sessionActive())
+            stockSearchController.storeAuthorizationToken(QString());
+    });
+
+    AutoTradeController autoTrader(&authClient, &publicsApiWorker);
 
 
     engine.rootContext()->setContextProperty("AuthClient", &authClient);
     engine.rootContext()->setContextProperty("ApiWorker", &publicsApiWorker);
+    engine.rootContext()->setContextProperty("AutoTrader", &autoTrader);
     engine.rootContext()->setContextProperty("StockSearchController", &stockSearchController);
 
     /*

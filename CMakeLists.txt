@@ -78,6 +78,7 @@ qt_add_qml_module(appPublicsTradingInterface
     SOURCES
         apiHandlers/publicauthclient.h apiHandlers/publicauthclient.cpp
         apiHandlers/publicapiworker.h apiHandlers/publicapiworker.cpp
+        apiHandlers/autotradecontroller.h apiHandlers/autotradecontroller.cpp
         apiHandlers/stocksearchcontroller.h apiHandlers/stocksearchcontroller.cpp
     QML_FILES
         Main.qml
@@ -86,6 +87,7 @@ qt_add_qml_module(appPublicsTradingInterface
         qml/DisplayAccountInformation/ValidityTimer.qml
         qml/PerformTrades/StockTrade.qml
         qml/PerformTrades/TradeResultScreen.qml
+        qml/PerformTrades/AutoTradeScreen.qml
         qml/StockSearchAutoComplete/StockSearchAutoComplete.qml
 
 )
@@ -123,7 +125,7 @@ if(ANDROID)
         QT_ANDROID_PACKAGE_NAME "org.qtproject.example.appPublicsTradingInterface"
         QT_ANDROID_APP_NAME "Publics Trading Interface"
         QT_ANDROID_VERSION_NAME "${PROJECT_VERSION}"
-        QT_ANDROID_VERSION_CODE 1
+        QT_ANDROID_VERSION_CODE 2
         QT_ANDROID_MIN_SDK_VERSION 28
         QT_ANDROID_TARGET_SDK_VERSION 36
     )
@@ -194,4 +196,23 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME test_publicapiworker COMMAND test_publicapiworker)
+
+    qt_add_executable(test_autotradecontroller
+        tests/test_auto_sequence.cpp
+        apiHandlers/autotradecontroller.h
+        apiHandlers/autotradecontroller.cpp
+        apiHandlers/publicauthclient.h
+        apiHandlers/publicauthclient.cpp
+        apiHandlers/publicapiworker.h
+        apiHandlers/publicapiworker.cpp
+    )
+    target_include_directories(test_autotradecontroller PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/apiHandlers
+        ${qtkeychain_SOURCE_DIR}
+        ${qtkeychain_BINARY_DIR}
+    )
+    target_link_libraries(test_autotradecontroller PRIVATE
+        Qt6::Test Qt6::Gui Qt6::Network Qt6::Concurrent ${PUBLICS_QTKEYCHAIN_TARGET}
+    )
+    add_test(NAME test_autotradecontroller COMMAND test_autotradecontroller)
 endif()
