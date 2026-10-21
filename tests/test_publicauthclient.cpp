@@ -228,6 +228,78 @@ private slots:
         }
     }
 
+    void removesKeyAndNicknameFromKeychainAndSettings()
+    {
+        if (!qEnvironmentVariableIsSet("PUBLICS_RUN_KEYCHAIN_TEST")) {
+            QSKIP("Set PUBLICS_RUN_KEYCHAIN_TEST=1 to run the OS keychain integration test.");
+        }
+
+        const QString uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString service = QStringLiteral("PublicsTradingInterfaceTest-%1").arg(uniqueId);
+        const QString group = QStringLiteral("publicsApiKeysTest-%1").arg(uniqueId);
+        const QString first = QStringLiteral("PublicsApiKey0");
+        const QString second = QStringLiteral("PublicsApiKey1");
+        PublicAuthClient client({}, service, group);
+        QSignalSpy labelsSpy(&client, &PublicAuthClient::secretKeysChanged);
+        QVERIFY(client.storeNextApiKey({}, QStringLiteral("delete-test-one")));
+        QVERIFY(labelsSpy.wait(5000));
+        QVERIFY(client.storeNextApiKey({}, QStringLiteral("delete-test-two")));
+        QVERIFY(labelsSpy.wait(5000));
+        QVERIFY(client.setApiKeyNickname(first, QStringLiteral("Retirement")));
+        QVERIFY(client.setApiKeyNickname(second, QStringLiteral("Savings")));
+        client.setSecretKey(first);
+        QTRY_VERIFY_WITH_TIMEOUT(client.apiKeyReady(), 5000);
+
+        QSignalSpy removedSpy(&client, &PublicAuthClient::apiKeyRemovalFinished);
+        QVERIFY(client.removeStoredApiKey(first));
+        QVERIFY(client.apiKeyIndexLoading());
+        QVERIFY(!client.removeStoredApiKey(second));
+        QVERIFY(removedSpy.wait(5000));
+        QCOMPARE(removedSpy.takeFirst().at(1).toBool(), true);
+        QCOMPARE(client.secretKeys(), QStringList({second}));
+        QCOMPARE(client.apiKeyDisplayName(first), first);
+        QCOMPARE(client.apiKeyDisplayName(second), QStringLiteral("Savings"));
+        QVERIFY(client.selectedApiKeyLabel().isEmpty());
+        QVERIFY(client.secretKey().isEmpty());
+        QVERIFY(!client.sessionActive());
+
+        QSettings settings;
+        settings.beginGroup(group);
+        QCOMPARE(settings.value(QStringLiteral("labels")).toStringList(), QStringList({second}));
+        QVERIFY(!settings.contains(QStringLiteral("nicknames/") + first));
+        QCOMPARE(settings.value(QStringLiteral("nicknames/") + second).toString(), QStringLiteral("Savings"));
+        settings.endGroup();
+
+        PublicAuthClient restarted({}, service, group);
+        QSignalSpy loadedSpy(&restarted, &PublicAuthClient::apiKeyIndexLoadingChanged);
+        QCOMPARE(restarted.listStoredApiKeys(), QStringList({second}));
+        if (restarted.apiKeyIndexLoading()) QVERIFY(loadedSpy.wait(5000));
+        QCOMPARE(restarted.secretKeys(), QStringList({second}));
+        QCOMPARE(restarted.apiKeyDisplayName(second), QStringLiteral("Savings"));
+        restarted.setSecretKey(second);
+        QTRY_VERIFY_WITH_TIMEOUT(restarted.apiKeyReady(), 5000);
+        QCOMPARE(restarted.secretKey(), QStringLiteral("delete-test-two"));
+
+        QSignalSpy readdedSpy(&restarted, &PublicAuthClient::secretKeysChanged);
+        QVERIFY(restarted.storeNextApiKey({}, QStringLiteral("delete-test-reused")));
+        QVERIFY(readdedSpy.wait(5000));
+        QCOMPARE(restarted.secretKeys(), QStringList({first, second}));
+        QCOMPARE(restarted.apiKeyDisplayName(first), first);
+
+        settings.beginGroup(group);
+        settings.remove(QString());
+        settings.endGroup();
+        for (const QString &key : {first, second, QStringLiteral("PublicsApiKeyLabelIndexV1")}) {
+            QKeychain::DeletePasswordJob job(service);
+            job.setAutoDelete(false);
+            job.setInsecureFallback(false);
+            job.setKey(key);
+            QSignalSpy deletedSpy(&job, &QKeychain::DeletePasswordJob::finished);
+            job.start();
+            QVERIFY(deletedSpy.wait(5000));
+        }
+    }
+
     void recoversLabelsFromKeychainAfterSettingsAreRemoved()
     {
         if (!qEnvironmentVariableIsSet("PUBLICS_RUN_KEYCHAIN_TEST")) {

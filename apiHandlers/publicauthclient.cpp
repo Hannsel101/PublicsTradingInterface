@@ -286,7 +286,7 @@ void PublicAuthClient::writeApiKeyLabelIndex(
 
 void PublicAuthClient::deleteApiKeyFromKeychain(
     const QString &label,
-    const std::function<void()> &completion)
+    const std::function<void(bool)> &completion)
 {
     auto *job = new QKeychain::DeletePasswordJob(m_keychainService, this);
     job->setAutoDelete(false);
@@ -294,12 +294,12 @@ void PublicAuthClient::deleteApiKeyFromKeychain(
     job->setKey(keychainKeyForLabel(label));
 
     connect(job, &QKeychain::DeletePasswordJob::finished, this, [job, label, completion]() {
-        if (job->error() != QKeychain::NoError
-            && job->error() != QKeychain::EntryNotFound) {
-            qWarning() << "Failed to roll back API key" << label << ":" << job->errorString();
-        }
+        const bool succeeded = job->error() == QKeychain::NoError
+                               || job->error() == QKeychain::EntryNotFound;
+        if (!succeeded)
+            qWarning() << "Failed to remove API key" << label << ":" << job->errorString();
         if (completion) {
-            completion();
+            completion(succeeded);
         }
         job->deleteLater();
     });
@@ -431,7 +431,7 @@ bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &a
 
         writeApiKeyLabelIndex(labels, [this, label, trimmedApiKey, labels](bool succeeded) {
             if (!succeeded) {
-                deleteApiKeyFromKeychain(label, [this]() {
+                deleteApiKeyFromKeychain(label, [this](bool) {
                     setApiKeyIndexLoading(false);
                 });
                 return;
@@ -457,6 +457,91 @@ bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &a
     });
     job->start();
 
+    return true;
+}
+
+bool PublicAuthClient::removeStoredApiKey(const QString &label)
+{
+    if (apiKeyIndexLoading() || !m_secretKeys.contains(label))
+        return false;
+
+    QSettings settings;
+    settings.beginGroup(m_settingsGroup);
+    settings.sync();
+    if (settings.status() != QSettings::NoError) {
+        setApiKeyError(QStringLiteral("Could not read local API key metadata."));
+        return false;
+    }
+    const bool hadLocalLabels = settings.contains(QStringLiteral("labels"));
+    const QVariant previousLabels = settings.value(QStringLiteral("labels"));
+    const QString nicknamePath = QStringLiteral("nicknames/") + label;
+    const bool hadNickname = settings.contains(nicknamePath);
+    const QVariant previousNickname = settings.value(nicknamePath);
+
+    QStringList remaining = m_secretKeys;
+    remaining.removeAll(label);
+    setApiKeyError({});
+    setApiKeyIndexLoading(true);
+    if (m_selectedApiKeyLabel == label) {
+        clearUserSession();
+        setSecretKey({});
+    }
+
+    const auto fail = [this, label](const QString &message) {
+        setApiKeyError(message);
+        setApiKeyIndexLoading(false);
+        emit apiKeyRemovalFinished(label, false, message);
+    };
+    const auto restoreSettings = [this, label, hadLocalLabels, previousLabels, hadNickname,
+                                  previousNickname]() {
+        QSettings rollback;
+        rollback.beginGroup(m_settingsGroup);
+        if (hadLocalLabels)
+            rollback.setValue(QStringLiteral("labels"), previousLabels);
+        else
+            rollback.remove(QStringLiteral("labels"));
+        const QString path = QStringLiteral("nicknames/") + label;
+        if (hadNickname)
+            rollback.setValue(path, previousNickname);
+        else
+            rollback.remove(path);
+        rollback.sync();
+        return rollback.status() == QSettings::NoError;
+    };
+
+    deleteApiKeyFromKeychain(label, [this, label, remaining, nicknamePath, fail, restoreSettings](bool deleted) {
+        if (!deleted) {
+            fail(QStringLiteral("Could not remove the API key from the system keychain."));
+            return;
+        }
+
+        QSettings settings;
+        settings.beginGroup(m_settingsGroup);
+        settings.setValue(QStringLiteral("labels"), remaining);
+        settings.remove(nicknamePath);
+        settings.sync();
+        if (settings.status() != QSettings::NoError) {
+            const bool restored = restoreSettings();
+            fail(restored ? QStringLiteral("Could not update local API key metadata. Retry deletion.")
+                          : QStringLiteral("Could not restore local API key metadata. Check saved keys before continuing."));
+            return;
+        }
+
+        writeApiKeyLabelIndex(remaining, [this, label, remaining, fail, restoreSettings](bool saved) {
+            if (!saved) {
+                const bool restored = restoreSettings();
+                fail(restored ? QStringLiteral("Could not update the keychain label list. Retry deletion.")
+                              : QStringLiteral("Could not restore local API key metadata. Check saved keys before continuing."));
+                return;
+            }
+            setSecretKeys(remaining);
+            if (m_apiKeyNicknames.remove(label))
+                emit apiKeyNicknamesChanged();
+            setApiKeyError({});
+            setApiKeyIndexLoading(false);
+            emit apiKeyRemovalFinished(label, true, {});
+        });
+    });
     return true;
 }
 
@@ -555,7 +640,7 @@ QString PublicAuthClient::apiKeyDisplayName(const QString &label) const
 
 bool PublicAuthClient::setApiKeyNickname(const QString &label, const QString &nickname)
 {
-    if (!m_secretKeys.contains(label))
+    if (apiKeyIndexLoading() || !m_secretKeys.contains(label))
         return false;
 
     const QString trimmedNickname = nickname.trimmed();

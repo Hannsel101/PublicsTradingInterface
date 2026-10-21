@@ -107,6 +107,7 @@ Item {
                         id: editNicknameButton
                         Layout.preferredWidth: 42
                         Layout.preferredHeight: 42
+                        enabled: !AuthClient.apiKeyIndexLoading
                         text: "✎"
                         Accessible.name: qsTr("Edit nickname for %1").arg(AuthClient.apiKeyNicknames[delegateRoot.apiKeyLabel] || delegateRoot.apiKeyLabel)
                         contentItem: Text {
@@ -129,10 +130,36 @@ Item {
                             nicknameField.forceActiveFocus()
                         }
                     }
+                    Button {
+                        id: deleteKeyButton
+                        Layout.preferredWidth: 42
+                        Layout.preferredHeight: 42
+                        enabled: !AuthClient.apiKeyIndexLoading
+                        text: "🗑"
+                        Accessible.name: qsTr("Delete %1").arg(AuthClient.apiKeyNicknames[delegateRoot.apiKeyLabel] || delegateRoot.apiKeyLabel)
+                        contentItem: Text {
+                            text: deleteKeyButton.text
+                            color: "#ff5c7a"
+                            font.pixelSize: 20
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            radius: 12
+                            color: deleteKeyButton.down ? "#3a1720" : root.surfaceColor
+                            border.color: root.borderColor
+                        }
+                        onClicked: {
+                            deletePopup.deletingLabel = delegateRoot.apiKeyLabel
+                            deleteError.text = ""
+                            deletePopup.open()
+                        }
+                    }
                 }
 
                 MouseArea {
                     anchors.fill: parent
+                    enabled: !AuthClient.apiKeyIndexLoading
                     onClicked: {
                         keysListView.currentIndex = delegateRoot.index
                         AuthClient.secretKey = delegateRoot.apiKeyLabel
@@ -219,6 +246,79 @@ Item {
                     }
                 }
             }
+        }
+    }
+
+    Popup {
+        id: deletePopup
+        property string deletingLabel: ""
+        parent: Overlay.overlay
+        width: Math.min(parent.width - 32, 380)
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
+        modal: true
+        focus: true
+        padding: 18
+        closePolicy: AuthClient.apiKeyIndexLoading ? Popup.NoAutoClose : Popup.CloseOnEscape
+        background: Rectangle {
+            radius: 18
+            color: root.elevatedColor
+            border.color: "#ff5c7a"
+        }
+        contentItem: ColumnLayout {
+            spacing: 14
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Delete saved API key?")
+                color: root.primaryText
+                font.pixelSize: 19
+                font.weight: Font.DemiBold
+            }
+            Label {
+                Layout.fillWidth: true
+                readonly property string nickname: AuthClient.apiKeyNicknames[deletePopup.deletingLabel] || ""
+                text: nickname !== ""
+                      ? qsTr("Remove %1 (%2) from the system keychain? Its nickname will also be removed from the app settings. This cannot be undone.").arg(nickname, deletePopup.deletingLabel)
+                      : qsTr("Remove %1 from the system keychain? Any saved nickname will also be removed from the app settings. This cannot be undone.").arg(deletePopup.deletingLabel)
+                color: root.secondaryText
+                wrapMode: Text.WordWrap
+            }
+            Label {
+                id: deleteError
+                Layout.fillWidth: true
+                visible: text !== ""
+                color: "#ff5c7a"
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    Layout.fillWidth: true
+                    enabled: !AuthClient.apiKeyIndexLoading
+                    text: qsTr("Cancel")
+                    onClicked: deletePopup.close()
+                }
+                Button {
+                    Layout.fillWidth: true
+                    enabled: !AuthClient.apiKeyIndexLoading
+                    text: AuthClient.apiKeyIndexLoading ? qsTr("Deleting…") : qsTr("Confirm deletion")
+                    onClicked: {
+                        deleteError.text = ""
+                        if (!AuthClient.removeStoredApiKey(deletePopup.deletingLabel))
+                            deleteError.text = AuthClient.apiKeyError || qsTr("Could not start deletion. Please try again.")
+                    }
+                }
+            }
+        }
+    }
+    Connections {
+        target: AuthClient
+        function onApiKeyRemovalFinished(label, succeeded, message) {
+            if (label !== deletePopup.deletingLabel) return
+            if (succeeded)
+                deletePopup.close()
+            else
+                deleteError.text = message
         }
     }
 }

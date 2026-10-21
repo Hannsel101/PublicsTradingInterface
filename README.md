@@ -12,7 +12,7 @@ The app is intended for people who manage more than one supported Public.com bro
 | Function | What it means for the user |
 | --- | --- |
 | Stores API keys securely | You paste a Public.com API secret once. The secret is saved in the device's protected keychain rather than displayed in the app. |
-| Supports more than one API key | Saved keys use stable labels such as `PublicsApiKey0` and `PublicsApiKey1`. Tap the pencil inside a key row to set a display nickname; leave it blank to restore the default name. Selection and keychain retrieval still use the original label. |
+| Supports more than one API key | Saved keys use stable labels such as `PublicsApiKey0` and `PublicsApiKey1`. Tap the pencil inside a key row to set a display nickname; leave it blank to restore the default name. Tap the trash button and confirm to delete the key and its nickname. Selection and keychain retrieval still use the original label. |
 | Starts a short session | The selected key is exchanged for a Public.com access token that lasts five minutes. Trading controls appear only after the session starts. |
 | Finds connected accounts | The app loads the eligible accounts connected to the selected key. It supports standard brokerage, Roth IRA, and traditional IRA accounts. |
 | Sends one order to every eligible account | A Buy action is for one share per account. Sell All sells the account's held balance of the entered stock symbol. |
@@ -116,7 +116,7 @@ The Done button stays disabled until every account has either succeeded or faile
 
 - The ticker is entered manually. The stock-search component exists in the project but is not connected to the main trading screen yet.
 - The app does not display balances, positions, buying power, or the number of shares available to sell.
-- Saved API key nicknames can be edited, but the underlying keychain labels cannot be renamed or deleted from the app.
+- Saved API key nicknames can be edited. Deleting a key requires confirmation and removes its keychain credential, saved label, and nickname; underlying keychain labels cannot be renamed.
 - The five-minute countdown is maintained by the app and does not renew the session automatically.
 - A Release order is sent as soon as Buy or Sell is pressed. There is no extra confirmation step.
 - Successful submission means Public.com accepted the request. It does not guarantee that the market order has filled.

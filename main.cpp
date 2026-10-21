@@ -41,6 +41,13 @@ int main(int argc, char *argv[])
         if (!authClient.sessionActive())
             stockSearchController.storeAuthorizationToken(QString());
     });
+    QObject::connect(&authClient, &PublicAuthClient::selectedApiKeyLabelChanged,
+                     &publicsApiWorker, [&authClient, &publicsApiWorker, &stockSearchController]() {
+        if (authClient.selectedApiKeyLabel().isEmpty()) {
+            publicsApiWorker.clearSubAccountsList();
+            stockSearchController.storeAuthorizationToken(QString());
+        }
+    });
 
     AutoTradeController autoTrader(&authClient, &publicsApiWorker);
 

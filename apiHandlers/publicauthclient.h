@@ -74,6 +74,7 @@ public:
      * */
     Q_INVOKABLE QStringList listStoredApiKeys();
     Q_INVOKABLE bool storeNextApiKey(const QString &userName, const QString &apiKey);
+    Q_INVOKABLE bool removeStoredApiKey(const QString &label);
     Q_INVOKABLE bool setApiKeyNickname(const QString &label, const QString &nickname);
     Q_INVOKABLE QString apiKeyDisplayName(const QString &label) const;
 
@@ -148,6 +149,7 @@ signals:
     void apiKeyLoadingChanged();
     void apiKeyIndexLoadingChanged();
     void apiKeyErrorChanged();
+    void apiKeyRemovalFinished(const QString &label, bool succeeded, const QString &message);
     void authorizationFailed(const QString &reason);
 
 private:
@@ -182,7 +184,7 @@ private:
                                const std::function<void(bool)> &completion = {});
     void deleteApiKeyFromKeychain(
         const QString &label,
-        const std::function<void()> &completion = {});
+        const std::function<void(bool)> &completion = {});
     void readApiKeyFromKeychain(const QString &label);
     bool applyLoadedApiKey(const QString &label, quint64 generation, const QString &apiKey);
     bool applyAccessToken(const QString &apiKeyLabel,

@@ -20,7 +20,7 @@ ApplicationWindow {
     property bool autoMode: false
     readonly property bool compactLayout: width < 720
     readonly property bool keySelected: AuthClient.selectedApiKeyLabel !== ""
-    readonly property bool canStartSession: window.keySelected && AuthClient.apiKeyReady && !AuthClient.apiKeyLoading && !AuthClient.sessionActive
+    readonly property bool canStartSession: window.keySelected && AuthClient.apiKeyReady && !AuthClient.apiKeyLoading && !AuthClient.apiKeyIndexLoading && !AuthClient.sessionActive
     function displayKey(label) { return AuthClient.apiKeyNicknames[label] || label }
     readonly property real pageMargin: Math.max(18, Math.min(width * 0.06, 56))
     readonly property real cardRadius: 24
@@ -167,7 +167,7 @@ ApplicationWindow {
                             }
 
                             Label {
-                                text: qsTr("Give saved keys a nickname using the pencil button. Without one, the default key name is shown. API secrets stay in the OS-backed keychain.")
+                                text: qsTr("Use the pencil to edit a key nickname or the trash button to remove a key after confirmation. API secrets stay in the OS-backed keychain.")
                                 color: window.mutedText
                                 font.pixelSize: 14
                                 wrapMode: Text.WordWrap
