@@ -2,8 +2,10 @@
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSettings>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QUuid>
 
 #include "autotradecontroller.h"
 #include "publicauthclient.h"
@@ -131,9 +133,12 @@ private slots:
     {
         TestBrokerageServer server;
         QVERIFY(server.listen(QHostAddress::LocalHost));
-        PublicAuthClient auth({}, QStringLiteral("TestService"), QStringLiteral("TestGroup"), server.url(),
+        const QString settingsGroup = QStringLiteral("AutoNicknameTest-%1")
+                                          .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        PublicAuthClient auth({}, QStringLiteral("TestService"), settingsGroup, server.url(),
             [](const QString &, const PublicAuthClient::CredentialCallback &done) { done(QStringLiteral("first"), {}); });
         auth.setSecretKeys({QStringLiteral("PublicsApiKey0")});
+        QVERIFY(auth.setApiKeyNickname(QStringLiteral("PublicsApiKey0"), QStringLiteral("Retirement")));
         PublicApiWorker worker(server.url());
         connect(&auth, &PublicAuthClient::tokenReceived, &worker, &PublicApiWorker::processToken);
         AutoTradeController controller(&auth, &worker);
@@ -144,7 +149,14 @@ private slots:
         QCOMPARE(controller.tradeResults().size(), 2);
         QCOMPARE(controller.tradeResults().at(0).toMap().value(QStringLiteral("status")).toString(), QStringLiteral("success"));
         QCOMPARE(controller.tradeResults().at(1).toMap().value(QStringLiteral("status")).toString(), QStringLiteral("failed"));
+        QCOMPARE(controller.tradeResults().at(0).toMap().value(QStringLiteral("keyLabel")).toString(), QStringLiteral("PublicsApiKey0"));
+        QVERIFY(controller.tradeResults().at(0).toMap().value(QStringLiteral("accountLabel")).toString().startsWith(QStringLiteral("Retirement · ")));
+        QVERIFY(controller.tradeResults().at(1).toMap().value(QStringLiteral("accountLabel")).toString().startsWith(QStringLiteral("Retirement · ")));
         QVERIFY(!auth.sessionActive());
+        QSettings settings;
+        settings.beginGroup(settingsGroup);
+        settings.remove(QString());
+        settings.endGroup();
     }
 
     void authorizationFailureClosesFirstSessionAndContinuesToNextKey()

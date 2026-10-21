@@ -72,6 +72,7 @@ Item {
                     anchors.leftMargin: 14
                     anchors.rightMargin: 14
                     spacing: 12
+                    z: 1
 
                     Rectangle {
                         Layout.preferredWidth: 12
@@ -86,7 +87,7 @@ Item {
 
                         Label {
                             Layout.fillWidth: true
-                            text: delegateRoot.apiKeyLabel
+                            text: AuthClient.apiKeyNicknames[delegateRoot.apiKeyLabel] || delegateRoot.apiKeyLabel
                             color: root.primaryText
                             font.pixelSize: 15
                             font.weight: Font.DemiBold
@@ -99,6 +100,33 @@ Item {
                             color: delegateRoot.isSelected ? root.secondaryText : root.mutedText
                             font.pixelSize: 12
                             elide: Text.ElideRight
+                        }
+                    }
+
+                    Button {
+                        id: editNicknameButton
+                        Layout.preferredWidth: 42
+                        Layout.preferredHeight: 42
+                        text: "✎"
+                        Accessible.name: qsTr("Edit nickname for %1").arg(AuthClient.apiKeyNicknames[delegateRoot.apiKeyLabel] || delegateRoot.apiKeyLabel)
+                        contentItem: Text {
+                            text: editNicknameButton.text
+                            color: root.primaryText
+                            font.pixelSize: 22
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            radius: 12
+                            color: editNicknameButton.down ? root.accentColor : root.surfaceColor
+                            border.color: root.borderColor
+                        }
+                        onClicked: {
+                            nicknamePopup.editingLabel = delegateRoot.apiKeyLabel
+                            nicknameField.text = AuthClient.apiKeyNicknames[delegateRoot.apiKeyLabel] || ""
+                            nicknameError.text = ""
+                            nicknamePopup.open()
+                            nicknameField.forceActiveFocus()
                         }
                     }
                 }
@@ -117,6 +145,79 @@ Item {
 
             ScrollBar.vertical: ScrollBar {
                 policy: ScrollBar.AsNeeded
+            }
+        }
+    }
+
+    Popup {
+        id: nicknamePopup
+        property string editingLabel: ""
+        parent: Overlay.overlay
+        width: Math.min(parent.width - 32, 380)
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
+        modal: true
+        focus: true
+        padding: 18
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle {
+            radius: 18
+            color: root.elevatedColor
+            border.color: root.accentColor
+        }
+        contentItem: ColumnLayout {
+            spacing: 14
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Edit API key nickname")
+                color: root.primaryText
+                font.pixelSize: 19
+                font.weight: Font.DemiBold
+            }
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Leave blank to show the default key name.")
+                color: root.secondaryText
+                wrapMode: Text.WordWrap
+            }
+            TextField {
+                id: nicknameField
+                Layout.fillWidth: true
+                placeholderText: qsTr("Nickname")
+                color: root.primaryText
+                selectByMouse: true
+                background: Rectangle {
+                    radius: 10
+                    color: root.surfaceColor
+                    border.color: nicknameField.activeFocus ? root.accentColor : root.borderColor
+                }
+                onAccepted: saveNicknameButton.clicked()
+            }
+            Label {
+                id: nicknameError
+                Layout.fillWidth: true
+                visible: text !== ""
+                color: "#ff5c7a"
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    Layout.fillWidth: true
+                    text: qsTr("Cancel")
+                    onClicked: nicknamePopup.close()
+                }
+                Button {
+                    id: saveNicknameButton
+                    Layout.fillWidth: true
+                    text: qsTr("Save")
+                    onClicked: {
+                        if (AuthClient.setApiKeyNickname(nicknamePopup.editingLabel, nicknameField.text))
+                            nicknamePopup.close()
+                        else
+                            nicknameError.text = qsTr("Could not save the nickname. Please try again.")
+                    }
+                }
             }
         }
     }

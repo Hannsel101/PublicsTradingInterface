@@ -21,6 +21,7 @@ ApplicationWindow {
     readonly property bool compactLayout: width < 720
     readonly property bool keySelected: AuthClient.selectedApiKeyLabel !== ""
     readonly property bool canStartSession: window.keySelected && AuthClient.apiKeyReady && !AuthClient.apiKeyLoading && !AuthClient.sessionActive
+    function displayKey(label) { return AuthClient.apiKeyNicknames[label] || label }
     readonly property real pageMargin: Math.max(18, Math.min(width * 0.06, 56))
     readonly property real cardRadius: 24
 
@@ -166,7 +167,7 @@ ApplicationWindow {
                             }
 
                             Label {
-                                text: qsTr("Only PublicsApiKey labels are shown. API secrets stay in the OS-backed keychain and are never displayed after saving.")
+                                text: qsTr("Give saved keys a nickname using the pencil button. Without one, the default key name is shown. API secrets stay in the OS-backed keychain.")
                                 color: window.mutedText
                                 font.pixelSize: 14
                                 wrapMode: Text.WordWrap
@@ -200,10 +201,10 @@ ApplicationWindow {
                                 text: !window.keySelected
                                       ? qsTr("Select a PublicsApiKey entry to start a session")
                                       : AuthClient.apiKeyLoading
-                                        ? qsTr("Loading %1 from the system keychain…").arg(AuthClient.selectedApiKeyLabel)
+                                        ? qsTr("Loading %1 from the system keychain…").arg(window.displayKey(AuthClient.selectedApiKeyLabel))
                                         : AuthClient.apiKeyReady
-                                          ? qsTr("%1 is ready").arg(AuthClient.selectedApiKeyLabel)
-                                          : qsTr("%1 is selected but not ready").arg(AuthClient.selectedApiKeyLabel)
+                                          ? qsTr("%1 is ready").arg(window.displayKey(AuthClient.selectedApiKeyLabel))
+                                          : qsTr("%1 is selected but not ready").arg(window.displayKey(AuthClient.selectedApiKeyLabel))
                                 color: AuthClient.apiKeyReady ? window.successColor : window.secondaryText
                                 font.pixelSize: 14
                                 font.weight: Font.DemiBold
@@ -353,7 +354,7 @@ ApplicationWindow {
                             Label {
                                 text: ApiWorker.tradeResultsVisible
                                       ? qsTr("Review each account result, then tap Done to return to the trade workspace.")
-                                      : qsTr("Orders run across all eligible accounts loaded for %1.").arg(AuthClient.selectedApiKeyLabel)
+                                      : qsTr("Orders run across all eligible accounts loaded for %1.").arg(window.displayKey(AuthClient.selectedApiKeyLabel))
                                 color: window.mutedText
                                 wrapMode: Text.WordWrap
                                 Layout.fillWidth: true

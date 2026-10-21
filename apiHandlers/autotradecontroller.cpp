@@ -129,7 +129,8 @@ void AutoTradeController::syncAccountResults()
         QVariantMap row = item.toMap();
         row.insert(QStringLiteral("keyLabel"), m_currentLabel);
         row.insert(QStringLiteral("accountLabel"), QStringLiteral("%1 · %2")
-                       .arg(m_currentLabel, row.value(QStringLiteral("accountLabel")).toString()));
+                       .arg(m_authClient->apiKeyDisplayName(m_currentLabel),
+                            row.value(QStringLiteral("accountLabel")).toString()));
         m_results.insert(insertionIndex++, row);
     }
     emit tradeResultsChanged();
@@ -165,7 +166,7 @@ void AutoTradeController::setKeyResult(const QString &label, const QString &stat
     QVariantMap row{{QStringLiteral("keyLabel"), label},
                     {QStringLiteral("accountId"), QString()},
                     {QStringLiteral("accountType"), QString()},
-                    {QStringLiteral("accountLabel"), label.isEmpty() ? QStringLiteral("No saved key") : label},
+                    {QStringLiteral("accountLabel"), label.isEmpty() ? QStringLiteral("No saved key") : m_authClient->apiKeyDisplayName(label)},
                     {QStringLiteral("status"), status}, {QStringLiteral("message"), message}};
     for (int i = 0; i < m_results.size(); ++i) {
         const QVariantMap previous = m_results.at(i).toMap();

@@ -12,7 +12,7 @@ The app is intended for people who manage more than one supported Public.com bro
 | Function | What it means for the user |
 | --- | --- |
 | Stores API keys securely | You paste a Public.com API secret once. The secret is saved in the device's protected keychain rather than displayed in the app. |
-| Supports more than one API key | Saved keys appear as simple labels such as `PublicsApiKey0` and `PublicsApiKey1`. You can choose which key to use for a session. |
+| Supports more than one API key | Saved keys use stable labels such as `PublicsApiKey0` and `PublicsApiKey1`. Tap the pencil inside a key row to set a display nickname; leave it blank to restore the default name. Selection and keychain retrieval still use the original label. |
 | Starts a short session | The selected key is exchanged for a Public.com access token that lasts five minutes. Trading controls appear only after the session starts. |
 | Finds connected accounts | The app loads the eligible accounts connected to the selected key. It supports standard brokerage, Roth IRA, and traditional IRA accounts. |
 | Sends one order to every eligible account | A Buy action is for one share per account. Sell All sells the account's held balance of the entered stock symbol. |
@@ -94,6 +94,7 @@ A preflight asks Public.com whether an order would be accepted and can return an
 
 - API secrets are stored in the operating system's protected keychain.
 - The app shows key labels after saving, not the secret values. The label list is also kept in the protected keychain so an update or reinstall can find the saved credentials again.
+- Display nicknames are stored separately by original key label in QSettings; they do not rename or move keychain credentials. QSettings data may not survive uninstall/reinstall even if the OS keychain retains the secrets.
 - Existing labels from older versions are migrated automatically the first time the updated app is opened. Persistence requires the same signing team and bundle identifier.
 - Insecure keychain fallback is disabled.
 - Switching keys clears the previous account list and authorization state before the new session begins.
@@ -115,7 +116,7 @@ The Done button stays disabled until every account has either succeeded or faile
 
 - The ticker is entered manually. The stock-search component exists in the project but is not connected to the main trading screen yet.
 - The app does not display balances, positions, buying power, or the number of shares available to sell.
-- Saved API keys cannot currently be renamed or deleted from the app.
+- Saved API key nicknames can be edited, but the underlying keychain labels cannot be renamed or deleted from the app.
 - The five-minute countdown is maintained by the app and does not renew the session automatically.
 - A Release order is sent as soon as Buy or Sell is pressed. There is no extra confirmation step.
 - Successful submission means Public.com accepted the request. It does not guarantee that the market order has filled.

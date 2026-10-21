@@ -57,6 +57,53 @@ private slots:
                  QStringLiteral("PublicsApiKey2"));
     }
 
+    void nicknamesPersistWithoutChangingKeychainLabelsOrSelection()
+    {
+        const QString group = QStringLiteral("publicsApiKeysNicknameTest-%1")
+                                  .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        const QString first = QStringLiteral("PublicsApiKey0");
+        const QString second = QStringLiteral("PublicsApiKey1");
+        {
+            PublicAuthClient client({}, QStringLiteral("TestService"), group,
+                                    QUrl(QStringLiteral("http://127.0.0.1/")),
+                                    [](const QString &, const PublicAuthClient::CredentialCallback &done) {
+                done(QStringLiteral("test-only-secret"), {});
+            });
+            client.setSecretKeys({first, second});
+            client.setSecretKey(first);
+            QVERIFY(client.apiKeyReady());
+            QSignalSpy labelsChanged(&client, &PublicAuthClient::secretKeysChanged);
+            QVERIFY(client.setApiKeyNickname(first, QStringLiteral("  Retirement  ")));
+            QCOMPARE(client.apiKeyDisplayName(first), QStringLiteral("Retirement"));
+            QCOMPARE(client.apiKeyDisplayName(second), second);
+            QCOMPARE(client.secretKeys(), QStringList({first, second}));
+            QCOMPARE(client.selectedApiKeyLabel(), first);
+            QCOMPARE(client.secretKey(), QStringLiteral("test-only-secret"));
+            QCOMPARE(labelsChanged.count(), 0);
+            QVERIFY(!client.setApiKeyNickname(QStringLiteral("PublicsApiKey2"), QStringLiteral("Other")));
+        }
+        QSettings settings;
+        settings.beginGroup(group);
+        QCOMPARE(settings.value(QStringLiteral("nicknames/PublicsApiKey0")).toString(), QStringLiteral("Retirement"));
+        QVERIFY(!settings.contains(QStringLiteral("labels")));
+        settings.endGroup();
+        {
+            PublicAuthClient restarted({}, QStringLiteral("TestService"), group);
+            restarted.setSecretKeys({first, second});
+            QCOMPARE(restarted.apiKeyDisplayName(first), QStringLiteral("Retirement"));
+            QCOMPARE(restarted.apiKeyDisplayName(second), second);
+            QCOMPARE(restarted.secretKeys(), QStringList({first, second}));
+            QVERIFY(restarted.setApiKeyNickname(first, {}));
+            QCOMPARE(restarted.apiKeyDisplayName(first), first);
+        }
+        PublicAuthClient cleared({}, QStringLiteral("TestService"), group);
+        cleared.setSecretKeys({first, second});
+        QCOMPARE(cleared.apiKeyDisplayName(first), first);
+        settings.beginGroup(group);
+        settings.remove(QString());
+        settings.endGroup();
+    }
+
     void rejectsMalformedKeychainLabelIndex()
     {
         QStringList labels;

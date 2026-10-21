@@ -37,6 +37,14 @@ PublicAuthClient::PublicAuthClient(const QString &secretKey,
 {
     m_manager = new QNetworkAccessManager(this);
     setApiKeyReady(!m_secretKey.trimmed().isEmpty());
+    QSettings settings;
+    settings.beginGroup(m_settingsGroup);
+    settings.beginGroup(QStringLiteral("nicknames"));
+    for (const QString &label : settings.childKeys()) {
+        const QString nickname = settings.value(label).toString().trimmed();
+        if (!nickname.isEmpty())
+            m_apiKeyNicknames.insert(label, nickname);
+    }
 }
 
 bool PublicAuthClient::sessionActive() const
@@ -533,6 +541,43 @@ bool PublicAuthClient::applyAccessToken(const QString &apiKeyLabel,
 QStringList PublicAuthClient::secretKeys() const
 {
     return m_secretKeys;
+}
+
+QVariantMap PublicAuthClient::apiKeyNicknames() const
+{
+    return m_apiKeyNicknames;
+}
+
+QString PublicAuthClient::apiKeyDisplayName(const QString &label) const
+{
+    return m_apiKeyNicknames.value(label, label).toString();
+}
+
+bool PublicAuthClient::setApiKeyNickname(const QString &label, const QString &nickname)
+{
+    if (!m_secretKeys.contains(label))
+        return false;
+
+    const QString trimmedNickname = nickname.trimmed();
+    QSettings settings;
+    settings.beginGroup(m_settingsGroup);
+    settings.beginGroup(QStringLiteral("nicknames"));
+    if (trimmedNickname.isEmpty())
+        settings.remove(label);
+    else
+        settings.setValue(label, trimmedNickname);
+    settings.sync();
+    if (settings.status() != QSettings::NoError)
+        return false;
+
+    if (trimmedNickname.isEmpty()) {
+        if (m_apiKeyNicknames.remove(label))
+            emit apiKeyNicknamesChanged();
+    } else if (m_apiKeyNicknames.value(label).toString() != trimmedNickname) {
+        m_apiKeyNicknames.insert(label, trimmedNickname);
+        emit apiKeyNicknamesChanged();
+    }
+    return true;
 }
 
 void PublicAuthClient::setSecretKeys(const QStringList &newSecretKeys)

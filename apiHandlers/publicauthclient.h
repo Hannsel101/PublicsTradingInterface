@@ -14,6 +14,7 @@
 #include <QDebug>
 #include <QSettings>
 #include <QStringList>
+#include <QVariantMap>
 #include <QUrl>
 #include <functional>
 
@@ -36,6 +37,7 @@ public:
     // session active is set to true when tokens are returned by the authorization request
     Q_PROPERTY(bool sessionActive READ sessionActive WRITE setSessionActive NOTIFY sessionActiveChanged FINAL)
     Q_PROPERTY(QStringList secretKeys READ secretKeys WRITE setSecretKeys NOTIFY secretKeysChanged FINAL)
+    Q_PROPERTY(QVariantMap apiKeyNicknames READ apiKeyNicknames NOTIFY apiKeyNicknamesChanged FINAL)
     Q_PROPERTY(QString secretKey READ secretKey WRITE setSecretKey NOTIFY secretKeyChanged FINAL)
     Q_PROPERTY(QString selectedApiKeyLabel READ selectedApiKeyLabel NOTIFY selectedApiKeyLabelChanged FINAL)
     Q_PROPERTY(bool apiKeyReady READ apiKeyReady NOTIFY apiKeyReadyChanged FINAL)
@@ -72,6 +74,8 @@ public:
      * */
     Q_INVOKABLE QStringList listStoredApiKeys();
     Q_INVOKABLE bool storeNextApiKey(const QString &userName, const QString &apiKey);
+    Q_INVOKABLE bool setApiKeyNickname(const QString &label, const QString &nickname);
+    Q_INVOKABLE QString apiKeyDisplayName(const QString &label) const;
 
     static QStringList normalizedStoredApiKeyLabels(const QStringList &labels);
     static QString nextApiKeyLabel(const QStringList &labels);
@@ -91,6 +95,7 @@ public:
 
     QStringList secretKeys() const;
     void setSecretKeys(const QStringList &newSecretKeys);
+    QVariantMap apiKeyNicknames() const;
 
     QString secretKey() const;
     void setSecretKey(const QString &newSecretKey);
@@ -132,6 +137,7 @@ signals:
      * emits signal for the UI to update when the list of secret api keys changes
      * */
     void secretKeysChanged();
+    void apiKeyNicknamesChanged();
 
     /*
      * emits signal to ensure the UI knows which secret key is now being used
@@ -153,6 +159,7 @@ private:
 
     QString m_secretKey;
     QStringList m_secretKeys;
+    QVariantMap m_apiKeyNicknames;
     QNetworkAccessManager *m_manager = nullptr;
     bool m_sessionActive = false;
     QString m_selectedApiKeyLabel;

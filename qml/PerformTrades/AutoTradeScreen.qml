@@ -125,7 +125,7 @@ Item {
                         Label {
                             anchors.fill: parent
                             anchors.margins: 12
-                            text: keyRow.modelData
+                            text: AuthClient.apiKeyNicknames[keyRow.modelData] || keyRow.modelData
                             color: "#f7f8f8"
                             verticalAlignment: Text.AlignVCenter
                             font.pixelSize: 15
