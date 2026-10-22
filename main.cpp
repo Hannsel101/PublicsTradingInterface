@@ -1,4 +1,5 @@
 #include <QGuiApplication>
+#include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include "publicauthclient.h"
@@ -16,6 +17,9 @@ int main(int argc, char *argv[])
     qputenv("ANDROID_OPENSSL_SUFFIX", "_3");
 #endif
     QGuiApplication app(argc, argv);
+#if defined(Q_OS_WIN) || (defined(Q_OS_MACOS) && !defined(Q_OS_IOS))
+    app.setWindowIcon(QIcon(QStringLiteral(":/ios/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png")));
+#endif
     QQmlApplicationEngine engine;
 
     /*

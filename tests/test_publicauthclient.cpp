@@ -2,6 +2,7 @@
 #include <QGuiApplication>
 #include <QTimer>
 #include <QUuid>
+#include <QScopeGuard>
 
 #include "publicauthclient.h"
 
@@ -10,6 +11,51 @@ class PublicAuthClientTest : public QObject
     Q_OBJECT
 
 private slots:
+    void migratesLegacyNicknamesToWritableSettings()
+    {
+        const QString previousOrganization = QCoreApplication::organizationName();
+        const QString previousApplication = QCoreApplication::applicationName();
+        auto restoreIdentity = qScopeGuard([&] {
+            QCoreApplication::setOrganizationName(previousOrganization);
+            QCoreApplication::setApplicationName(previousApplication);
+        });
+        QCoreApplication::setOrganizationName({});
+        QCoreApplication::setApplicationName(QStringLiteral("PublicsSettingsMigrationTest"));
+
+        const QString group = QStringLiteral("publicsApiKeysMigrationTest-%1")
+                                  .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        const QString label = QStringLiteral("PublicsApiKey0");
+        QSettings legacy;
+        legacy.beginGroup(group);
+        legacy.setValue(QStringLiteral("labels"), QStringList({label}));
+        legacy.setValue(QStringLiteral("nicknames/") + label, QStringLiteral("Existing name"));
+        legacy.sync();
+
+        PublicAuthClient client({}, QStringLiteral("TestService"), group);
+        client.setSecretKeys({label});
+        QCOMPARE(client.apiKeyDisplayName(label), QStringLiteral("Existing name"));
+        QVERIFY(client.setApiKeyNickname(label, QStringLiteral("Updated name")));
+        QCOMPARE(client.apiKeyDisplayName(label), QStringLiteral("Updated name"));
+
+        QSettings current(QStringLiteral("PublicsTradingInterface"),
+                          QStringLiteral("PublicsTradingInterface"));
+        current.beginGroup(group);
+        current.sync();
+        QCOMPARE(current.status(), QSettings::NoError);
+        QCOMPARE(current.value(QStringLiteral("labels")).toStringList(), QStringList({label}));
+        QCOMPARE(current.value(QStringLiteral("nicknames/") + label).toString(),
+                 QStringLiteral("Updated name"));
+
+        PublicAuthClient restarted({}, QStringLiteral("TestService"), group);
+        QCOMPARE(restarted.apiKeyDisplayName(label), QStringLiteral("Updated name"));
+        restarted.setSecretKeys({label});
+        QVERIFY(restarted.setApiKeyNickname(label, {}));
+        PublicAuthClient cleared({}, QStringLiteral("TestService"), group);
+        QCOMPARE(cleared.apiKeyDisplayName(label), label);
+        current.remove(QString());
+        legacy.remove(QString());
+    }
+
     void clearingSelectionInvalidatesPendingKeyRead()
     {
         PublicAuthClient client;
@@ -82,7 +128,8 @@ private slots:
             QCOMPARE(labelsChanged.count(), 0);
             QVERIFY(!client.setApiKeyNickname(QStringLiteral("PublicsApiKey2"), QStringLiteral("Other")));
         }
-        QSettings settings;
+        QSettings settings(QStringLiteral("PublicsTradingInterface"),
+                           QStringLiteral("PublicsTradingInterface"));
         settings.beginGroup(group);
         QCOMPARE(settings.value(QStringLiteral("nicknames/PublicsApiKey0")).toString(), QStringLiteral("Retirement"));
         QVERIFY(!settings.contains(QStringLiteral("labels")));
@@ -209,7 +256,8 @@ private slots:
         QCOMPARE(reader.selectedApiKeyLabel(), QStringLiteral("PublicsApiKey0"));
         QCOMPARE(reader.secretKey(), testSecret);
 
-        QSettings settings;
+        QSettings settings(QStringLiteral("PublicsTradingInterface"),
+                           QStringLiteral("PublicsTradingInterface"));
         settings.beginGroup(settingsGroup);
         settings.remove(QString());
         settings.endGroup();
@@ -230,9 +278,11 @@ private slots:
 
     void removesKeyAndNicknameFromKeychainAndSettings()
     {
+#if !defined(Q_OS_ANDROID)
         if (!qEnvironmentVariableIsSet("PUBLICS_RUN_KEYCHAIN_TEST")) {
             QSKIP("Set PUBLICS_RUN_KEYCHAIN_TEST=1 to run the OS keychain integration test.");
         }
+#endif
 
         const QString uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString service = QStringLiteral("PublicsTradingInterfaceTest-%1").arg(uniqueId);
@@ -263,7 +313,8 @@ private slots:
         QVERIFY(client.secretKey().isEmpty());
         QVERIFY(!client.sessionActive());
 
-        QSettings settings;
+        QSettings settings(QStringLiteral("PublicsTradingInterface"),
+                           QStringLiteral("PublicsTradingInterface"));
         settings.beginGroup(group);
         QCOMPARE(settings.value(QStringLiteral("labels")).toStringList(), QStringList({second}));
         QVERIFY(!settings.contains(QStringLiteral("nicknames/") + first));
@@ -315,7 +366,8 @@ private slots:
         QVERIFY(writer.storeNextApiKey(QString(), QStringLiteral("test-publics-secret-value")));
         QVERIFY(storedSpy.wait(5000));
 
-        QSettings settings;
+        QSettings settings(QStringLiteral("PublicsTradingInterface"),
+                           QStringLiteral("PublicsTradingInterface"));
         settings.beginGroup(settingsGroup);
         settings.remove(QString());
         settings.endGroup();
@@ -383,6 +435,11 @@ private slots:
         settings.beginGroup(settingsGroup);
         settings.remove(QString());
         settings.endGroup();
+        QSettings current(QStringLiteral("PublicsTradingInterface"),
+                          QStringLiteral("PublicsTradingInterface"));
+        current.beginGroup(settingsGroup);
+        current.remove(QString());
+        current.endGroup();
 
         PublicAuthClient reader(QString(), service, settingsGroup);
         QSignalSpy recoveredSpy(&reader, &PublicAuthClient::secretKeysChanged);

@@ -108,14 +108,15 @@ Item {
                         Layout.preferredWidth: 42
                         Layout.preferredHeight: 42
                         enabled: !AuthClient.apiKeyIndexLoading
-                        text: "✎"
                         Accessible.name: qsTr("Edit nickname for %1").arg(AuthClient.apiKeyNicknames[delegateRoot.apiKeyLabel] || delegateRoot.apiKeyLabel)
-                        contentItem: Text {
-                            text: editNicknameButton.text
-                            color: root.primaryText
-                            font.pixelSize: 22
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
+                        contentItem: Item {
+                            Image {
+                                anchors.centerIn: parent
+                                width: 24
+                                height: 24
+                                sourceSize: Qt.size(72, 72)
+                                source: Qt.resolvedUrl("icons/edit.png")
+                            }
                         }
                         background: Rectangle {
                             radius: 12
@@ -135,14 +136,15 @@ Item {
                         Layout.preferredWidth: 42
                         Layout.preferredHeight: 42
                         enabled: !AuthClient.apiKeyIndexLoading
-                        text: "🗑"
                         Accessible.name: qsTr("Delete %1").arg(AuthClient.apiKeyNicknames[delegateRoot.apiKeyLabel] || delegateRoot.apiKeyLabel)
-                        contentItem: Text {
-                            text: deleteKeyButton.text
-                            color: "#ff5c7a"
-                            font.pixelSize: 20
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
+                        contentItem: Item {
+                            Image {
+                                anchors.centerIn: parent
+                                width: 24
+                                height: 24
+                                sourceSize: Qt.size(72, 72)
+                                source: Qt.resolvedUrl("icons/delete.png")
+                            }
                         }
                         background: Rectangle {
                             radius: 12

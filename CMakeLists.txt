@@ -59,6 +59,28 @@ qt_add_executable(appPublicsTradingInterface
     vcpkg.json
 )
 
+if(APPLE AND NOT IOS)
+    set(PUBLICS_MACOS_ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/PublicsTradingInterface.icns")
+    set_source_files_properties("${PUBLICS_MACOS_ICON}" PROPERTIES
+        MACOSX_PACKAGE_LOCATION Resources
+    )
+    target_sources(appPublicsTradingInterface PRIVATE "${PUBLICS_MACOS_ICON}")
+    set_target_properties(appPublicsTradingInterface PROPERTIES
+        MACOSX_BUNDLE_ICON_FILE PublicsTradingInterface.icns
+    )
+elseif(WIN32)
+    target_sources(appPublicsTradingInterface PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/PublicsTradingInterface.rc"
+    )
+endif()
+
+if((APPLE AND NOT IOS) OR WIN32)
+    qt_add_resources(appPublicsTradingInterface desktop_icon
+        PREFIX "/"
+        FILES "ios/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
+    )
+endif()
+
 if(IOS)
     set(PUBLICS_IOS_ASSET_CATALOG
         "${CMAKE_CURRENT_SOURCE_DIR}/ios/Assets.xcassets"
@@ -89,6 +111,10 @@ qt_add_qml_module(appPublicsTradingInterface
         qml/PerformTrades/TradeResultScreen.qml
         qml/PerformTrades/AutoTradeScreen.qml
         qml/StockSearchAutoComplete/StockSearchAutoComplete.qml
+
+    RESOURCES
+        qml/DisplayAccountInformation/icons/edit.png
+        qml/DisplayAccountInformation/icons/delete.png
 
 )
 
@@ -124,8 +150,8 @@ if(ANDROID)
         QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
         QT_ANDROID_PACKAGE_NAME "org.qtproject.example.appPublicsTradingInterface"
         QT_ANDROID_APP_NAME "Publics Trading Interface"
-        QT_ANDROID_VERSION_NAME "${PROJECT_VERSION}"
-        QT_ANDROID_VERSION_CODE 2
+        QT_ANDROID_VERSION_NAME "2.1.2"
+        QT_ANDROID_VERSION_CODE 4
         QT_ANDROID_MIN_SDK_VERSION 28
         QT_ANDROID_TARGET_SDK_VERSION 36
     )

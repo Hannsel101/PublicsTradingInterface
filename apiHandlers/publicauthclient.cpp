@@ -5,6 +5,18 @@
 #include <QRegularExpression>
 #include <QSet>
 
+namespace {
+class ApiKeySettings : public QSettings
+{
+public:
+    ApiKeySettings()
+        : QSettings(QStringLiteral("PublicsTradingInterface"),
+                    QStringLiteral("PublicsTradingInterface"))
+    {
+    }
+};
+}
+
 PublicAuthClient::PublicAuthClient(const QString &secretKey, QObject *parent)
     : PublicAuthClient(secretKey,
                        QString::fromLatin1(defaultKeychainService),
@@ -37,8 +49,27 @@ PublicAuthClient::PublicAuthClient(const QString &secretKey,
 {
     m_manager = new QNetworkAccessManager(this);
     setApiKeyReady(!m_secretKey.trimmed().isEmpty());
-    QSettings settings;
+    ApiKeySettings settings;
     settings.beginGroup(m_settingsGroup);
+    // Previous versions wrote to a no-organization settings file on Android.
+    // Its values survive restarts, but sync() reports AccessError there.
+    if (!settings.value(QStringLiteral("legacySettingsImported")).toBool()) {
+        QSettings legacy;
+        legacy.beginGroup(m_settingsGroup);
+        if (!settings.contains(QStringLiteral("labels")) && legacy.contains(QStringLiteral("labels")))
+            settings.setValue(QStringLiteral("labels"), legacy.value(QStringLiteral("labels")));
+        legacy.beginGroup(QStringLiteral("nicknames"));
+        settings.beginGroup(QStringLiteral("nicknames"));
+        for (const QString &label : legacy.childKeys()) {
+            if (!settings.contains(label))
+                settings.setValue(label, legacy.value(label));
+        }
+        settings.endGroup();
+        settings.setValue(QStringLiteral("legacySettingsImported"), true);
+        settings.sync();
+        if (settings.status() != QSettings::NoError)
+            qWarning() << "Could not migrate local API key metadata.";
+    }
     settings.beginGroup(QStringLiteral("nicknames"));
     for (const QString &label : settings.childKeys()) {
         const QString nickname = settings.value(label).toString().trimmed();
@@ -151,7 +182,7 @@ QStringList PublicAuthClient::listStoredApiKeys()
         return secretKeys();
     }
 
-    QSettings settings;
+    ApiKeySettings settings;
     settings.beginGroup(m_settingsGroup);
     QStringList labels = normalizedStoredApiKeyLabels(settings.value("labels").toStringList());
     settings.setValue("labels", labels);
@@ -229,7 +260,7 @@ void PublicAuthClient::readApiKeyLabelIndex(const QStringList &localLabels)
             labels.append(localLabels);
             labels = normalizedStoredApiKeyLabels(labels);
 
-            QSettings settings;
+            ApiKeySettings settings;
             settings.beginGroup(m_settingsGroup);
             settings.setValue("labels", labels);
             settings.endGroup();
@@ -402,7 +433,7 @@ bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &a
     }
 
     QStringList labels = secretKeys();
-    QSettings settings;
+    ApiKeySettings settings;
     settings.beginGroup(m_settingsGroup);
     labels.append(settings.value("labels").toStringList());
     settings.endGroup();
@@ -439,7 +470,7 @@ bool PublicAuthClient::storeNextApiKey(const QString &userName, const QString &a
 
             setApiKeyIndexLoading(false);
 
-            QSettings settings;
+            ApiKeySettings settings;
             settings.beginGroup(m_settingsGroup);
             settings.setValue("labels", labels);
             settings.endGroup();
@@ -465,7 +496,7 @@ bool PublicAuthClient::removeStoredApiKey(const QString &label)
     if (apiKeyIndexLoading() || !m_secretKeys.contains(label))
         return false;
 
-    QSettings settings;
+    ApiKeySettings settings;
     settings.beginGroup(m_settingsGroup);
     settings.sync();
     if (settings.status() != QSettings::NoError) {
@@ -494,7 +525,7 @@ bool PublicAuthClient::removeStoredApiKey(const QString &label)
     };
     const auto restoreSettings = [this, label, hadLocalLabels, previousLabels, hadNickname,
                                   previousNickname]() {
-        QSettings rollback;
+        ApiKeySettings rollback;
         rollback.beginGroup(m_settingsGroup);
         if (hadLocalLabels)
             rollback.setValue(QStringLiteral("labels"), previousLabels);
@@ -515,7 +546,7 @@ bool PublicAuthClient::removeStoredApiKey(const QString &label)
             return;
         }
 
-        QSettings settings;
+        ApiKeySettings settings;
         settings.beginGroup(m_settingsGroup);
         settings.setValue(QStringLiteral("labels"), remaining);
         settings.remove(nicknamePath);
@@ -644,7 +675,7 @@ bool PublicAuthClient::setApiKeyNickname(const QString &label, const QString &ni
         return false;
 
     const QString trimmedNickname = nickname.trimmed();
-    QSettings settings;
+    ApiKeySettings settings;
     settings.beginGroup(m_settingsGroup);
     settings.beginGroup(QStringLiteral("nicknames"));
     if (trimmedNickname.isEmpty())
