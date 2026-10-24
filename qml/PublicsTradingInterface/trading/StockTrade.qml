@@ -7,7 +7,7 @@ Item {
     id: root
 
     implicitWidth: 640
-    implicitHeight: 320
+    implicitHeight: Math.max(320, tradeLayout.implicitHeight + 2 * (root.compactLayout ? 14 : 18))
 
     property alias inputFieldText: inputField.text
     signal performBuy()
@@ -23,6 +23,7 @@ Item {
         border.width: 1
 
         ColumnLayout {
+            id: tradeLayout
             anchors.fill: parent
             anchors.margins: compactLayout ? 14 : 18
             spacing: compactLayout ? 14 : 18

@@ -203,7 +203,7 @@ ApplicationWindow {
                                 color: AuthClient.apiKeyReady ? Theme.successColor : Theme.secondaryText
                                 font.pixelSize: 14
                                 font.weight: Font.DemiBold
-                                wrapMode: Text.WordWrap
+                                wrapMode: Text.Wrap
                             }
 
                             Label {
@@ -331,15 +331,19 @@ ApplicationWindow {
                     anchors.margins: window.compactLayout ? 18 : 24
                     spacing: 18
 
-                    RowLayout {
+                    GridLayout {
                         Layout.fillWidth: true
-                        spacing: 12
+                        columns: window.compactLayout ? 1 : 2
+                        columnSpacing: 12
+                        rowSpacing: 12
 
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 4
 
                             Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.Wrap
                                 text: ApiWorker.tradeResultsVisible ? qsTr("Transaction results") : qsTr("Trade workspace")
                                 color: Theme.primaryText
                                 font.pixelSize: window.compactLayout ? 22 : 26
@@ -351,13 +355,14 @@ ApplicationWindow {
                                       ? qsTr("Review each account result, then tap Done to return to the trade workspace.")
                                       : qsTr("Orders run across all eligible accounts loaded for %1.").arg(window.displayKey(AuthClient.selectedApiKeyLabel))
                                 color: Theme.mutedText
-                                wrapMode: Text.WordWrap
+                                wrapMode: Text.Wrap
                                 Layout.fillWidth: true
                                 font.pixelSize: 14
                             }
                         }
 
                         SwitchKeyButton {
+                            Layout.alignment: Qt.AlignRight
                             visible: !ApiWorker.tradeResultsVisible
                             Layout.preferredWidth: window.compactLayout ? 148 : 190
                             Layout.minimumHeight: 46
@@ -365,7 +370,7 @@ ApplicationWindow {
                     }
 
                     StockTrade {
-
+                        Layout.minimumHeight: implicitHeight
                         Layout.fillWidth: true
                         Layout.preferredHeight: Math.max(260, Math.min(380, window.height * 0.44))
                         visible: !ApiWorker.tradeResultsVisible

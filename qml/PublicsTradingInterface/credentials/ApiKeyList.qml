@@ -177,6 +177,7 @@ Item {
         property string editingLabel: ""
         parent: Overlay.overlay
         width: Math.min(parent.width - 32, 380)
+        height: Math.min(implicitHeight, Math.max(0, parent.height - 32))
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
         modal: true
@@ -188,60 +189,72 @@ Item {
             color: Theme.elevatedColor
             border.color: Theme.accentColor
         }
-        contentItem: ColumnLayout {
-            spacing: 14
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Edit API key nickname")
-                color: Theme.primaryText
-                font.pixelSize: 19
-                font.weight: Font.DemiBold
-            }
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Leave blank to show the default key name.")
-                color: Theme.secondaryText
-                wrapMode: Text.WordWrap
-            }
-            TextField {
-                id: nicknameField
-                Layout.fillWidth: true
-                placeholderText: qsTr("Nickname")
-                color: Theme.primaryText
-                selectByMouse: true
-                background: Rectangle {
-                    radius: 10
-                    color: Theme.surfaceColor
-                    border.color: nicknameField.activeFocus ? Theme.accentColor : Theme.borderColor
-                }
-                onAccepted: saveNicknameButton.clicked()
-            }
-            Label {
-                id: nicknameError
-                Layout.fillWidth: true
-                visible: text !== ""
-                color: Theme.dangerColor
-                wrapMode: Text.WordWrap
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                Button {
+        contentItem: Flickable {
+            implicitHeight: nicknameContent.implicitHeight
+            contentWidth: width
+            contentHeight: nicknameContent.implicitHeight
+            interactive: contentHeight > height
+            boundsBehavior: Flickable.StopAtBounds
+            clip: true
+
+            ColumnLayout {
+                id: nicknameContent
+                width: parent.width
+                spacing: 14
+                Label {
                     Layout.fillWidth: true
-                    text: qsTr("Cancel")
-                    onClicked: nicknamePopup.close()
+                    text: qsTr("Edit API key nickname")
+                    color: Theme.primaryText
+                    font.pixelSize: 19
+                    font.weight: Font.DemiBold
                 }
-                Button {
-                    id: saveNicknameButton
+                Label {
                     Layout.fillWidth: true
-                    text: qsTr("Save")
-                    onClicked: {
-                        if (AuthClient.setApiKeyNickname(nicknamePopup.editingLabel, nicknameField.text))
-                            nicknamePopup.close()
-                        else
-                            nicknameError.text = qsTr("Could not save the nickname. Please try again.")
+                    text: qsTr("Leave blank to show the default key name.")
+                    color: Theme.secondaryText
+                    wrapMode: Text.WordWrap
+                }
+                TextField {
+                    id: nicknameField
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("Nickname")
+                    color: Theme.primaryText
+                    selectByMouse: true
+                    background: Rectangle {
+                        radius: 10
+                        color: Theme.surfaceColor
+                        border.color: nicknameField.activeFocus ? Theme.accentColor : Theme.borderColor
+                    }
+                    onAccepted: saveNicknameButton.clicked()
+                }
+                Label {
+                    id: nicknameError
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    color: Theme.dangerColor
+                    wrapMode: Text.WordWrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Button {
+                        Layout.fillWidth: true
+                        text: qsTr("Cancel")
+                        onClicked: nicknamePopup.close()
+                    }
+                    Button {
+                        id: saveNicknameButton
+                        Layout.fillWidth: true
+                        text: qsTr("Save")
+                        onClicked: {
+                            if (AuthClient.setApiKeyNickname(nicknamePopup.editingLabel, nicknameField.text))
+                                nicknamePopup.close()
+                            else
+                                nicknameError.text = qsTr("Could not save the nickname. Please try again.")
+                        }
                     }
                 }
             }
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
         }
     }
 
@@ -250,6 +263,7 @@ Item {
         property string deletingLabel: ""
         parent: Overlay.overlay
         width: Math.min(parent.width - 32, 380)
+        height: Math.min(implicitHeight, Math.max(0, parent.height - 32))
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
         modal: true
@@ -261,50 +275,62 @@ Item {
             color: Theme.elevatedColor
             border.color: Theme.dangerColor
         }
-        contentItem: ColumnLayout {
-            spacing: 14
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Delete saved API key?")
-                color: Theme.primaryText
-                font.pixelSize: 19
-                font.weight: Font.DemiBold
-            }
-            Label {
-                Layout.fillWidth: true
-                readonly property string nickname: AuthClient.apiKeyNicknames[deletePopup.deletingLabel] || ""
-                text: nickname !== ""
-                      ? qsTr("Remove %1 (%2) from the system keychain? Its nickname will also be removed from the app settings. This cannot be undone.").arg(nickname, deletePopup.deletingLabel)
-                      : qsTr("Remove %1 from the system keychain? Any saved nickname will also be removed from the app settings. This cannot be undone.").arg(deletePopup.deletingLabel)
-                color: Theme.secondaryText
-                wrapMode: Text.WordWrap
-            }
-            Label {
-                id: deleteError
-                Layout.fillWidth: true
-                visible: text !== ""
-                color: Theme.dangerColor
-                wrapMode: Text.WordWrap
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                Button {
+        contentItem: Flickable {
+            implicitHeight: deleteContent.implicitHeight
+            contentWidth: width
+            contentHeight: deleteContent.implicitHeight
+            interactive: contentHeight > height
+            boundsBehavior: Flickable.StopAtBounds
+            clip: true
+
+            ColumnLayout {
+                id: deleteContent
+                width: parent.width
+                spacing: 14
+                Label {
                     Layout.fillWidth: true
-                    enabled: !AuthClient.apiKeyIndexLoading
-                    text: qsTr("Cancel")
-                    onClicked: deletePopup.close()
+                    text: qsTr("Delete saved API key?")
+                    color: Theme.primaryText
+                    font.pixelSize: 19
+                    font.weight: Font.DemiBold
                 }
-                Button {
+                Label {
                     Layout.fillWidth: true
-                    enabled: !AuthClient.apiKeyIndexLoading
-                    text: AuthClient.apiKeyIndexLoading ? qsTr("Deleting…") : qsTr("Confirm deletion")
-                    onClicked: {
-                        deleteError.text = ""
-                        if (!AuthClient.removeStoredApiKey(deletePopup.deletingLabel))
-                            deleteError.text = AuthClient.apiKeyError || qsTr("Could not start deletion. Please try again.")
+                    readonly property string nickname: AuthClient.apiKeyNicknames[deletePopup.deletingLabel] || ""
+                    text: nickname !== ""
+                          ? qsTr("Remove %1 (%2) from the system keychain? Its nickname will also be removed from the app settings. This cannot be undone.").arg(nickname).arg(deletePopup.deletingLabel)
+                          : qsTr("Remove %1 from the system keychain? Any saved nickname will also be removed from the app settings. This cannot be undone.").arg(deletePopup.deletingLabel)
+                    color: Theme.secondaryText
+                    wrapMode: Text.Wrap
+                }
+                Label {
+                    id: deleteError
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    color: Theme.dangerColor
+                    wrapMode: Text.WordWrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Button {
+                        Layout.fillWidth: true
+                        enabled: !AuthClient.apiKeyIndexLoading
+                        text: qsTr("Cancel")
+                        onClicked: deletePopup.close()
+                    }
+                    Button {
+                        Layout.fillWidth: true
+                        enabled: !AuthClient.apiKeyIndexLoading
+                        text: AuthClient.apiKeyIndexLoading ? qsTr("Deleting…") : qsTr("Confirm deletion")
+                        onClicked: {
+                            deleteError.text = ""
+                            if (!AuthClient.removeStoredApiKey(deletePopup.deletingLabel))
+                                deleteError.text = AuthClient.apiKeyError || qsTr("Could not start deletion. Please try again.")
+                        }
                     }
                 }
             }
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
         }
     }
     Connections {

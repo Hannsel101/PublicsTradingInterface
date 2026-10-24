@@ -85,6 +85,7 @@ Item {
                             anchors.fill: parent
                             anchors.margins: 12
                             text: AuthClient.apiKeyNicknames[keyRow.modelData] || keyRow.modelData
+                            elide: Text.ElideRight
                             color: Theme.primaryText
                             verticalAlignment: Text.AlignVCenter
                             font.pixelSize: 15
@@ -95,7 +96,7 @@ Item {
         }
 
         StockTrade {
-
+            Layout.minimumHeight: implicitHeight
             Layout.fillWidth: true
             Layout.preferredHeight: 320
             visible: !AutoTrader.tradeResultsVisible
