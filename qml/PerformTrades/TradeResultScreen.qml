@@ -56,8 +56,8 @@ Item {
                     Label {
                         Layout.fillWidth: true
                         text: root.resultController.tradeResultsBusy
-                              ? qsTr("Waiting for each loaded account to return a result…")
-                              : qsTr("Every loaded account has returned a transaction result.")
+                              ? qsTr("Waiting for each account and ticker to return a result…")
+                              : qsTr("Every account and ticker has returned a transaction result.")
                         color: root.resultController.tradeResultsBusy ? root.mutedText : root.successColor
                         font.pixelSize: 14
                         wrapMode: Text.WordWrap
@@ -94,7 +94,8 @@ Item {
                     border.width: 1
 
                     readonly property string accountId: resultDelegate.modelData.accountId || qsTr("Unknown account")
-                    readonly property string accountLabel: resultDelegate.modelData.accountLabel || qsTr("Account %1").arg(resultDelegate.accountId)
+                    readonly property string accountLabel: (resultDelegate.modelData.accountLabel || qsTr("Account %1").arg(resultDelegate.accountId))
+                                                           + (resultDelegate.modelData.symbol ? " · " + resultDelegate.modelData.symbol : "")
                     readonly property string status: resultDelegate.modelData.status || "pending"
                     readonly property string message: resultDelegate.modelData.message || ""
                     readonly property bool success: resultDelegate.status === "success"

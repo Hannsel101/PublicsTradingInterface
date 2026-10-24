@@ -82,6 +82,7 @@ public:
     void setTradeResultsVisible(bool visible);
     bool tradeResultsComplete() const;
     bool tradeResultsBusy() const;
+    static QStringList parseSymbols(const QString &input);
     static QString displayLabelForAccount(const QString &accountId, const QString &accountType);
 
 public slots:
@@ -177,14 +178,25 @@ private:
                                  const QString &symbol,        // Ticker Symbol
                                  const QString &side,          // "BUY" or "SELL"
                                  float quantity,                // Number of shares to trade
-                                 bool isPreflight);            // isPreflight = true means this will be a preflight
+                                 bool isPreflight,
+                                 int resultIndex,
+                                 quint64 generation);
 
-    void beginTradeResults(const QString &symbol, const QString &side, bool isPreflight);
-    void updateTradeResult(const QString &accountId, bool success, const QString &message);
+    void beginTradeResults(const QStringList &symbols, const QString &side, bool isPreflight);
+    void updateTradeResult(int resultIndex, bool success, const QString &message);
+    void startTrades(const QString &input, const QString &side, bool isPreflight);
+    void dispatchNextTrade(quint64 generation);
+    void finishTradeStep(int resultIndex, bool success, const QString &message, quint64 generation);
     void setCurrentTransactionTitle(const QString &title);
     void setTradeResultsComplete(bool complete);
     QString transactionTitle(const QString &symbol, const QString &side, bool isPreflight) const;
     QString apiErrorMessage(const QNetworkReply *reply, const QByteArray &responseData) const;
+    QStringList m_tradeSymbols;
+    QList<AccountData> m_tradeAccounts;
+    QString m_tradeSide;
+    bool m_isPreflight = false;
+    int m_nextTradeIndex = 0;
+    quint64 m_tradeGeneration = 0;
 };
 
 

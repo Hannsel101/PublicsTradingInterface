@@ -8,6 +8,17 @@ class PublicApiWorkerTest : public QObject
     Q_OBJECT
 
 private slots:
+    void parsesCommaSeparatedSymbolsWithoutLosingOrder()
+    {
+        QCOMPARE(PublicApiWorker::parseSymbols(QStringLiteral(" AAPL, TSLA, GM,")),
+                 QStringList({QStringLiteral("AAPL"), QStringLiteral("TSLA"), QStringLiteral("GM")}));
+        QCOMPARE(PublicApiWorker::parseSymbols(QStringLiteral("a a!p1l, t$sla,, gm")),
+                 QStringList({QStringLiteral("AAPL"), QStringLiteral("TSLA"), QStringLiteral("GM")}));
+        QCOMPARE(PublicApiWorker::parseSymbols(QStringLiteral(" , 123 ,!")), QStringList());
+        QCOMPARE(PublicApiWorker::parseSymbols(QStringLiteral("aapl,aapl")),
+                 QStringList({QStringLiteral("AAPL"), QStringLiteral("AAPL")}));
+    }
+
     void androidBuildProvidesFunctionalTlsBackend()
     {
 #if defined(Q_OS_ANDROID)

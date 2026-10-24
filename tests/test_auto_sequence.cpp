@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
+#include <QStringList>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QUuid>
@@ -41,16 +42,25 @@ public:
                     else response(socket, R"({"message":"bad key"})", 401);
                 } else if (path == "/userapigateway/trading/account") {
                     response(socket, bearer == QStringLiteral("first")
-                        ? R"({"accounts":[{"accountId":"A","accountType":"BROKERAGE"},{"accountId":"A","accountType":"BROKERAGE"},{"accountId":"B","accountType":"ROTH_IRA"}]})"
+                        ? (includeEntity
+                            ? R"({"accounts":[{"accountId":"A","accountType":"BROKERAGE"},{"accountId":"E","accountType":"ENTITY"},{"accountId":"B","accountType":"ROTH_IRA"}]})"
+                            : R"({"accounts":[{"accountId":"A","accountType":"BROKERAGE"},{"accountId":"A","accountType":"BROKERAGE"},{"accountId":"B","accountType":"ROTH_IRA"}]})")
                         : R"({"accounts":[{"accountId":"C","accountType":"TRADITIONAL_IRA"}]})");
                 } else if (path.contains("/portfolio/v2")) {
                     response(socket, path.contains("/A/")
                         ? R"({"positions":[{"instrument":{"type":"EQUITY","symbol":"AAPL"},"quantity":"2.5"}]})"
-                        : R"({"positions":[]})");
-                } else if (path.contains("/preflight/single-leg")) {
+                        : path.contains("/E/")
+                            ? R"({"positions":[{"instrument":{"type":"EQUITY","symbol":"AAPL"},"quantity":"4"}]})"
+                            : R"({"positions":[]})");
+                } else if (path.contains("/preflight/single-leg") || path.endsWith("/order")) {
                     orderResponseTimes << clock.elapsed();
                     quantities << request.value(QStringLiteral("quantity")).toString();
-                    response(socket, R"({"orderValue":"100","estimatedExecutionFee":"0"})");
+                    const QString symbol = request.value(QStringLiteral("instrument")).toObject()
+                                               .value(QStringLiteral("symbol")).toString();
+                    orderedTrades << QStringLiteral("%1:%2").arg(QString::fromUtf8(path.split('/').at(3)), symbol);
+                    if (failSymbol == symbol) response(socket, R"({"message":"rejected"})", 400);
+                    else if (path.endsWith("/order")) response(socket, R"({"status":"ACCEPTED"})");
+                    else response(socket, R"({"orderValue":"100","estimatedExecutionFee":"0"})");
                 } else {
                     response(socket, R"({"message":"unexpected path"})", 404);
                 }
@@ -73,12 +83,155 @@ public:
     QList<qint64> orderResponseTimes;
     QStringList paths;
     QStringList quantities;
+    QStringList orderedTrades;
+    QString failSymbol;
+    bool includeEntity = false;
 };
 
 class AutoSequenceTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void entityAccountTradesInSelectedKeyAndAutoMode()
+    {
+        TestBrokerageServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        server.includeEntity = true;
+        PublicApiWorker worker(server.url());
+        QSignalSpy loaded(&worker, &PublicApiWorker::accountLoadFinished);
+        worker.processToken(QStringLiteral("first-token"));
+        QTRY_VERIFY_WITH_TIMEOUT(!loaded.isEmpty(), 4000);
+        QCOMPARE(loaded.first().at(0).toBool(), true);
+
+        worker.executeTrade(QStringLiteral("AAPL, GM"), QStringLiteral("BUY"));
+        QTRY_VERIFY_WITH_TIMEOUT(worker.tradeResultsComplete(), 6000);
+        QVERIFY(server.orderedTrades.contains(QStringLiteral("E:AAPL")));
+        QVERIFY(server.orderedTrades.contains(QStringLiteral("E:GM")));
+        QCOMPARE(worker.tradeResults().size(), 6);
+        QCOMPARE(worker.tradeResults().at(2).toMap().value(QStringLiteral("accountType")).toString(), QStringLiteral("ENTITY"));
+        QCOMPARE(worker.tradeResults().at(2).toMap().value(QStringLiteral("accountLabel")).toString(), QStringLiteral("Business: E"));
+
+        server.orderedTrades.clear();
+        server.quantities.clear();
+        worker.executePreflight(QStringLiteral("AAPL"), QStringLiteral("SELL"));
+        QTRY_VERIFY_WITH_TIMEOUT(worker.tradeResultsComplete(), 6000);
+        QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("A:AAPL"), QStringLiteral("E:AAPL")}));
+        QCOMPARE(server.quantities, QStringList({QStringLiteral("2.5"), QStringLiteral("4")}));
+
+        worker.clearSubAccountsList();
+        server.orderedTrades.clear();
+        PublicAuthClient auth({}, QStringLiteral("TestService"), QStringLiteral("TestGroup"), server.url(),
+            [](const QString &label, const PublicAuthClient::CredentialCallback &done) {
+                done(label == QStringLiteral("PublicsApiKey0") ? QStringLiteral("first") : QStringLiteral("second"), {});
+            });
+        auth.setSecretKeys({QStringLiteral("PublicsApiKey0"), QStringLiteral("PublicsApiKey1")});
+        connect(&auth, &PublicAuthClient::tokenReceived, &worker, &PublicApiWorker::processToken);
+        AutoTradeController controller(&auth, &worker);
+        controller.submit(QStringLiteral("AAPL"), QStringLiteral("BUY"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.tradeResultsComplete(), 12000);
+        QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("A:AAPL"), QStringLiteral("E:AAPL"),
+                                                   QStringLiteral("B:AAPL"), QStringLiteral("C:AAPL")}));
+        QCOMPARE(controller.tradeResults().size(), 4);
+    }
+
+    void selectedKeyMarketRequestsUseSameAccountTickerSequenceOnLocalServer()
+    {
+        TestBrokerageServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        PublicApiWorker worker(server.url());
+        QSignalSpy loaded(&worker, &PublicApiWorker::accountLoadFinished);
+        worker.processToken(QStringLiteral("first-token"));
+        QTRY_VERIFY_WITH_TIMEOUT(!loaded.isEmpty(), 4000);
+        QCOMPARE(loaded.first().at(0).toBool(), true);
+
+        server.clock.start();
+        worker.executeTrade(QStringLiteral(" AAPL, TSLA, "), QStringLiteral("BUY"));
+        QTRY_VERIFY_WITH_TIMEOUT(worker.tradeResultsComplete(), 6000);
+        QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("A:AAPL"), QStringLiteral("A:TSLA"),
+                                                   QStringLiteral("B:AAPL"), QStringLiteral("B:TSLA")}));
+        QCOMPARE(server.quantities, QStringList(4, QStringLiteral("1")));
+        for (const QVariant &row : worker.tradeResults())
+            QCOMPARE(row.toMap().value(QStringLiteral("status")).toString(), QStringLiteral("success"));
+    }
+
+    void selectedKeyPreflightContinuesAfterOneTickerFails()
+    {
+        TestBrokerageServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        server.failSymbol = QStringLiteral("TSLA");
+        PublicApiWorker worker(server.url());
+        worker.processToken(QStringLiteral("first-token"));
+        QSignalSpy loaded(&worker, &PublicApiWorker::accountLoadFinished);
+        QTRY_VERIFY_WITH_TIMEOUT(!loaded.isEmpty(), 4000);
+        QCOMPARE(loaded.first().at(0).toBool(), true);
+
+        server.clock.start();
+        worker.executePreflight(QStringLiteral("AAPL, TSLA, GM,"), QStringLiteral("BUY"));
+        QTRY_VERIFY_WITH_TIMEOUT(worker.tradeResultsComplete(), 6000);
+        QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("A:AAPL"), QStringLiteral("A:TSLA"), QStringLiteral("A:GM"),
+                                                   QStringLiteral("B:AAPL"), QStringLiteral("B:TSLA"), QStringLiteral("B:GM")}));
+        QCOMPARE(worker.tradeResults().size(), 6);
+        for (int i = 0; i < 6; ++i) {
+            const QVariantMap row = worker.tradeResults().at(i).toMap();
+            QCOMPARE(row.value(QStringLiteral("status")).toString(),
+                     i % 3 == 1 ? QStringLiteral("failed") : QStringLiteral("success"));
+            QCOMPARE(row.value(QStringLiteral("symbol")).toString(),
+                     QStringList({QStringLiteral("AAPL"), QStringLiteral("TSLA"), QStringLiteral("GM")}).at(i % 3));
+        }
+    }
+
+    void multiTickerBuyRunsEachAccountBeforeMovingToNextKey()
+    {
+        TestBrokerageServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        PublicAuthClient auth({}, QStringLiteral("TestService"), QStringLiteral("TestGroup"), server.url(),
+            [](const QString &label, const PublicAuthClient::CredentialCallback &done) {
+                done(label == QStringLiteral("PublicsApiKey0") ? QStringLiteral("first") : QStringLiteral("second"), {});
+            });
+        auth.setSecretKeys({QStringLiteral("PublicsApiKey0"), QStringLiteral("PublicsApiKey1")});
+        PublicApiWorker worker(server.url());
+        connect(&auth, &PublicAuthClient::tokenReceived, &worker, &PublicApiWorker::processToken);
+        AutoTradeController controller(&auth, &worker);
+
+        server.clock.start();
+        controller.submit(QStringLiteral("aapl, t$sla, gm,"), QStringLiteral("BUY"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.tradeResultsComplete(), 16000);
+        QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("A:AAPL"), QStringLiteral("A:TSLA"), QStringLiteral("A:GM"),
+                                                   QStringLiteral("B:AAPL"), QStringLiteral("B:TSLA"), QStringLiteral("B:GM"),
+                                                   QStringLiteral("C:AAPL"), QStringLiteral("C:TSLA"), QStringLiteral("C:GM")}));
+        QCOMPARE(server.quantities, QStringList(9, QStringLiteral("1")));
+        QCOMPARE(controller.tradeResults().size(), 9);
+        for (qsizetype i = 0; i < server.orderResponseTimes.size(); ++i) {
+            if (i % 3 != 0)
+                QVERIFY(server.orderResponseTimes.at(i) - server.orderResponseTimes.at(i - 1) >= 90);
+        }
+        for (const QVariant &result : controller.tradeResults()) {
+            QVERIFY(result.toMap().contains(QStringLiteral("symbol")));
+            QCOMPARE(result.toMap().value(QStringLiteral("status")).toString(), QStringLiteral("success"));
+        }
+        QVERIFY(!auth.sessionActive());
+    }
+
+    void multiTickerSellUsesEachAccountsOwnBalancesAndSkipsUnheldSymbols()
+    {
+        TestBrokerageServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        PublicAuthClient auth({}, QStringLiteral("TestService"), QStringLiteral("TestGroup"), server.url(),
+            [](const QString &, const PublicAuthClient::CredentialCallback &done) { done(QStringLiteral("first"), {}); });
+        auth.setSecretKeys({QStringLiteral("PublicsApiKey0")});
+        PublicApiWorker worker(server.url());
+        connect(&auth, &PublicAuthClient::tokenReceived, &worker, &PublicApiWorker::processToken);
+        AutoTradeController controller(&auth, &worker);
+        controller.submit(QStringLiteral("AAPL, GM,"), QStringLiteral("SELL"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.tradeResultsComplete(), 6000);
+        QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("A:AAPL")}));
+        QCOMPARE(server.quantities, QStringList({QStringLiteral("2.5")}));
+        QCOMPARE(controller.tradeResults().size(), 4);
+        QCOMPARE(controller.tradeResults().at(0).toMap().value(QStringLiteral("status")).toString(), QStringLiteral("success"));
+        for (int i = 1; i < 4; ++i)
+            QCOMPARE(controller.tradeResults().at(i).toMap().value(QStringLiteral("status")).toString(), QStringLiteral("failed"));
+    }
+
     void buyFinishesFirstKeyClosesSessionWaitsThreeSecondsThenUsesSecondKey()
     {
         TestBrokerageServer server;

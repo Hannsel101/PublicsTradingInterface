@@ -60,7 +60,7 @@ void AutoTradeController::dismissTradeResults()
 void AutoTradeController::submit(const QString &symbol, const QString &side)
 {
     if (!m_complete || m_authClient->apiKeyIndexLoading()) return;
-    m_symbol = symbol.trimmed().toUpper();
+    m_symbol = PublicApiWorker::parseSymbols(symbol).join(QStringLiteral(", "));
     m_side = side.trimmed().toUpper();
     if (m_symbol.isEmpty() || (m_side != QStringLiteral("BUY") && m_side != QStringLiteral("SELL"))) return;
 

@@ -58,7 +58,7 @@ Item {
 
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("Buy trades one share per account. Sell All uses each account's complete held balance for the entered ticker. Live orders run only in release builds.")
+                        text: qsTr("Buy trades one share of each ticker per account. Sell All uses each account's complete held balance for each ticker. Live orders run only in release builds.")
                         color: secondaryText
                         font.pixelSize: 14
                         wrapMode: Text.WordWrap
@@ -72,7 +72,7 @@ Item {
                 spacing: 8
 
                 Label {
-                    text: qsTr("Ticker symbol")
+                    text: qsTr("Ticker symbols")
                     color: secondaryText
                     font.pixelSize: 13
                     font.weight: Font.DemiBold
@@ -82,7 +82,7 @@ Item {
                     id: inputField
                     Layout.fillWidth: true
                     Layout.minimumHeight: 52
-                    placeholderText: qsTr("AAPL, TSLA, MSFT…")
+                    placeholderText: qsTr("Single: AAPL  or  Multi: AAPL, TSLA, GM")
                     selectByMouse: true
                     font.pixelSize: 18
                     font.capitalization: Font.AllUppercase
@@ -108,7 +108,7 @@ Item {
                     id: buyButton
                     Layout.fillWidth: true
                     Layout.minimumHeight: 52
-                    enabled: inputField.text.trim() !== ""
+                    enabled: /[a-zA-Z]/.test(inputField.text)
                     text: qsTr("Buy")
 
                     contentItem: Text {
@@ -133,7 +133,7 @@ Item {
                     id: sellButton
                     Layout.fillWidth: true
                     Layout.minimumHeight: 52
-                    enabled: inputField.text.trim() !== ""
+                    enabled: /[a-zA-Z]/.test(inputField.text)
                     text: qsTr("Sell All")
 
                     contentItem: Text {

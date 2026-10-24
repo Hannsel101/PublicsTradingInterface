@@ -14,9 +14,9 @@ The app is intended for people who manage more than one supported Public.com bro
 | Stores API keys securely | You paste a Public.com API secret once. The secret is saved in the device's protected keychain rather than displayed in the app. |
 | Supports more than one API key | Saved keys use stable labels such as `PublicsApiKey0` and `PublicsApiKey1`. Tap the pencil inside a key row to set a display nickname; leave it blank to restore the default name. Tap the trash button and confirm to delete the key and its nickname. Selection and keychain retrieval still use the original label. |
 | Starts a short session | The selected key is exchanged for a Public.com access token that lasts five minutes. Trading controls appear only after the session starts. |
-| Finds connected accounts | The app loads the eligible accounts connected to the selected key. It supports standard brokerage, Roth IRA, and traditional IRA accounts. |
-| Sends one order to every eligible account | A Buy action is for one share per account. Sell All sells the account's held balance of the entered stock symbol. |
-| Shows every account result | A results screen lists each account as waiting, successful, or failed. Public.com's response or error is shown for each account. |
+| Finds connected accounts | The app loads the eligible accounts connected to the selected key. It supports standard brokerage, Roth IRA, traditional IRA, and business (`ENTITY`) accounts. |
+| Sends orders to every eligible account | Enter one ticker (`AAPL`) or a comma-separated list (`AAPL, TSLA, GM`). Buy requests one share of each ticker per account; Sell All requests that account's full held balance for each ticker. |
+| Shows every account/ticker result | A results screen lists each account and ticker as waiting, successful, or failed. Public.com's response or error is shown for each request. |
 | Handles slow requests | If Public.com does not return an order result within 30 seconds, that account is marked as failed. |
 | Lets you switch keys | You can end the current session, return to the saved-key list, and start another session with a different key. |
 | Auto Mode | Open it from the bottom of the main menu to trade across every saved key without selecting one. The screen lists key labels, authenticates each key on submission, and shows results for each eligible account. |
@@ -34,15 +34,15 @@ flowchart TD
     E --> F[Tap Start session and load accounts]
     F --> G[Public.com issues a five-minute access token]
     G --> H[The app finds eligible accounts linked to that key]
-    H --> I[Enter a stock ticker, such as AAPL]
+    H --> I[Enter AAPL or AAPL, TSLA, GM]
     I --> J[Tap Buy or Sell]
     J --> K{Which build is running?}
     K -- Debug --> L[Check the proposed order without placing it]
-    K -- Release --> M[Place a live one-share market order]
-    L --> N[Repeat for every eligible account]
+    K -- Release --> M[Place live orders for each ticker]
+    L --> N[Repeat each ticker for every eligible account]
     M --> N
-    N --> O[Show pending, successful, or failed results by account]
-    O --> P[Tap Done after every account has responded]
+    N --> O[Show pending, successful, or failed results per account and ticker]
+    O --> P[Tap Done after every result has returned]
     P --> I
 ```
 
@@ -51,18 +51,18 @@ The same flow as a short list:
 1. Save or select a Public.com API key.
 2. Start a five-minute session.
 3. Wait while the app loads the supported accounts connected to that key.
-4. Type a stock ticker.
+4. Type a ticker or comma-separated tickers (for example, `AAPL, TSLA, GM`). Spaces, numbers, and punctuation other than the separating comma are ignored; empty entries, including a trailing comma, are skipped.
 5. Tap Buy or Sell.
-6. Review the result for every account.
+6. Review the result for every account and ticker.
 7. Tap Done to return to the trading screen, or switch keys to start a different session.
 
-Auto Mode is an alternative to steps 1–3: save keys in the main menu, select Auto Mode, enter a ticker, then Buy or Sell All. For each key in order, the app loads the saved secret, obtains its own authorization token, finds its eligible accounts, and waits for every buy or sell result before closing that key's session. It waits **3 seconds after session closure** before starting the next key; there is no delay after the final key. Sell All first checks each account's portfolio and sells its entire held balance for that ticker; accounts with no holdings show a failure/no-order row. Key loading, authorization, or account-loading failures appear under that key's label, and processing continues with the other keys after the same pause. No countdown is shown; short-lived access tokens are requested as each key is processed.
+Auto Mode is an alternative to steps 1–3: save keys in the main menu, select Auto Mode, enter tickers, then Buy or Sell All. For each key in order, the app loads the saved secret, obtains its own authorization token, and finds its eligible accounts. For each account it processes the tickers in entered order, waiting for each response and then 100 ms before the next ticker. It finishes that account before moving to the next one. It closes the key's session after all account/ticker results and waits **3 seconds after session closure** before starting the next key. Sell All uses each account's held balance for each ticker; a missing holding shows a failure/no-order row. Key loading, authorization, or account-loading failures appear under that key's label, and processing continues with the other keys after the same pause.
 
 ## Order details
 
 Every submitted order currently uses these fixed settings:
 
-- One share for Buy; the account's full held ticker balance for Sell All
+- One share of each ticker for Buy; the account's full held balance of each ticker for Sell All
 - Stock/equity
 - Market order
 - Day order, which expires at the end of the trading day if it does not fill
@@ -78,6 +78,7 @@ The app includes these Public.com account types when it prepares an order:
 - Standard brokerage
 - Roth IRA
 - Traditional IRA
+- Business (`ENTITY`)
 
 Other account types are skipped.
 
@@ -104,13 +105,13 @@ Never share an API key, screenshot it, or commit it to this repository.
 
 ## What the results screen means
 
-Each loaded account gets its own result row:
+Each loaded account and entered ticker gets its own result row:
 
 - `Pending` means the app is waiting for Public.com.
 - `Trade success` means Public.com accepted the preflight or live order request.
 - `Trade failed` means Public.com rejected the request, a network error occurred, or the request timed out.
 
-The Done button stays disabled until every account has either succeeded or failed. Read every row before leaving the results screen.
+The Done button stays disabled until every account/ticker request has either succeeded or failed. Read every row before leaving the results screen.
 
 ## Current limitations
 
