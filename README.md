@@ -115,7 +115,7 @@ The Done button stays disabled until every account/ticker request has either suc
 
 ## Current limitations
 
-- The ticker is entered manually. The stock-search component exists in the project but is not connected to the main trading screen yet.
+- Tickers are entered manually, including comma-separated lists. There is no autocomplete or instrument-search request.
 - The app does not display balances, positions, buying power, or the number of shares available to sell.
 - Saved API key nicknames can be edited. Deleting a key requires confirmation and removes its keychain credential, saved label, and nickname; underlying keychain labels cannot be renamed.
 - The five-minute countdown is maintained by the app and does not renew the session automatically.
@@ -125,6 +125,10 @@ The Done button stays disabled until every account/ticker request has either suc
 ## Intended platforms
 
 The project uses Qt 6 and is set up for macOS, iOS, Android, and Windows. Platform support still depends on having the required Qt tools, signing setup, and device permissions for the target system.
+
+## Development
+
+Source layout, build/test commands, safety boundaries, and icon ownership are documented in `docs/development.md`.
 
 ## Disclaimer
 

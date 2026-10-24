@@ -1,10 +1,15 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.21)
 project(PublicsTradingInterface VERSION 0.1 LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(PUBLICS_IOS_BUILD_NUMBER "2" CACHE STRING "iOS bundle build number")
 
-find_package(Qt6 REQUIRED COMPONENTS Quick Gui Network Concurrent Test)
+find_package(Qt6 6.10 REQUIRED COMPONENTS Quick Gui Network Concurrent)
+qt_standard_project_setup(REQUIRES 6.10)
+include(CTest)
+option(RELEASE_BUILD "Enable live orders for a custom build configuration" OFF)
 find_package(Qt6Keychain CONFIG QUIET)
 
 if(NOT Qt6Keychain_FOUND)
@@ -41,204 +46,20 @@ else()
     message(FATAL_ERROR "QtKeychain was found or fetched, but no Qt 6 target was exported")
 endif()
 
-qt_standard_project_setup(REQUIRES 6.10)
-
-# Content of downloaded design from Figma to Qt or similar
-if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/importedcontent/CMakeLists.txt")
-    add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/importedcontent)
-endif()
-
-set(API_HANDLERS
-    apiHandlers/accountfetcher.cpp
-    apiHandlers/accountfetcher.h
-)
-
-qt_add_executable(appPublicsTradingInterface
-    main.cpp
-    ${API_HANDLERS}
-    vcpkg.json
-)
-
-if(APPLE AND NOT IOS)
-    set(PUBLICS_MACOS_ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/PublicsTradingInterface.icns")
-    set_source_files_properties("${PUBLICS_MACOS_ICON}" PROPERTIES
-        MACOSX_PACKAGE_LOCATION Resources
-    )
-    target_sources(appPublicsTradingInterface PRIVATE "${PUBLICS_MACOS_ICON}")
-    set_target_properties(appPublicsTradingInterface PROPERTIES
-        MACOSX_BUNDLE_ICON_FILE PublicsTradingInterface.icns
-    )
-elseif(WIN32)
-    target_sources(appPublicsTradingInterface PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/resources/PublicsTradingInterface.rc"
-    )
-endif()
-
-if((APPLE AND NOT IOS) OR WIN32)
-    qt_add_resources(appPublicsTradingInterface desktop_icon
-        PREFIX "/"
-        FILES "ios/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
-    )
-endif()
-
-if(IOS)
-    set(PUBLICS_IOS_ASSET_CATALOG
-        "${CMAKE_CURRENT_SOURCE_DIR}/ios/Assets.xcassets"
-    )
-    target_sources(appPublicsTradingInterface PRIVATE
-        "${PUBLICS_IOS_ASSET_CATALOG}"
-    )
-    set_source_files_properties("${PUBLICS_IOS_ASSET_CATALOG}" PROPERTIES
-        MACOSX_PACKAGE_LOCATION Resources
-    )
-endif()
-
-qt_add_qml_module(appPublicsTradingInterface
-    URI PublicsTradingInterface
-    VERSION 1.0
-
-    SOURCES
-        apiHandlers/publicauthclient.h apiHandlers/publicauthclient.cpp
-        apiHandlers/publicapiworker.h apiHandlers/publicapiworker.cpp
-        apiHandlers/autotradecontroller.h apiHandlers/autotradecontroller.cpp
-        apiHandlers/stocksearchcontroller.h apiHandlers/stocksearchcontroller.cpp
-    QML_FILES
-        Main.qml
-        qml/DisplayAccountInformation/ApiKeyList.qml
-        qml/DisplayAccountInformation/ChooseAccountButton.qml
-        qml/DisplayAccountInformation/ValidityTimer.qml
-        qml/PerformTrades/StockTrade.qml
-        qml/PerformTrades/TradeResultScreen.qml
-        qml/PerformTrades/AutoTradeScreen.qml
-        qml/StockSearchAutoComplete/StockSearchAutoComplete.qml
-
-    RESOURCES
-        qml/DisplayAccountInformation/icons/edit.png
-        qml/DisplayAccountInformation/icons/delete.png
-
-)
-
-# Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
-# If you are developing for iOS or macOS you should consider setting an
-# explicit, fixed bundle identifier manually though.
-set_target_properties(appPublicsTradingInterface PROPERTIES
-    MACOSX_BUNDLE_GUI_IDENTIFIER trb.appPublicsTradingInterface
-    MACOSX_BUNDLE_BUNDLE_VERSION ${PUBLICS_IOS_BUILD_NUMBER}
-    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
-    MACOSX_BUNDLE TRUE
-    WIN32_EXECUTABLE TRUE
-    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME AppIcon
-)
-
-target_include_directories(appPublicsTradingInterface PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/apiHandlers
-    ${QTKEYCHAIN_INCLUDE_DIRS}
-    ${qtkeychain_SOURCE_DIR}
-    ${qtkeychain_BINARY_DIR}
-)
-
-target_link_libraries(appPublicsTradingInterface
-    PRIVATE
-        Qt6::Quick
-        Qt6::Network
-        Qt6::Concurrent
-        ${PUBLICS_QTKEYCHAIN_TARGET}
-)
-
-if(ANDROID)
-    set_target_properties(appPublicsTradingInterface PROPERTIES
-        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
-        QT_ANDROID_PACKAGE_NAME "org.qtproject.example.appPublicsTradingInterface"
-        QT_ANDROID_APP_NAME "Publics Trading Interface"
-        QT_ANDROID_VERSION_NAME "2.1.2"
-        QT_ANDROID_VERSION_CODE 4
-        QT_ANDROID_MIN_SDK_VERSION 28
-        QT_ANDROID_TARGET_SDK_VERSION 36
-    )
-    add_android_openssl_libraries(appPublicsTradingInterface)
-endif()
-
-# Standard Release builds perform real trades. RELEASE_BUILD remains available
-# for build systems that use a custom configuration name.
-if(RELEASE_BUILD)
-    target_compile_definitions(appPublicsTradingInterface PRIVATE RELEASE)
-else()
-    target_compile_definitions(appPublicsTradingInterface PRIVATE
-        $<$<CONFIG:Release>:RELEASE>
-    )
-endif()
-
-install(TARGETS appPublicsTradingInterface
-    BUNDLE DESTINATION .
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
-
-include(CTest)
-if(BUILD_TESTING)
-    qt_add_executable(test_publicauthclient
-        tests/test_publicauthclient.cpp
-        apiHandlers/publicauthclient.h
-        apiHandlers/publicauthclient.cpp
-    )
-
-    target_include_directories(test_publicauthclient PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/apiHandlers
-        ${QTKEYCHAIN_INCLUDE_DIRS}
-        ${qtkeychain_SOURCE_DIR}
-        ${qtkeychain_BINARY_DIR}
-    )
-
-    target_link_libraries(test_publicauthclient
-        PRIVATE
-            Qt6::Test
-            Qt6::Gui
-            Qt6::Network
-            Qt6::Concurrent
-            ${PUBLICS_QTKEYCHAIN_TARGET}
-    )
-
-    add_test(NAME test_publicauthclient COMMAND test_publicauthclient)
-
-    qt_add_executable(test_publicapiworker
-        tests/test_publicapiworker.cpp
-        apiHandlers/publicapiworker.h
-        apiHandlers/publicapiworker.cpp
-    )
-
-    target_include_directories(test_publicapiworker PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/apiHandlers
-    )
-
-    target_link_libraries(test_publicapiworker
-        PRIVATE
-            Qt6::Test
-            Qt6::Network
-            Qt6::Concurrent
-    )
-
-    if(ANDROID)
-        add_android_openssl_libraries(test_publicapiworker)
+# Only the app and its trading orchestration receive the live-order definition.
+function(publics_enable_live_trading target)
+    if(RELEASE_BUILD)
+        target_compile_definitions(${target} PRIVATE RELEASE)
+    else()
+        target_compile_definitions(${target} PRIVATE $<$<CONFIG:Release>:RELEASE>)
     endif()
+endfunction()
 
-    add_test(NAME test_publicapiworker COMMAND test_publicapiworker)
+add_subdirectory(src)
+add_subdirectory(qml/PublicsTradingInterface)
+add_subdirectory(src/app)
 
-    qt_add_executable(test_autotradecontroller
-        tests/test_auto_sequence.cpp
-        apiHandlers/autotradecontroller.h
-        apiHandlers/autotradecontroller.cpp
-        apiHandlers/publicauthclient.h
-        apiHandlers/publicauthclient.cpp
-        apiHandlers/publicapiworker.h
-        apiHandlers/publicapiworker.cpp
-    )
-    target_include_directories(test_autotradecontroller PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/apiHandlers
-        ${qtkeychain_SOURCE_DIR}
-        ${qtkeychain_BINARY_DIR}
-    )
-    target_link_libraries(test_autotradecontroller PRIVATE
-        Qt6::Test Qt6::Gui Qt6::Network Qt6::Concurrent ${PUBLICS_QTKEYCHAIN_TARGET}
-    )
-    add_test(NAME test_autotradecontroller COMMAND test_autotradecontroller)
+if(BUILD_TESTING)
+    find_package(Qt6 6.10 REQUIRED COMPONENTS Test QuickTest)
+    add_subdirectory(tests)
 endif()

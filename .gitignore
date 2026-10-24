@@ -129,3 +129,6 @@ CMakeLists.txt.user*
 /CMakeFiles/4.4.0/CompilerIdCXX/*.cpp
 /meta_types/*.json
 /qmltypes/*.txt
+
+# Local CodeGraph index and runtime state
+.codegraph/
