@@ -59,6 +59,27 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     onClicked: Launcher.activate("robin_hood")
                 }
+                AppletChoice {
+                    objectName: "openWellsFargo"
+                    appletName: qsTr("Wells Fargo")
+                    stripeColor: "#c5303e"
+                    Layout.fillWidth: true
+                    enabled: false
+                }
+                AppletChoice {
+                    objectName: "openFidelity"
+                    appletName: qsTr("Fidelity")
+                    stripeColor: "#14633e"
+                    Layout.fillWidth: true
+                    enabled: false
+                }
+                AppletChoice {
+                    objectName: "openChase"
+                    appletName: qsTr("Chase")
+                    stripeColor: "#236dc2"
+                    Layout.fillWidth: true
+                    enabled: false
+                }
             }
         }
 

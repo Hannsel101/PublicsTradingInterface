@@ -11,7 +11,11 @@ class QNetworkReply;
 class RHNetworkEngine final : public QObject
 {
 public:
-    explicit RHNetworkEngine(QObject *parent = nullptr);
+    enum class AuthKind { OAuthBearer, WebSecondaryBearer };
+    explicit RHNetworkEngine(QObject *parent = nullptr, bool allowLoopbackForTests = false);
+    QNetworkReply *sendAuthenticated(const QString &endpoint, const QByteArray &token,
+                                    AuthKind kind, QString *error = nullptr);
+    static bool safeBearer(const QByteArray &token);
 
     bool loadConfiguration(const QString &path, QString *error = nullptr);
     bool isConfigured() const;
@@ -25,4 +29,5 @@ private:
     QJsonObject m_endpoints;
     QJsonObject m_headerSets;
     bool m_configured = false;
+    bool m_allowLoopbackForTests = false;
 };

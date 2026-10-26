@@ -1,0 +1,31 @@
+# Progress
+## Discovery
+- Read skills, repository guidance, CodeGraph, existing applet/session/network source and previous plan without changing prior task history.
+- Inspected installed Qt modules; researched official Qt and Android cookie APIs.
+- Created isolated plan and task checklist.
+## Verification
+- Dispatched independent primary-source protocol research; browser bridge; session/network; and QML workstreams with disjoint file ownership.
+- Parent added conditional Qt browser discovery/QML packaging, bridge target/tests, applet context/startup/lifecycle wiring, and QtKeychain/runtime dependencies.
+- First Qt6.11 desktop configure confirmed browser module availability and exposed imported-target scope warnings plus a not-yet-created parallel QML source. Moved optional module discovery to root scope; final dependencies remain linked only to Robinhood targets.
+- Added native Chromium cookie-store integration test using a synthetic HttpOnly host-only cookie, with no page load or brokerage request.
+- Existing Android OpenSSL target ABI is reused for the legacy locker dependency.
+- Integrated Qt6.11.2 desktop app and all test targets built successfully with native WebEngine.
+- First integrated CTest: 11/13 targets passed; Android reset simulation failed once, and real native cookie-store test timed out after 60 seconds. Investigating both before claiming completion; no live brokerage or real keychain access.
+- Existing uncommitted work remains preserved.
+- Fixed post-capture Android poll handling; browser unit suite now 60/60 passes on Qt6.11.2.
+- Full Qt6.12 no-WebEngine configuration built and all 12 CTest targets passed, including unavailable-backend behavior.
+- Android arm64-v8a application and JNI/native-WebView bridge compiled successfully with installed Qt6.11.2 and target-ABI OpenSSL. No Android device runtime/login exercised.
+- Native WebEngine capture integration remains under investigation; independent origin/lifecycle/token-scope review dispatched.
+- Android APK packaging reached androiddeployqt/Gradle but failed: no Java runtime available. Checked standard Android Studio, Homebrew and SDKMAN JDK locations; none installed. Native arm64 application build remains successful.
+- Updated Robinhood README and marked locker documentation historical; documented secondary/primary distinction, fail-closed verification, unsupported Phoenix routing, Android shared-jar limitations and no live CAPTCHA/push claim.
+- git diff --check passes; CodeGraph synced; Publics source diff remains empty.
+- Independent native investigation resolved Chromium timeout: a standalone profile queues cookie operations until a view initializes it. Real about:blank WebEngineView now initializes the integration fixture; five isolated runs and Cocoa pass. Parent will verify integrated QtCreator suite.
+- Security review found two Android blockers: post-dispatch URL notification is not pre-navigation enforcement; repeated inactive stop invalidates the only queued cookie cleanup. A separate fix agent owns fail-closed Android disabling and idempotent cleanup with RED/GREEN regressions.
+- Parent observed QML unavailable-copy regression RED; UI copy now explicitly explains Android pre-navigation blocker rather than recommending module installation alone. Focused GREEN and complete QML CTest target pass.
+- Parent rebuilt the real native integration target in the QtCreator build and ran it three times: all pass (0.84, 0.52, 0.54 seconds). Captures a synthetic HttpOnly cookie through Chromium, not a mock; no brokerage page loads.
+- Saved reusable navigation-boundary and idempotent-cleanup lessons in the C++ safety skill.
+- Separate fix agent disabled production Android sign-in pending native pre-navigation interception and made inactive stop idempotent. Tests observed policy/cleanup RED then 63/63 GREEN, including a host Android-policy probe (not device execution).
+- Parent rebuilt all final C++ changes: QtCreator Qt6.11.2 full CTest 13/13 PASS, Qt6.12 no-browser full CTest 12/12 PASS; Android arm64 app and browser-unit native targets compile successfully. Native Android tests were not run on a device.
+- Updated configure/unavailable UI copy so installing QtWebView alone is not represented as enabling safe Android sign-in. All three application targets rebuilt after the configure-copy changes.
+- Independent read-only security-fix re-review PASSED: no security concerns or logic errors. Nonblocking stale session-manager unavailable copy was corrected with a new observed RED/GREEN regression. Parent rebuilt/reran full Qt6.11.2 CTest 13/13, Qt6.12 CTest 12/12 and Android app compile after that final change.
+- Prepared verified 37-entry source archive at /Users/hannsel101/.hermes/cache/scratch/rh-browser-source-20261026/robinhood-browser-refactor.zip with full current Robinhood classes, QML, integration hooks, regression tests and explicit compatibility/platform limits. Archive is a selected-file snapshot, not a standalone app or automatic patch.

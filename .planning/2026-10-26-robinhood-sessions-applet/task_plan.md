@@ -4,10 +4,10 @@
 Add a one-window Robin Hood applet with a lime-complementary UI, secure asynchronous keychain session storage, JSON metadata, an expiry-aware list, and a real keychain-backed Start Session boundary; keep Auto Mode disabled and omit a session timer.
 
 ## Next Step
-Delivered: verify on the user's device if the view still appears blank; desktop offscreen rendering and available target builds pass. Live brokerage login remains unverified.
+Add a confirmed Delete action for a saved Robin Hood login (keychain token and local metadata), without affecting brokerage accounts.
 
 ## Current Phase
-Phase 7: Publics viewport regression
+Phase 11: delete saved Robin Hood login
 
 ## Phases
 ### Phase 1: discovery
@@ -37,6 +37,27 @@ Phase 7: Publics viewport regression
 - [x] Fix the composition with desktop/compact Publics and Robin Hood interaction/geometry regression tests.
 - [x] Rebuild, run full offline suite, inspect an offscreen-rendered Publics view, and verify Android/iOS targets.
 - **Status:** complete
+### Phase 8: Robin Hood account labels and balances
+- [x] Verify endpoint response shapes and write failing model/UI behavior tests.
+- [x] Parse classification and balances into a typed per-account model; render human-readable labels and balances.
+- [x] Run offline desktop tests, QML lint and available platform builds; document missing-balance handling.
+- **Status:** complete
+### Phase 9: forthcoming applet choices
+- [x] Add a failing QML regression for all three disabled choices and verify existing navigation remains intact.
+- [x] Add colored, visibly disabled Launcher choices without registering functional applets.
+- [x] Build, run offline tests, and inspect compact and desktop layouts.
+- **Status:** complete
+### Phase 10: Robin Hood platform-specific User-Agent
+- [x] Reproduce generic and absent User-Agent behavior in offline GET/POST tests.
+- [x] Apply compile-time platform mapping in the request-header path; remove the generic configuration value.
+- [x] Use the Windows string as the fallback, without changing Publics' already-correct request headers; other applets have no active network functionality.
+- [x] Run the network tests and available desktop/mobile build and test checks.
+- **Status:** complete
+### Phase 11: delete saved Robin Hood login
+- [ ] Test keychain/metadata removal, failure and gap reuse; prove the UI confirmation and selection reset.
+- [ ] Implement a dedicated deletion operation and a confirmed saved-account control, preserving reauthentication routing.
+- [ ] Run offline C++/QML tests, lint, desktop and available mobile app targets.
+- **Status:** in progress
 
 ## Decisions
 - Keep Publics sources untouched; resolve applet composition defects in the Launcher.

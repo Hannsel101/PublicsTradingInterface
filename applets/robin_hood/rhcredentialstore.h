@@ -15,6 +15,8 @@ public:
     ~RHCredentialStore() override = default;
 
     virtual void write(int index, const QString &token, Completion done) = 0;
+    // ok=true with an empty token means confirmed absence. Backend/permission
+    // failures return ok=false; callers must not treat them as missing entries.
     virtual void read(int index, ReadCompletion done) = 0;
     virtual void remove(int index, Completion done) = 0;
 };

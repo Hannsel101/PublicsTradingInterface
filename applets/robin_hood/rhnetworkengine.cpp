@@ -1,6 +1,7 @@
 #include "rhnetworkengine.h"
 
 #include <QFile>
+#include <QDebug>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -54,7 +55,91 @@ QString formValue(const QVariant &value)
 }
 }
 
-RHNetworkEngine::RHNetworkEngine(QObject *parent) : QObject(parent) {}
+RHNetworkEngine::RHNetworkEngine(QObject *parent, bool allowLoopbackForTests)
+    : QObject(parent), m_allowLoopbackForTests(allowLoopbackForTests) {}
+
+bool RHNetworkEngine::safeBearer(const QByteArray &token)
+{
+    if (token.isEmpty() || token.size() > 16384)
+        return false;
+    for (const char byte : token) {
+        const auto c = static_cast<unsigned char>(byte);
+        if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z')
+            && !(c >= '0' && c <= '9') && c != '-' && c != '.' && c != '_'
+            && c != '~' && c != '+' && c != '/' && c != '=')
+            return false;
+    }
+    return true;
+}
+
+QNetworkReply *RHNetworkEngine::sendAuthenticated(const QString &endpoint,
+    const QByteArray &token, AuthKind kind, QString *error)
+{
+    if (error)
+        error->clear();
+    const auto fail = [error]() -> QNetworkReply * {
+        if (error)
+            *error = QStringLiteral("Authenticated read-only request is unsafe or unavailable.");
+        return nullptr;
+    };
+    const QJsonObject entry = m_endpoints.value(endpoint).toObject();
+    if (!m_configured || entry.isEmpty() || !entry.value("Enabled").toBool(true)
+        || entry.value("Method").toString() != QStringLiteral("GET") || !safeBearer(token))
+        return fail();
+    const QString text = entry.value("URL").toString();
+    const QUrl url(text, QUrl::StrictMode);
+    const bool official = url.scheme() == QStringLiteral("https")
+        && (url.host() == QStringLiteral("api.robinhood.com")
+            || url.host() == QStringLiteral("phoenix.robinhood.com"))
+        && (url.port(-1) == -1 || url.port() == 443);
+    const bool loopback = m_allowLoopbackForTests && permittedUrl(url)
+        && (url.host() == QStringLiteral("127.0.0.1") || url.host() == QStringLiteral("::1")
+            || url.host() == QStringLiteral("localhost"));
+    if (!permittedUrl(url) || (!official && !loopback) || text.contains('{')
+        || text.contains(QString::fromLatin1(token))
+        || url.query().contains(QStringLiteral("token"), Qt::CaseInsensitive))
+        return fail();
+    // The secondary cookie is NOT the web app's primary access token. Its
+    // compatibility with brokerage/Phoenix is unverified. Permit only the two
+    // configured identity-verification reads; never invent a Phoenix route.
+    if (kind == AuthKind::WebSecondaryBearer) {
+        const bool profile = endpoint == QStringLiteral("UserProfile")
+            && url.path() == QStringLiteral("/user/") && !url.hasQuery();
+        const bool accounts = endpoint == QStringLiteral("Accounts")
+            && url.path() == QStringLiteral("/accounts/")
+            && (!url.hasQuery() || url.query() == QStringLiteral("default_to_all_accounts=true"));
+        if ((!profile && !accounts) || (!loopback && url.host() != QStringLiteral("api.robinhood.com")))
+            return fail();
+    }
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
+    request.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
+    request.setTransferTimeout(16000);
+    for (const auto &set : entry.value("HeaderSets").toArray()) {
+        const QJsonObject headers = m_headerSets.value(set.toString()).toObject();
+        for (auto it = headers.begin(); it != headers.end(); ++it) {
+            const QString name = it.key().toLower();
+            if (name == "authorization" || name == "cookie" || name == "accept-encoding"
+                || name == "host" || name == "proxy-authorization")
+                continue;
+            const QString value = it.value().toString();
+            if (value.contains('{') || value.contains('\r') || value.contains('\n'))
+                return fail();
+            request.setRawHeader(it.key().toUtf8(), value.toUtf8());
+        }
+    }
+    // Provisional cookie -> Bearer mapping: not an OAuth grant. The caller must
+    // validate UserProfile and Accounts read-only before publishing any token.
+    switch (kind) {
+    case AuthKind::OAuthBearer:
+    case AuthKind::WebSecondaryBearer:
+        request.setRawHeader("Authorization", QByteArray("Bearer ") + token);
+        break;
+    default: return fail();
+    }
+    return m_network.get(request);
+}
 
 bool RHNetworkEngine::loadConfiguration(const QString &path, QString *error)
 {
@@ -182,6 +267,8 @@ QNetworkReply *RHNetworkEngine::send(const QString &endpoint, const QVariantMap 
             *error = message;
         return nullptr;
     };
+    if (values.value(QStringLiteral("token_type")).toString() == QStringLiteral("WebSecondaryBearer"))
+        return fail(QStringLiteral("Secondary tokens require the explicit authenticated read-only transport."));
     if (!m_configured || !m_endpoints.value(endpoint).isObject()) {
         return fail(QStringLiteral("Unknown endpoint or missing network configuration"));
     }
@@ -206,15 +293,40 @@ QNetworkReply *RHNetworkEngine::send(const QString &endpoint, const QVariantMap 
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                          QNetworkRequest::ManualRedirectPolicy);
     request.setTransferTimeout(16000);
+#if defined(Q_OS_IOS)
+    const QByteArray userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+#elif defined(Q_OS_ANDROID)
+    const QByteArray userAgent = "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
+#elif defined(Q_OS_WIN)
+    const QByteArray userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+#elif defined(Q_OS_MACOS) // Q_OS_MAC also matches iOS and is deprecated in Qt 6.12.
+    const QByteArray userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+#else
+    const QByteArray userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+#endif
     for (const QJsonValue &set : entry.value(QStringLiteral("HeaderSets")).toArray()) {
         const QJsonObject headers = m_headerSets.value(set.toString()).toObject();
         for (auto it = headers.begin(); it != headers.end(); ++it) {
+            // Qt must negotiate compression itself to enable reply decompression.
+            if (it.key().compare(QStringLiteral("User-Agent"), Qt::CaseInsensitive) == 0
+                || it.key().compare(QStringLiteral("Accept-Encoding"), Qt::CaseInsensitive) == 0)
+                continue;
             QString value;
             if (!expand(it.value().toString(), values, false, &value))
                 return fail(QStringLiteral("Missing or unsafe header parameter"));
             request.setRawHeader(it.key().toUtf8(), value.toUtf8());
         }
     }
+    request.setRawHeader("User-Agent", userAgent);
+#ifndef QT_NO_DEBUG
+    if (endpoint == QStringLiteral("Login")
+        && qEnvironmentVariableIntValue("PUBLICS_RH_RAW_LOGIN_DIAGNOSTICS") == 1) {
+        // Log only these public configuration headers, never auth/cookies/body.
+        for (const QByteArray &header : {QByteArray("Accept"), QByteArray("Content-Type"),
+                                        QByteArray("X-Robinhood-API-Version"), QByteArray("User-Agent")})
+            qDebug() << "LOGIN REQUEST HEADER:" << header << request.rawHeader(header);
+    }
+#endif
 
     if (entry.value(QStringLiteral("Method")).toString() == QStringLiteral("GET")) {
         if (!body.isEmpty())
@@ -234,10 +346,16 @@ QNetworkReply *RHNetworkEngine::send(const QString &endpoint, const QVariantMap 
     if (encoding == QStringLiteral("json"))
         return m_network.post(request, QJsonDocument::fromVariant(payload).toJson(QJsonDocument::Compact));
 
-    QUrlQuery form;
+    // QUrlQuery leaves '+' literal; form decoders would turn it into a space.
+    QByteArray form;
     for (auto it = payload.begin(); it != payload.end(); ++it) {
-        if (!it.value().isNull())
-            form.addQueryItem(it.key(), formValue(it.value()));
+        if (it.value().isNull())
+            continue;
+        if (!form.isEmpty())
+            form += '&';
+        form += QUrl::toPercentEncoding(it.key());
+        form += '=';
+        form += QUrl::toPercentEncoding(formValue(it.value()));
     }
-    return m_network.post(request, form.toString(QUrl::FullyEncoded).toUtf8());
+    return m_network.post(request, form);
 }

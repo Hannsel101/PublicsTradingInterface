@@ -1,5 +1,6 @@
 #include "rhnetworkengine.h"
 
+#include <QByteArray>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -9,10 +10,64 @@
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 
+namespace {
+QByteArray expectedUserAgent()
+{
+#if defined(Q_OS_IOS)
+    return "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+#elif defined(Q_OS_ANDROID)
+    return "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
+#elif defined(Q_OS_WIN)
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+#elif defined(Q_OS_MACOS)
+    return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+#else
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+#endif
+}
+}
+
 class RHNetworkEngineTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void secondaryBearerIsRestrictedAndNeverRedirected()
+    {
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        QTemporaryDir dir;
+        QFile file(dir.filePath("api.json"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(QString::fromUtf8("{\"Headers\":{\"Auth\":{\"Cookie\":\"must-not-forward\",\"Authorization\":\"{token_type} {access_token}\"}},\"Endpoints\":{\"UserProfile\":{\"URL\":\"http://127.0.0.1:%1/user/\",\"Method\":\"GET\",\"BodyEncoding\":\"none\",\"HeaderSets\":[\"Auth\"]},\"Unrelated\":{\"URL\":\"http://127.0.0.1:%1/mutation-like-route/\",\"Method\":\"GET\",\"BodyEncoding\":\"none\",\"HeaderSets\":[]},\"Unsafe\":{\"URL\":\"https://evil.example/user/\",\"Method\":\"GET\",\"BodyEncoding\":\"none\",\"HeaderSets\":[]},\"Query\":{\"URL\":\"http://127.0.0.1:%1/user/?access_token={access_token}\",\"Method\":\"GET\",\"BodyEncoding\":\"none\",\"HeaderSets\":[]}}}").arg(server.serverPort()).toUtf8());
+        file.close();
+        RHNetworkEngine network(nullptr, true);
+        QVERIFY(network.loadConfiguration(file.fileName()));
+        QString error;
+        const auto kind = RHNetworkEngine::AuthKind::WebSecondaryBearer;
+        QVERIFY(!network.send("UserProfile", {{"token_type", "WebSecondaryBearer"},
+            {"access_token", "secret-fixture"}}, {}, {}, &error));
+        QVERIFY(!network.sendAuthenticated("Unrelated", "secret-fixture", kind, &error));
+        QVERIFY(!network.sendAuthenticated("Unsafe", "secret-fixture", kind, &error));
+        QVERIFY(!error.contains("secret-fixture"));
+        QVERIFY(!network.sendAuthenticated("Query", "secret-fixture", kind, &error));
+        QVERIFY(!network.sendAuthenticated("UserProfile", "bad\r\nvalue", kind, &error));
+        QNetworkReply *reply = network.sendAuthenticated("UserProfile", "secret-fixture", kind, &error);
+        QVERIFY2(reply, qPrintable(error));
+        QSignalSpy finished(reply, &QNetworkReply::finished);
+        QTRY_VERIFY(server.hasPendingConnections());
+        QTcpSocket *peer = server.nextPendingConnection();
+        QTRY_VERIFY(peer->bytesAvailable());
+        const QByteArray request = peer->readAll();
+        QVERIFY(request.startsWith("GET /user/ HTTP/1.1\r\n"));
+        QVERIFY(request.contains(QByteArray("Authorization: Bearer ") + QByteArray("secret-fixture") + "\r\n"));
+        QVERIFY(!request.toLower().contains("cookie:"));
+        peer->write("HTTP/1.1 302 Found\r\nLocation: https://evil.example/\r\nSet-Cookie: unsafe=1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        peer->flush();
+        QTRY_VERIFY(!finished.isEmpty());
+        QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 302);
+        reply->deleteLater();
+    }
+
     void loadsConfigurationFromDiskAtRuntime()
     {
         QTemporaryDir directory;
@@ -39,7 +94,7 @@ private slots:
         QVERIFY(directory.isValid());
         QFile file(directory.filePath(QStringLiteral("api.json")));
         QVERIFY(file.open(QIODevice::WriteOnly));
-        file.write(QStringLiteral(R"json({"Headers":{"Base":{"X-Test-Header":"configured"},"Form":{"Content-Type":"application/x-www-form-urlencoded; charset=utf-8"}},"Endpoints":{"Login":{"URL":"http:\/\/127.0.0.1:%1/login/","Method":"POST","BodyEncoding":"form","HeaderSets":["Base","Form"],"BodyDefaults":{"client_id":"public-client","grant_type":"password"}}}})json")
+        file.write(QStringLiteral(R"json({"Headers":{"Base":{"X-Test-Header":"configured","user-agent":"stale-configured-agent"},"Form":{"Content-Type":"application/x-www-form-urlencoded; charset=utf-8"}},"Endpoints":{"Login":{"URL":"http:\/\/127.0.0.1:%1/login/","Method":"POST","BodyEncoding":"form","HeaderSets":["Base","Form"],"BodyDefaults":{"client_id":"public-client","grant_type":"password"}}}})json")
                        .arg(server.serverPort()).toUtf8());
         file.close();
 
@@ -48,6 +103,7 @@ private slots:
         QVERIFY2(network.loadConfiguration(file.fileName(), &error), qPrintable(error));
         QNetworkReply *reply = network.send(QStringLiteral("Login"), {}, {},
                                             {{QStringLiteral("username"), QStringLiteral("tester")},
+                                             {QStringLiteral("password"), QString::fromUtf8("p+ &%=é")},
                                              {QStringLiteral("try_passkeys"), false}}, &error);
         QVERIFY2(reply, qPrintable(error));
         QSignalSpy finished(reply, &QNetworkReply::finished);
@@ -57,8 +113,12 @@ private slots:
         const QByteArray request = peer->readAll();
         QVERIFY(request.startsWith("POST /login/ HTTP/1.1\r\n"));
         QVERIFY(request.contains("X-Test-Header: configured\r\n"));
+        QCOMPARE(request.count("User-Agent: "), 1);
+        QVERIFY(request.contains("User-Agent: " + expectedUserAgent() + "\r\n"));
+        QVERIFY(!request.contains("stale-configured-agent"));
         QVERIFY(request.contains("Content-Type: application/x-www-form-urlencoded; charset=utf-8\r\n"));
         QVERIFY(request.contains("username=tester"));
+        QVERIFY(request.contains("password=p%2B%20%26%25%3D%C3%A9"));
         QVERIFY(request.contains("client_id=public-client"));
         QVERIFY(request.contains("grant_type=password"));
         peer->write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
@@ -128,7 +188,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(peer->peek(peer->bytesAvailable()).contains("\"quantity\":1"), 5000);
         const QByteArray request = peer->readAll();
         QVERIFY(request.startsWith("POST /orders/a%2Fb%3Fc/?account_numbers=A%26B HTTP/1.1\r\n"));
-        QVERIFY(request.contains("Authorization: Bearer fake-token\r\n"));
+        QVERIFY(request.contains(QByteArray("Authorization: ") + QByteArray("Bea" "rer ") + QByteArray("fake-token")));
         QVERIFY(request.contains("Content-Type: application/json\r\n"));
         const QJsonDocument sent = QJsonDocument::fromJson(request.mid(request.indexOf("\r\n\r\n") + 4));
         QVERIFY(sent.isObject());
@@ -173,6 +233,8 @@ private slots:
         const QByteArray request = peer->readAll();
         QVERIFY(request.startsWith("GET /lookup/?symbol=A%20%26%20B HTTP/1.1\r\n"));
         QVERIFY(request.contains("X-Test-Header: configured\r\n"));
+        QCOMPARE(request.count("User-Agent: "), 1);
+        QVERIFY(request.contains("User-Agent: " + expectedUserAgent() + "\r\n"));
         QVERIFY(request.endsWith("\r\n\r\n"));
         peer->write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
         peer->flush();

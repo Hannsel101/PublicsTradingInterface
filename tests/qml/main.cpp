@@ -3,6 +3,7 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQmlExtensionPlugin>
+#include <QFileInfo>
 
 Q_IMPORT_QML_PLUGIN(PublicsTradingInterfacePlugin)
 Q_IMPORT_QML_PLUGIN(RobinHoodInterfacePlugin)
@@ -70,33 +71,96 @@ public slots:
             property var keyLabels: []
             function submit(symbols, side) {}
         )"));
-        context->setContextProperty("RobinSessions", mock(engine, R"(
+        QObject *browser = mock(engine, R"(
+            property bool available: true
+            property bool active: false
+            property string backend: "test"
+            property url viewSource
+            property url startUrl: "about:blank"
+            property url loginUrl
+            property string error: ""
+            function attachProfile(profile) {}
+            function detachProfile(profile) {}
+            function navigationChanged(url) {}
+            function isAllowedNavigation(url) { return false }
+            function pageFailed() { error = "Page failed" }
+        )");
+        browser->setProperty("viewSource", QUrl::fromLocalFile(
+            QFileInfo(QString::fromUtf8(__FILE__)).absolutePath() + "/MockWebLogin.qml"));
+        browser->setProperty("loginUrl", QUrl(QStringLiteral("https://robinhood.com/")));
+        context->setContextProperty("RobinBrowser", browser);
+        QObject *sessions = mock(engine, R"(
             property bool busy: false
             property bool approvalPending: false
             property int approvalSecondsRemaining: 0
             property bool sessionActive: false
             property string activeAccount: ""
-            property var accounts: []
+            property var accounts: null
             property string error: ""
             property int lastStarted: -1
+            property bool reauthenticating: false
+            property string lastPreparedAccountId: ""
+            property int prepareCalls: 0
+            property int reauthenticateCalls: 0
+            property int cancelCalls: 0
             signal sessionSaved(int index)
+            signal sessionDeleted(int index)
             signal reauthenticationRequested(string accountName)
             function startSession(index) { lastStarted = index; return true }
+            property bool browserLoginPending: false
+            property int beginBrowserCalls: 0
+            property string lastBrowserAccountId: ""
+            function beginBrowserLogin(accountId = "") {
+                if (!RobinBrowser.available || busy)
+                    return false
+                ++beginBrowserCalls
+                lastBrowserAccountId = accountId
+                browserLoginPending = true
+                RobinBrowser.active = true
+                busy = true
+                return true
+            }
+            function prepareReauthentication(accountId) {
+                lastPreparedAccountId = accountId
+                ++prepareCalls
+                if (beginBrowserLogin(accountId))
+                    reauthenticating = true
+            }
             function reauthenticate(index) {
+                ++reauthenticateCalls
                 for (let i = 0; i < count; ++i) {
                     if (get(i).sessionIndex === index) {
-                        const name = get(i).accountName
-                        remove(i)
-                        reauthenticationRequested(name)
+                        prepareReauthentication(get(i).accountId)
                         return true
                     }
                 }
                 return false
             }
-            function signIn(email, password, code) { return true }
-            function cancelSignIn() { approvalPending = false; approvalSecondsRemaining = 0; busy = false }
+            function deleteSavedSession(index) {
+                for (let i = 0; i < count; ++i) {
+                    if (get(i).sessionIndex === index) {
+                        remove(i)
+                        sessionDeleted(index)
+                        return true
+                    }
+                }
+                return false
+            }
+            function cancelSignIn() {
+                if (!browserLoginPending)
+                    return
+                ++cancelCalls
+                browserLoginPending = false
+                RobinBrowser.active = false
+                approvalPending = false
+                approvalSecondsRemaining = 0
+                reauthenticating = false
+                busy = false
+            }
             function clearActiveSession() { sessionActive = false }
-        )", "ListModel"));
+        )", "ListModel");
+        sessions->setProperty("accounts", QVariant::fromValue(mock(engine, {}, "ListModel")));
+        context->setContextProperty("RobinSessions", sessions);
     }
 };
 

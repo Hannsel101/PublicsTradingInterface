@@ -42,8 +42,9 @@ void RHQtKeychainStore::read(int index, ReadCompletion done)
     job->setKey(keyFor(index));
     connect(job, &QKeychain::ReadPasswordJob::finished, this,
             [job, done = std::move(done)]() {
-        const bool success = job->error() == QKeychain::NoError && !job->textData().isEmpty();
-        done(success, success ? job->textData() : QString(),
+        const bool found = job->error() == QKeychain::NoError;
+        const bool success = found || job->error() == QKeychain::EntryNotFound;
+        done(success, found ? job->textData() : QString(),
              success ? QString() : QStringLiteral("Saved session token is unavailable. Reauthenticate."));
         job->deleteLater();
     });

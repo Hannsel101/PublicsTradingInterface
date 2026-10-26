@@ -1,5 +1,18 @@
 # Findings
 
+## Delete saved Robin Hood login
+- The picker lists saved login sessions (`RHSessionManager`), whereas the account overview lists brokerage accounts (`RHAccountModel`); deletion should remove one saved login token under `RobinHoodAuth%1` and its `sessions.json` row, never a brokerage account.
+- `reauthenticate(index)` already removes the exact keychain entry asynchronously, atomically persists the remaining session metadata, then removes the model row, but also routes to sign-in. A dedicated delete path should share that transaction without routing, and keep the selected item visible on failure.
+
+## Upcoming Launcher choices
+- Existing `AppletChoice` already appends “(coming soon)” to the accessible name for disabled choices; it needed darker background and muted label styling to look intentionally disabled while retaining each stripe's color.
+- Offscreen compact QML image showed all five applet tiles inside the viewport, with Wells Fargo red, Fidelity dark green, and Chase blue stripes and dimmed text; mouse clicks on those disabled tiles did not change the active applet. No controller registration is needed until applets exist.
+
+## Brokerage account labels and balances
+- `load_phoenix_account()` calls a separate Phoenix endpoint and documents unified `total_equity`/`portfolio_equity`, whereas `load_account_profile()` calls `/accounts/` and documents `type`, `account_number`, `cash_balances`, and `margin_balances`. The existing session verification requests **only** `/accounts/` and must not assume Phoenix equity fields are present there. Preserve unknown balance explicitly instead of presenting zero or inventing an equity figure.
+- `RHSessionManager` is already a QAbstractListModel of saved sessions. Its `accounts` property is a QVariantList used in a QML Repeater. A second account-specific QAbstractListModel is necessary for distinct displayName/accountNumber/currentBalance roles across three accounts in one saved session.
+- A temporary QML mock screenshot of the overview (430×700) showed all three tiles with Individual Investing, Roth IRA, Traditional IRA, account numbers, and `Balance:` amounts/unavailable fully readable without overlap. The screenshot was a temporary local inspection artifact, not a committed test file.
+
 ## Publics display regression
 - The new Robin Hood `Loader` was a second `Layout.fillHeight: true` child in the applet `ColumnLayout`. `Loader.active: false` destroys its item but does not remove the Loader itself from layout. Offscreen reproduction measured 324px each for active Publics and inactive Robin Hood below the 52px toolbar in a 700px window. This truncates the Publics applet. Binding `visible: active` on both Loaders excludes the unused applet from layout; the new regression checks the full 648px viewport and Publics was visually rendered in a Qt Quick offscreen smoke run.
 - The visual check is a desktop/QML mock without stored account keys, not proof of actual Android/iOS rendering or a live brokerage operation.

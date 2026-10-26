@@ -5,7 +5,6 @@
       "Accept-Encoding": "gzip,deflate,br",
       "Accept-Language": "en-US,en;q=1",
       "Connection": "keep-alive",
-      "User-Agent": "*",
       "X-Robinhood-API-Version": "1.431.4"
     },
     "Form": {
@@ -20,201 +19,268 @@
   },
   "Endpoints": {
     "Login": {
-      "URL": "https://api.robinhood.com/oauth2/token/",
-      "Method": "POST",
-      "BodyEncoding": "form",
-      "HeaderSets": ["Common", "Form"],
-      "BodyDefaults": {
-        "client_id": "c82SH0WZOsabOXGP2sxqcj34FxkvfnWRZBKlBjFS",
-        "grant_type": "password",
-        "scope": "internal",
-        "try_passkeys": false,
-        "token_request_path": "/login",
-        "create_read_only_secondary_token": true
-      }
+      "Enabled": false
     },
     "TokenRefresh": {
       "Enabled": false
     },
     "BeginVerification": {
-      "URL": "https://api.robinhood.com/pathfinder/user_machine/",
-      "Method": "POST",
-      "BodyEncoding": "json",
-      "HeaderSets": ["Common", "Json"]
+      "Enabled": false
     },
     "ReadVerificationInquiry": {
-      "URL": "https://api.robinhood.com/pathfinder/inquiries/{machine_id}/user_view/",
-      "Method": "GET",
-      "BodyEncoding": "none",
-      "HeaderSets": ["Common"]
+      "Enabled": false
     },
     "ContinueVerification": {
-      "URL": "https://api.robinhood.com/pathfinder/inquiries/{machine_id}/user_view/",
-      "Method": "POST",
-      "BodyEncoding": "json",
-      "HeaderSets": ["Common", "Json"]
+      "Enabled": false
     },
     "CheckPrompt": {
-      "URL": "https://api.robinhood.com/push/{challenge_id}/get_prompts_status/",
-      "Method": "GET",
-      "BodyEncoding": "none",
-      "HeaderSets": ["Common"]
+      "Enabled": false
     },
     "SubmitChallenge": {
-      "URL": "https://api.robinhood.com/challenge/{challenge_id}/respond/",
-      "Method": "POST",
-      "BodyEncoding": "form",
-      "HeaderSets": ["Common", "Form"]
+      "Enabled": false
     },
     "CachedPositions": {
       "URL": "https://api.robinhood.com/positions/?nonzero=true",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "Accounts": {
       "URL": "https://api.robinhood.com/accounts/?default_to_all_accounts=true",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "AccountByNumber": {
       "URL": "https://api.robinhood.com/accounts/{account_number}",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "Instruments": {
       "URL": "https://api.robinhood.com/instruments/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "Quotes": {
       "URL": "https://api.robinhood.com/quotes/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "StockOrders": {
       "URL": "https://api.robinhood.com/orders/",
       "Method": "POST",
       "BodyEncoding": "form",
-      "HeaderSets": ["Common", "Form", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Form",
+        "Authorized"
+      ]
     },
     "StockOrdersForAccount": {
       "URL": "https://api.robinhood.com/orders/?account_numbers={account_number}",
       "Method": "POST",
       "BodyEncoding": "form",
-      "HeaderSets": ["Common", "Form", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Form",
+        "Authorized"
+      ]
     },
     "TrailingStockOrder": {
       "URL": "https://api.robinhood.com/orders/",
       "Method": "POST",
       "BodyEncoding": "json",
-      "HeaderSets": ["Common", "Json", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Json",
+        "Authorized"
+      ]
     },
     "StockOrderList": {
       "URL": "https://api.robinhood.com/orders/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "StockOrderDetails": {
       "URL": "https://api.robinhood.com/orders/{order_id}/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "CancelStockOrder": {
       "URL": "https://api.robinhood.com/orders/{order_id}/cancel/",
       "Method": "POST",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Form", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Form",
+        "Authorized"
+      ]
     },
     "OptionChain": {
       "URL": "https://api.robinhood.com/options/chains/{chain_id}/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "OptionInstruments": {
       "URL": "https://api.robinhood.com/options/instruments/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "OptionOrders": {
       "URL": "https://api.robinhood.com/options/orders/",
       "Method": "POST",
       "BodyEncoding": "json",
-      "HeaderSets": ["Common", "Json", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Json",
+        "Authorized"
+      ]
     },
     "OptionOrdersForAccount": {
       "URL": "https://api.robinhood.com/options/orders/?account_numbers={account_number}",
       "Method": "POST",
       "BodyEncoding": "json",
-      "HeaderSets": ["Common", "Json", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Json",
+        "Authorized"
+      ]
     },
     "OptionOrderList": {
       "URL": "https://api.robinhood.com/options/orders/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "OptionOrderDetails": {
       "URL": "https://api.robinhood.com/options/orders/{order_id}/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "CancelOptionOrder": {
       "URL": "https://api.robinhood.com/options/orders/{order_id}/cancel/",
       "Method": "POST",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Form", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Form",
+        "Authorized"
+      ]
     },
     "CryptoAccounts": {
       "URL": "https://nummus.robinhood.com/accounts/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "CryptoPairs": {
       "URL": "https://nummus.robinhood.com/currency_pairs/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "CryptoQuote": {
       "URL": "https://api.robinhood.com/marketdata/forex/quotes/{pair_id}/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "CryptoOrders": {
       "URL": "https://nummus.robinhood.com/orders/",
       "Method": "POST",
       "BodyEncoding": "json",
-      "HeaderSets": ["Common", "Json", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Json",
+        "Authorized"
+      ]
     },
     "CryptoOrderList": {
       "URL": "https://nummus.robinhood.com/orders/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "CryptoOrderDetails": {
       "URL": "https://nummus.robinhood.com/orders/{order_id}/",
       "Method": "GET",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     },
     "CancelCryptoOrder": {
       "URL": "https://nummus.robinhood.com/orders/{order_id}/cancel/",
       "Method": "POST",
       "BodyEncoding": "none",
-      "HeaderSets": ["Common", "Form", "Authorized"]
+      "HeaderSets": [
+        "Common",
+        "Form",
+        "Authorized"
+      ]
+    },
+    "UserProfile": {
+      "URL": "https://api.robinhood.com/user/",
+      "Method": "GET",
+      "BodyEncoding": "none",
+      "HeaderSets": [
+        "Common",
+        "Authorized"
+      ]
     }
   }
 }

@@ -20,20 +20,51 @@ Item {
     property int selectedIndex: -1
     property bool selectedExpired: false
     property string selectedExpiresAt: ""
-    readonly property int view: RobinSessions.sessionActive ? 2 : page
+    property string selectedAccountName: ""
+    property string selectedAccountId: ""
+    // Keep the browser route during read-only verification and the non-cancellable save.
+    property bool browserWasActive: RobinBrowser.active || RobinSessions.browserLoginPending
+    readonly property int view: RobinSessions.sessionActive ? 2
+                                : RobinBrowser.active || RobinSessions.browserLoginPending
+                                  || (browserWasActive && RobinSessions.busy) ? 3 : 0
 
     Connections {
+        target: RobinBrowser
+        function onActiveChanged() {
+            if (RobinBrowser.active)
+                root.browserWasActive = true
+        }
+    }
+    Connections {
         target: RobinSessions
+        function onBrowserLoginPendingChanged() {
+            if (RobinSessions.browserLoginPending)
+                root.browserWasActive = true
+        }
+        function onBusyChanged() {
+            if (!RobinSessions.busy)
+                root.browserWasActive = false
+        }
+        function onSessionActiveChanged() {
+            if (RobinSessions.sessionActive)
+                root.browserWasActive = false
+        }
         function onSessionSaved() {
             root.selectedIndex = -1
             root.selectedExpired = false
             root.selectedExpiresAt = ""
+            root.selectedAccountName = ""
+            root.selectedAccountId = ""
             root.page = 0
         }
-        function onReauthenticationRequested(accountName) {
-            root.selectedIndex = -1
-            root.page = 1
-            emailField.text = accountName
+        function onSessionDeleted(index) {
+            if (root.selectedIndex === index) {
+                root.selectedIndex = -1
+                root.selectedExpired = false
+                root.selectedExpiresAt = ""
+                root.selectedAccountName = ""
+                root.selectedAccountId = ""
+            }
         }
     }
     Timer {
@@ -47,6 +78,8 @@ Item {
 
     Flickable {
         id: scroller
+        objectName: "robinSessionScroller"
+        visible: root.view !== 3
         anchors.fill: parent
         clip: true
         contentWidth: width
@@ -80,8 +113,7 @@ Item {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: root.view === 2 ? qsTr("Account overview")
-                              : root.view === 1 ? qsTr("Add an account") : qsTr("Your sessions")
+                        text: root.view === 2 ? qsTr("Account overview") : qsTr("Your sessions")
                         color: root.ink
                         font.pixelSize: 28
                         font.weight: Font.DemiBold
@@ -114,12 +146,13 @@ Item {
 
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 52
+                Layout.preferredHeight: Math.max(52, errorLabel.implicitHeight + 24)
                 visible: RobinSessions.error !== ""
                 radius: 12
                 color: "#54302e"
                 border.color: "#e8907f"
                 Label {
+                    id: errorLabel
                     anchors.fill: parent
                     anchors.margins: 12
                     verticalAlignment: Text.AlignVCenter
@@ -154,6 +187,7 @@ Item {
                         objectName: "robinSessionCard_" + sessionIndex
                         required property int sessionIndex
                         required property string accountName
+                        required property string accountId
                         required property string expiresAt
                         required property bool isExpired
                         activeFocusOnTab: true
@@ -164,6 +198,8 @@ Item {
                             root.selectedIndex = sessionIndex
                             root.selectedExpiresAt = expiresAt
                             root.selectedExpired = isExpired
+                            root.selectedAccountName = accountName
+                            root.selectedAccountId = accountId
                         }
                         Keys.onReturnPressed: choose()
                         Keys.onSpacePressed: choose()
@@ -215,6 +251,7 @@ Item {
                 Button {
                     id: startButton
                     objectName: "startRobinSession"
+                    visible: !root.selectedExpired
                     Layout.fillWidth: true
                     Layout.preferredHeight: 52
                     text: RobinSessions.busy ? qsTr("Working…") : qsTr("Start Session")
@@ -238,129 +275,55 @@ Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 48
                     visible: root.selectedIndex >= 0 && root.selectedExpired
-                    enabled: !RobinSessions.busy
+                    enabled: RobinBrowser.available && !RobinSessions.busy
                     text: qsTr("Reauthenticate")
-                    onClicked: RobinSessions.reauthenticate(root.selectedIndex)
+                    onClicked: {
+                        root.page = 0
+                        scroller.contentY = 0
+                        RobinSessions.prepareReauthentication(root.selectedAccountId)
+                    }
+                }
+                Button {
+                    id: deleteButton
+                    objectName: "deleteRobinSession"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 48
+                    text: qsTr("Delete saved account")
+                    enabled: root.selectedIndex >= 0 && !RobinSessions.busy
+                    onClicked: {
+                        if (deleteDialogLoader.status !== Loader.Ready)
+                            return
+                        deleteDialogLoader.item.pendingIndex = root.selectedIndex
+                        deleteDialogLoader.item.pendingAccountName = root.selectedAccountName
+                        deleteDialogLoader.item.open()
+                    }
+                    contentItem: Label {
+                        text: deleteButton.text
+                        color: deleteButton.enabled ? "#ffe4dc" : root.muted
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    background: Rectangle {
+                        radius: 14
+                        color: deleteButton.enabled ? "#54302e" : "#31403a"
+                        border.color: deleteButton.enabled ? "#e8907f" : root.edge
+                    }
                 }
                 Button {
                     objectName: "addRobinAccount"
                     Layout.fillWidth: true
                     Layout.preferredHeight: 48
                     text: qsTr("+ Add another account")
-                    enabled: !RobinSessions.busy
-                    onClicked: {
-                        emailField.clear()
-                        root.page = 1
-                        scroller.contentY = 0
-                    }
+                    enabled: RobinBrowser.available && !RobinSessions.busy
+                    onClicked: RobinSessions.beginBrowserLogin()
                 }
-            }
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                visible: root.view === 1
-                spacing: 12
                 Label {
+                    objectName: "robinBrowserUnavailable"
                     Layout.fillWidth: true
-                    text: qsTr("Credentials are submitted only for sign-in. Your password is not saved; the returned session token is stored in the system keychain.")
+                    visible: !RobinBrowser.available
+                    text: qsTr("Secure browser sign-in is unavailable. Desktop requires QtWebEngineQuick. Android QtWebView sign-in is disabled until native pre-navigation enforcement is implemented.")
                     color: root.muted
                     wrapMode: Text.Wrap
-                    font.pixelSize: 14
-                }
-                TextField {
-                    id: emailField
-                    objectName: "robinEmail"
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 50
-                    placeholderText: qsTr("Account email")
-                    inputMethodHints: Qt.ImhEmailCharactersOnly | Qt.ImhNoAutoUppercase
-                    enabled: !RobinSessions.approvalPending
-                    color: root.ink
-                }
-                TextField {
-                    id: passwordField
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 50
-                    placeholderText: qsTr("Password")
-                    echoMode: TextInput.Password
-                    enabled: !RobinSessions.approvalPending
-                    color: root.ink
-                }
-                TextField {
-                    id: mfaField
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 50
-                    placeholderText: qsTr("MFA code (if needed)")
-                    inputMethodHints: Qt.ImhDigitsOnly
-                    enabled: !RobinSessions.approvalPending
-                    color: root.ink
-                }
-                Label {
-                    Layout.fillWidth: true
-                    visible: RobinSessions.approvalPending
-                    text: qsTr("Please check your phone and approve the login")
-                    color: root.secondary
-                    wrapMode: Text.Wrap
-                    font.bold: true
-                }
-                Label {
-                    objectName: "robinApprovalCountdown"
-                    Layout.fillWidth: true
-                    visible: RobinSessions.approvalPending
-                    text: qsTr("%1:%2 remaining")
-                          .arg(Math.floor(RobinSessions.approvalSecondsRemaining / 60))
-                          .arg((RobinSessions.approvalSecondsRemaining % 60 < 10 ? "0" : "")
-                               + RobinSessions.approvalSecondsRemaining % 60)
-                    color: root.accent
-                    font.pixelSize: 22
-                }
-                Button {
-                    objectName: "cancelRobinApproval"
-                    visible: RobinSessions.approvalPending
-                    text: qsTr("Cancel device approval")
-                    onClicked: RobinSessions.cancelSignIn()
-                }
-                Button {
-                    id: signInButton
-                    objectName: "robinSignIn"
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 52
-                    enabled: !RobinSessions.busy && emailField.text.trim() !== "" && passwordField.text !== ""
-                    text: RobinSessions.approvalPending ? qsTr("Awaiting device approval…")
-                          : RobinSessions.busy ? qsTr("Signing in…") : qsTr("Sign in & save session")
-                    onClicked: {
-                        RobinSessions.signIn(emailField.text, passwordField.text, mfaField.text)
-                        passwordField.clear()
-                        mfaField.clear()
-                    }
-                    contentItem: Label {
-                        text: signInButton.text
-                        color: signInButton.enabled ? root.canvas : root.muted
-                        font.bold: true
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    background: Rectangle {
-                        radius: 14
-                        color: signInButton.enabled ? root.accent : "#31403a"
-                    }
-                }
-                Label {
-                    Layout.fillWidth: true
-                    text: qsTr("Device approval is supported. SMS and email verification challenges still require another sign-in method.")
-                    color: root.muted
-                    wrapMode: Text.Wrap
-                    font.pixelSize: 12
-                }
-                Button {
-                    objectName: "backToRobinSessions"
-                    text: qsTr("← Saved sessions")
-                    enabled: !RobinSessions.busy || RobinSessions.approvalPending
-                    onClicked: {
-                        if (RobinSessions.approvalPending)
-                            RobinSessions.cancelSignIn()
-                        root.page = 0
-                    }
                 }
             }
 
@@ -375,12 +338,16 @@ Item {
                     wrapMode: Text.Wrap
                 }
                 Repeater {
+                    id: accountRepeater
                     model: RobinSessions.accounts
                     delegate: Rectangle {
                         id: accountTile
-                        required property var modelData
+                        required property string displayName
+                        required property string accountNumber
+                        required property string currentBalance
+                        objectName: "robinAccountTile_" + accountNumber
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 82
+                        Layout.preferredHeight: 104
                         radius: 16
                         color: root.surface
                         border.color: root.edge
@@ -388,19 +355,25 @@ Item {
                             anchors.fill: parent
                             anchors.margins: 14
                             Label {
-                                text: qsTr("ACCOUNT  /  %1").arg(accountTile.modelData.accountNumber || qsTr("Unavailable"))
+                                objectName: "robinAccountName_" + accountTile.accountNumber
+                                text: accountTile.displayName
                                 color: root.accent
                                 font.bold: true
                             }
                             Label {
-                                text: accountTile.modelData.type || qsTr("Brokerage")
+                                text: qsTr("ACCOUNT  /  %1").arg(accountTile.accountNumber || qsTr("Unavailable"))
+                                color: root.muted
+                            }
+                            Label {
+                                objectName: "robinAccountBalance_" + accountTile.accountNumber
+                                text: qsTr("Balance: %1").arg(accountTile.currentBalance)
                                 color: root.muted
                             }
                         }
                     }
                 }
                 Label {
-                    visible: RobinSessions.accounts.length === 0
+                    visible: accountRepeater.count === 0
                     text: qsTr("No brokerage accounts were returned for this session.")
                     color: root.muted
                 }
@@ -436,6 +409,43 @@ Item {
                         enabled: false
                         Layout.preferredWidth: 120
                     }
+                }
+            }
+        }
+    }
+    Loader {
+        anchors.fill: parent
+        active: root.view === 3
+        visible: active
+        sourceComponent: WebLoginPanel {}
+    }
+    Loader {
+        id: deleteDialogLoader
+        active: root.selectedIndex >= 0
+        sourceComponent: Component {
+            Dialog {
+                id: deleteDialog
+                parent: root
+                objectName: "deleteRobinSessionDialog"
+                property int pendingIndex: -1
+                property string pendingAccountName: ""
+                anchors.centerIn: parent
+                width: Math.min(root.width - 36, 420)
+                modal: true
+                focus: true
+                title: qsTr("Delete saved account?")
+                standardButtons: Dialog.Yes | Dialog.Cancel
+                onAccepted: RobinSessions.deleteSavedSession(pendingIndex)
+                contentItem: Label {
+                    text: qsTr("Remove the saved login for %1 from this device? This does not close or delete your Robinhood brokerage accounts.").arg(deleteDialog.pendingAccountName)
+                    wrapMode: Text.Wrap
+                    color: root.ink
+                    padding: 12
+                }
+                background: Rectangle {
+                    radius: 14
+                    color: root.surface
+                    border.color: root.edge
                 }
             }
         }

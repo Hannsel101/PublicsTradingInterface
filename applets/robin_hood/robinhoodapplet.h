@@ -9,6 +9,8 @@ class RobinHoodApplet final : public AppletInterface
 public:
     explicit RobinHoodApplet(QObject *parent = nullptr);
     ~RobinHoodApplet() override;
+    static void prepareBrowserRuntime();
+    static void initializeBrowserRuntime();
     QString id() const override;
     void initialize(QQmlApplicationEngine &engine) override;
     void start() override;

@@ -1,20 +1,26 @@
 #include "robinhoodapplet.h"
 #include "rhnetworkengine.h"
 #include "rhsessionmanager.h"
+#include "rhbrowserlogin.h"
 
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <utility>
 
 struct RobinHoodApplet::State
 {
-    State() : sessions(network)
+    State() : sessions(network), browser([this](QByteArray token, QDateTime expires) {
+        sessions.acceptBrowserToken(std::move(token), expires);
+    })
     {
         Q_INIT_RESOURCE(rh_config);
         QString error;
         network.loadConfiguration(QStringLiteral(":/robinhood/config/robinhood-api.json"), &error);
+        sessions.setBrowserLogin(&browser);
     }
     RHNetworkEngine network;
     RHSessionManager sessions;
+    RHBrowserLogin browser;
 };
 
 RobinHoodApplet::RobinHoodApplet(QObject *parent)
@@ -22,11 +28,21 @@ RobinHoodApplet::RobinHoodApplet(QObject *parent)
 {
     connect(&m_state->sessions, &RHSessionManager::busyChanged,
             this, &AppletInterface::navigationAvailabilityChanged);
-    connect(&m_state->sessions, &RHSessionManager::approvalChanged,
+    connect(&m_state->sessions, &RHSessionManager::browserLoginPendingChanged,
             this, &AppletInterface::navigationAvailabilityChanged);
 }
 
 RobinHoodApplet::~RobinHoodApplet() = default;
+
+void RobinHoodApplet::prepareBrowserRuntime()
+{
+    RHBrowserLogin::prepareApplication();
+}
+
+void RobinHoodApplet::initializeBrowserRuntime()
+{
+    RHBrowserLogin::initializeApplication();
+}
 
 QString RobinHoodApplet::id() const
 {
@@ -36,6 +52,7 @@ QString RobinHoodApplet::id() const
 void RobinHoodApplet::initialize(QQmlApplicationEngine &engine)
 {
     engine.rootContext()->setContextProperty(QStringLiteral("RobinSessions"), &m_state->sessions);
+    engine.rootContext()->setContextProperty(QStringLiteral("RobinBrowser"), &m_state->browser);
 }
 
 void RobinHoodApplet::start()
@@ -45,7 +62,7 @@ void RobinHoodApplet::start()
 
 bool RobinHoodApplet::canStop() const
 {
-    return !m_state->sessions.busy() || m_state->sessions.approvalPending();
+    return !m_state->sessions.busy() || m_state->sessions.browserLoginPending();
 }
 
 void RobinHoodApplet::stop()

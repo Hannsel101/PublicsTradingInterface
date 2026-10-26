@@ -17,7 +17,21 @@ publics_add_test(test_publicapiworker unit/test_publicapiworker.cpp publics_api)
 publics_add_test(test_launcher unit/test_launcher.cpp launcher_controller)
 publics_add_test(test_publicsapplet unit/test_publicsapplet.cpp publics_applet Qt6::Qml)
 publics_add_test(test_rhnetworkengine unit/test_rhnetworkengine.cpp rh_network_engine)
+publics_add_test(test_rhbrowserlogin unit/test_rhbrowserlogin.cpp rh_browser_auth)
+get_target_property(rh_test_browser_backend rh_browser_auth PUBLICS_RH_BROWSER_BACKEND)
+if(rh_test_browser_backend STREQUAL "webengine")
+    find_package(Qt6 6.10 REQUIRED COMPONENTS WebEngineQuick)
+    publics_add_test(test_rhbrowser_native integration/test_rhbrowser_native.cpp
+        rh_browser_auth Qt6::WebEngineQuick Qt6::Qml
+    )
+    set_tests_properties(test_rhbrowser_native PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QTWEBENGINE_CHROMIUM_FLAGS=--disable-background-networking --disable-gpu"
+        TIMEOUT 60
+    )
+endif()
 publics_add_test(test_rhsessionmanager unit/test_rhsessionmanager.cpp rh_sessions)
+publics_add_test(test_rhdevicetoken unit/test_rhdevicetoken.cpp rh_sessions)
+publics_add_test(test_securecredentiallocker unit/test_securecredentiallocker.cpp rh_sessions OpenSSL::Crypto)
 publics_add_test(test_robinhoodapplet unit/test_robinhoodapplet.cpp robin_hood_applet Qt6::Qml)
 publics_add_test(test_autotradecontroller integration/test_auto_sequence.cpp
     publics_trading_preflight publics_auth publics_api

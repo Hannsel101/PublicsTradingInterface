@@ -55,6 +55,14 @@ function(publics_enable_live_trading target)
     endif()
 endfunction()
 
+# Discover optional Robinhood browser dependencies at the common scope so Qt's
+# executable deployment/plugin finalizers can see their imported dependencies.
+if(ANDROID)
+    find_package(Qt6 6.10 QUIET OPTIONAL_COMPONENTS WebView)
+elseif(NOT IOS)
+    find_package(Qt6 6.10 QUIET OPTIONAL_COMPONENTS WebEngineQuick)
+endif()
+
 add_subdirectory(shared)
 add_subdirectory(applets/publics)
 add_subdirectory(applets/robin_hood)
