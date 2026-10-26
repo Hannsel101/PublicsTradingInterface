@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls.Basic
 import QtTest
 import PublicsTradingInterface
 
@@ -9,7 +10,19 @@ TestCase {
     width: 1000
     height: 700
 
-    Component { id: mainComponent; Main { visible: false } }
+    Component {
+        id: mainComponent
+        ApplicationWindow {
+            width: 1000
+            height: 700
+            visible: false
+            property alias autoMode: core.autoMode
+            property alias keySelected: core.keySelected
+            property alias canStartSession: core.canStartSession
+            property alias compactLayout: core.compactLayout
+            CoreView { id: core; anchors.fill: parent }
+        }
+    }
     Component { id: timerComponent; SessionTimer {} }
     Component { id: switchComponent; SwitchKeyButton {} }
     Component { id: autoComponent; AutoTradeScreen { width: 640 } }

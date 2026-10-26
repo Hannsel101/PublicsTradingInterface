@@ -12,7 +12,15 @@ TestCase {
     width: 480
     height: 900
 
-    Component { id: mainComponent; Main {} }
+    Component {
+        id: mainComponent
+        ApplicationWindow {
+            width: 480
+            height: 900
+            property alias autoMode: core.autoMode
+            CoreView { id: core; anchors.fill: parent }
+        }
+    }
 
     function findItem(item, predicate) {
         if (predicate(item))

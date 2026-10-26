@@ -20,7 +20,7 @@ cmake -S . -B build/android-s24-release -G 'Unix Makefiles' \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DQT_ANDROID_ABIS=arm64-v8a
 cmake --build build/android-s24-release --target apk --parallel 6
 python3 scripts/sign-android-release.py \
-  build/android-s24-release/src/app/android-build/build/outputs/apk/release/android-build-release-unsigned.apk \
+  build/android-s24-release/launcher/android-build/build/outputs/apk/release/android-build-release-unsigned.apk \
   build/android-s24-release/PublicsTradingInterface-S24Ultra-release.apk
 ```
 
@@ -36,7 +36,7 @@ The initial keystore has already been created. Do not regenerate it for updates.
 
 Back up the keystore and password securely. Keep these files private; distribute
 only the signed APK. Future updates must use this same signing key and an
-incremented `QT_ANDROID_VERSION_CODE` in `src/app/CMakeLists.txt`. If an installed build
+incremented `QT_ANDROID_VERSION_CODE` in `launcher/CMakeLists.txt`. If an installed build
 was signed with another key, Android will not accept this APK as an update.
 Do not uninstall an existing installation without considering its local data.
 

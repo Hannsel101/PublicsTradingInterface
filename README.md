@@ -1,6 +1,6 @@
 # Publics Trading Interface
 
-Publics Trading Interface is a desktop and mobile app for placing stock orders across eligible Public.com accounts connected to one selected API key or all saved keys in Auto Mode.
+Publics Trading Interface is a desktop and mobile multi-applet app. Its **Publics** applet places stock orders across eligible Public.com accounts connected to one selected API key or all saved keys in Auto Mode. The **Robin Hood** launcher option is disabled until that applet exists.
 
 The app is intended for people who manage more than one supported Public.com brokerage account and want to see the result for each account in one place.
 
@@ -22,11 +22,14 @@ The app is intended for people who manage more than one supported Public.com bro
 | Auto Mode | Open it from the bottom of the main menu to trade across every saved key without selecting one. The screen lists key labels, authenticates each key on submission, and shows results for each eligible account. |
 | Adapts to different screen sizes | The interface rearranges itself for phones, tablets, and desktop windows. |
 
+Open the app and select **Publics** in the launcher. Both launcher choices use the same neutral button style, with a dark-blue stripe for Publics and a lime-green stripe for Robin Hood. **← Applets** returns to the launcher after outstanding key operations/trades finish; leaving clears the Publics session. No additional application window is created.
+
 ## How a session flows
 
 ```mermaid
 flowchart TD
-    A[Open the app] --> B{Do you already have a saved API key?}
+    A[Open the app] --> A1[Select Publics in the launcher]
+    A1 --> B{Do you already have a saved API key?}
     B -- No --> C[Paste the Public.com API secret]
     C --> D[The device stores it in its protected keychain]
     B -- Yes --> E[Choose a saved key label]
@@ -48,7 +51,7 @@ flowchart TD
 
 The same flow as a short list:
 
-1. Save or select a Public.com API key.
+1. Select Publics, then save or select a Public.com API key.
 2. Start a five-minute session.
 3. Wait while the app loads the supported accounts connected to that key.
 4. Type a ticker or comma-separated tickers (for example, `AAPL, TSLA, GM`). Spaces, numbers, and punctuation other than the separating comma are ignored; empty entries, including a trailing comma, are skipped.

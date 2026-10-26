@@ -55,9 +55,10 @@ function(publics_enable_live_trading target)
     endif()
 endfunction()
 
-add_subdirectory(src)
-add_subdirectory(qml/PublicsTradingInterface)
-add_subdirectory(src/app)
+add_subdirectory(shared)
+add_subdirectory(applets/publics)
+add_subdirectory(applets/robin_hood)
+add_subdirectory(launcher)
 
 if(BUILD_TESTING)
     find_package(Qt6 6.10 REQUIRED COMPONENTS Test QuickTest)

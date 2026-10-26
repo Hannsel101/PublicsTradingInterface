@@ -5,6 +5,7 @@
 #include <QQmlExtensionPlugin>
 
 Q_IMPORT_QML_PLUGIN(PublicsTradingInterfacePlugin)
+Q_IMPORT_QML_PLUGIN(TradingLauncherPlugin)
 
 // No production backends are linked: these objects cannot access a brokerage or keychain.
 class QmlTestSetup : public QObject
@@ -27,6 +28,12 @@ public slots:
     {
         auto *context = engine->rootContext();
         context->setContextProperty("isDebugMode", true);
+        context->setContextProperty("Launcher", mock(engine, R"(
+            property string activeAppletId: ""
+            property bool canReturnHome: activeAppletId !== ""
+            function activate(id) { activeAppletId = id; return true }
+            function returnHome() { activeAppletId = ""; return true }
+        )"));
         context->setContextProperty("AuthClient", mock(engine, R"(
             property bool sessionActive: false
             property string selectedApiKeyLabel: ""

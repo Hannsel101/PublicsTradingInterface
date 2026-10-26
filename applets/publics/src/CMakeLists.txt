@@ -30,6 +30,17 @@ endfunction()
 
 publics_add_trading_target(publics_trading)
 publics_enable_live_trading(publics_trading)
+
+qt_add_library(publics_applet STATIC
+    publicsapplet.cpp
+    publicsapplet.h
+)
+target_include_directories(publics_applet PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(publics_applet
+    PUBLIC applet_contract
+    PRIVATE Qt6::Qml publics_auth publics_api publics_trading
+)
+
 if(BUILD_TESTING)
     # A separate compilation keeps Auto Mode tests preflight-only even in Release.
     publics_add_trading_target(publics_trading_preflight)

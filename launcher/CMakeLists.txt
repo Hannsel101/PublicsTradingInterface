@@ -1,4 +1,17 @@
+qt_add_library(launcher_controller STATIC
+    launchercontroller.cpp
+    launchercontroller.h
+)
+target_include_directories(launcher_controller PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(launcher_controller PUBLIC applet_contract Qt6::Qml)
+
 qt_add_executable(appPublicsTradingInterface main.cpp)
+add_subdirectory(qml/TradingLauncher)
+# androiddeployqt needs the build-tree parent of both static QML modules.
+set_property(TARGET appPublicsTradingInterface APPEND PROPERTY QT_QML_IMPORT_PATH
+    "${CMAKE_BINARY_DIR}/applets/publics/qml"
+    "${CMAKE_BINARY_DIR}/launcher/qml"
+)
 
 if(APPLE AND NOT IOS)
     set(PUBLICS_MACOS_ICON "${PROJECT_SOURCE_DIR}/resources/PublicsTradingInterface.icns")
@@ -48,8 +61,8 @@ set_target_properties(appPublicsTradingInterface PROPERTIES
 )
 
 target_link_libraries(appPublicsTradingInterface PRIVATE
-    Qt6::Quick publics_auth publics_api publics_trading
-    publics_ui publics_uiplugin
+    Qt6::Quick launcher_controller publics_applet
+    launcher_ui launcher_uiplugin publics_ui publics_uiplugin
 )
 publics_enable_live_trading(appPublicsTradingInterface)
 

@@ -1,5 +1,7 @@
 # Architecture refactor verification
 
+> Historical snapshot of the pre-launcher source layout. For the current multi-applet paths and build instructions, see `docs/development.md`.
+
 ## Delivered
 
 - Organized production code under `src/{app,auth,api,trading}` and QML under `qml/PublicsTradingInterface/{credentials,trading}`.

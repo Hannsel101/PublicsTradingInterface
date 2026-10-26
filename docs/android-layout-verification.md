@@ -1,5 +1,7 @@
 # Android layout verification
 
+> Historical paths below describe the pre-launcher build. Current APK output is under `build/<configuration>/launcher/android-build/`; see `android/README.md`.
+
 Verified October 24, 2026 with Qt 6.11.2 Android arm64 and a read-only
 `Samsung_Galaxy_S24_Ultra_API_34` AOSP emulator. This is not physical Samsung
 One UI verification.

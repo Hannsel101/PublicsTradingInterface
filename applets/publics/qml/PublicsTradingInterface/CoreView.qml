@@ -5,16 +5,8 @@ import QtQuick.Layouts
 import "credentials"
 import "trading"
 
-ApplicationWindow {
+Item {
     id: window
-
-    width: 1000
-    height: 700
-    minimumWidth: 360
-    minimumHeight: 620
-    visible: true
-    title: qsTr("Publics Brokerage API Multi-Account Trader")
-    color: Theme.backgroundColor
 
     property bool autoMode: false
     readonly property bool compactLayout: width < 720

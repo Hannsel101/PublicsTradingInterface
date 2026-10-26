@@ -4,7 +4,7 @@ qt_add_qml_module(publics_ui
     URI PublicsTradingInterface
     CLASS_NAME PublicsTradingInterfacePlugin
     QML_FILES
-        Main.qml
+        CoreView.qml
         Theme.qml
         credentials/ApiKeyList.qml
         credentials/SwitchKeyButton.qml
