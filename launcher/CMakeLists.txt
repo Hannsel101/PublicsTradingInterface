@@ -10,6 +10,7 @@ add_subdirectory(qml/TradingLauncher)
 # androiddeployqt needs the build-tree parent of both static QML modules.
 set_property(TARGET appPublicsTradingInterface APPEND PROPERTY QT_QML_IMPORT_PATH
     "${CMAKE_BINARY_DIR}/applets/publics/qml"
+    "${CMAKE_BINARY_DIR}/applets/robin_hood/qml"
     "${CMAKE_BINARY_DIR}/launcher/qml"
 )
 
@@ -61,8 +62,8 @@ set_target_properties(appPublicsTradingInterface PROPERTIES
 )
 
 target_link_libraries(appPublicsTradingInterface PRIVATE
-    Qt6::Quick launcher_controller publics_applet
-    launcher_ui launcher_uiplugin publics_ui publics_uiplugin
+    Qt6::Quick launcher_controller publics_applet robin_hood_applet
+    launcher_ui launcher_uiplugin publics_ui publics_uiplugin rh_ui rh_uiplugin
 )
 publics_enable_live_trading(appPublicsTradingInterface)
 

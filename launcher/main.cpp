@@ -6,8 +6,10 @@
 
 #include "launchercontroller.h"
 #include "publicsapplet.h"
+#include "robinhoodapplet.h"
 
 Q_IMPORT_QML_PLUGIN(PublicsTradingInterfacePlugin)
+Q_IMPORT_QML_PLUGIN(RobinHoodInterfacePlugin)
 Q_IMPORT_QML_PLUGIN(TradingLauncherPlugin)
 
 int main(int argc, char *argv[])
@@ -21,7 +23,8 @@ int main(int argc, char *argv[])
 #endif
     QQmlApplicationEngine engine;
     PublicsApplet publics;
-    LauncherController launcher(engine, {&publics});
+    RobinHoodApplet robinHood;
+    LauncherController launcher(engine, {&publics, &robinHood});
     engine.rootContext()->setContextProperty(QStringLiteral("Launcher"), &launcher);
 
 #ifdef RELEASE

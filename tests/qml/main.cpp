@@ -5,6 +5,7 @@
 #include <QQmlExtensionPlugin>
 
 Q_IMPORT_QML_PLUGIN(PublicsTradingInterfacePlugin)
+Q_IMPORT_QML_PLUGIN(RobinHoodInterfacePlugin)
 Q_IMPORT_QML_PLUGIN(TradingLauncherPlugin)
 
 // No production backends are linked: these objects cannot access a brokerage or keychain.
@@ -12,10 +13,11 @@ class QmlTestSetup : public QObject
 {
     Q_OBJECT
 
-    static QObject *mock(QQmlEngine *engine, const QByteArray &body)
+    static QObject *mock(QQmlEngine *engine, const QByteArray &body,
+                         const QByteArray &type = "QtObject")
     {
         QQmlComponent component(engine);
-        component.setData("import QtQml\nQtObject {\n" + body + "\n}", QUrl());
+        component.setData("import QtQml\nimport QtQml.Models\n" + type + " {\n" + body + "\n}", QUrl());
         QObject *object = component.create();
         if (!object)
             qFatal("Cannot create test facade: %s", qPrintable(component.errorString()));
@@ -68,6 +70,33 @@ public slots:
             property var keyLabels: []
             function submit(symbols, side) {}
         )"));
+        context->setContextProperty("RobinSessions", mock(engine, R"(
+            property bool busy: false
+            property bool approvalPending: false
+            property int approvalSecondsRemaining: 0
+            property bool sessionActive: false
+            property string activeAccount: ""
+            property var accounts: []
+            property string error: ""
+            property int lastStarted: -1
+            signal sessionSaved(int index)
+            signal reauthenticationRequested(string accountName)
+            function startSession(index) { lastStarted = index; return true }
+            function reauthenticate(index) {
+                for (let i = 0; i < count; ++i) {
+                    if (get(i).sessionIndex === index) {
+                        const name = get(i).accountName
+                        remove(i)
+                        reauthenticationRequested(name)
+                        return true
+                    }
+                }
+                return false
+            }
+            function signIn(email, password, code) { return true }
+            function cancelSignIn() { approvalPending = false; approvalSecondsRemaining = 0; busy = false }
+            function clearActiveSession() { sessionActive = false }
+        )", "ListModel"));
     }
 };
 

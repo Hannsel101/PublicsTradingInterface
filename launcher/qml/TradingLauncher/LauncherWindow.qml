@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import PublicsTradingInterface
+import RobinHoodInterface as RH
 
 ApplicationWindow {
     id: launcherWindow
@@ -55,8 +56,8 @@ ApplicationWindow {
                     objectName: "openRobinHood"
                     appletName: qsTr("Robin Hood")
                     stripeColor: "#a3e635"
-                    enabled: false
                     Layout.fillWidth: true
+                    onClicked: Launcher.activate("robin_hood")
                 }
             }
         }
@@ -94,7 +95,8 @@ ApplicationWindow {
                         }
                     }
                     Label {
-                        text: qsTr("Publics Trading")
+                        text: Launcher.activeAppletId === "robin_hood"
+                              ? qsTr("Robin Hood") : qsTr("Publics Trading")
                         color: "#f7f8f8"
                         font.bold: true
                         Layout.fillWidth: true
@@ -109,7 +111,16 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 active: Launcher.activeAppletId === "publics"
+                visible: active
                 sourceComponent: Component { CoreView {} }
+            }
+            Loader {
+                objectName: "robinHoodLoader"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                active: Launcher.activeAppletId === "robin_hood"
+                visible: active
+                sourceComponent: Component { RH.CoreView {} }
             }
         }
     }
