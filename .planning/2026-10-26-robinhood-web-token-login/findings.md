@@ -30,6 +30,21 @@
 - https://doc.qt.io/qt-6/qml-qtwebview-webview.html
 - https://developer.android.com/reference/android/webkit/CookieManager
 
+## Updated SDK/JDK follow-up
+- Installed Qt6.12 now includes macOS WebEngineQuick/Core, WebView, and previously missing TaskTree; Android WebView modules also exist.
+- Live JAVA_HOME is unset; java_home finds no JDK and the system JavaVirtualMachines directory is empty. Standard user JDK locations are absent.
+- Official Qt6.12 prerequisites require JDK21 or newer: https://doc.qt.io/qt-6/android-configure-dev-environment.html and https://doc.qt.io/qt-6/android.html . Prefer a full ARM64 JDK21 for this Apple Silicon host, not a JRE.
+- Installed Qt6.12 Android Gradle template uses AGP9.2.1 and Java17 source/target bytecode. Java bytecode target17 is distinct from the JDK used to run the toolchain.
+- brew info --cask temurin@21 verifies an available macOS aarch64 JDK21 package, currently not installed. No system Java installation/change performed.
+- Official-doc browser fetch timed out; independent official-domain search successfully retrieved the prerequisite requirements.
+- Refreshed existing Qt6.12 build with qt-cmake; full app/QML/native WebEngine integration compiled and all13 CTest targets pass. No live-provider login or Android navigation guard is implied by installed modules.
+
+## Verified Java/APK follow-up
+- Installed JDK: Temurin21.0.13+9 LTS arm64; java_home selects /Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home; javac21.0.13 works.
+- Previously blocked Qt6.11.2 arm64 debug APK target now succeeds using JAVA_HOME for the build. No global shell or IDE setting modified.
+- APK ZIP CRC checks pass; manifest/classes.dex/app native library, QtWebView and OpenSSL libraries present; apksigner v2 verifies. aapt reports minSDK28, targetSDK36, arm64-v8a. No device execution/live sign-in claimed.
+- Androiddeployqt still warns about DesktopWebLogin QtWebEngine import while scanning cross-platform sources, but packaging succeeds and Android WebView native libraries are present.
+
 ## Independent native/runtime and security findings
 - Native Chromium cookie store is lazy even after loadAllCookies(): attach an actual about:blank WebEngineView to initialize it. A standalone profile-only fixture queues synthetic cookie operations indefinitely. Integrated fixture now asserts real native HttpOnly capture and disconnection after finish without any brokerage navigation.
 - QtWebView onUrlChanged is post-dispatch notification, unlike desktop WebEngine navigationRequested. Android must remain unavailable until a native pre-navigation interceptor is implemented and verified; retained JNI/WebView code alone is not sufficient.

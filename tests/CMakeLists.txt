@@ -16,7 +16,16 @@ publics_add_test(test_publicauthclient integration/test_publicauthclient.cpp pub
 publics_add_test(test_publicapiworker unit/test_publicapiworker.cpp publics_api)
 publics_add_test(test_launcher unit/test_launcher.cpp launcher_controller)
 publics_add_test(test_publicsapplet unit/test_publicsapplet.cpp publics_applet Qt6::Qml)
+publics_add_test(test_rhoauthgrant unit/test_rhoauthgrant.cpp rh_network_engine)
+publics_add_test(test_rhnativeauthclient unit/test_rhnativeauthclient.cpp rh_native_auth)
+publics_add_test(test_rhcredentialstore unit/test_rhcredentialstore.cpp rh_secure_credentials)
+publics_add_test(test_rhsessionmanager_native unit/test_rhsessionmanager_native.cpp rh_sessions Qt6::Qml)
 publics_add_test(test_rhnetworkengine unit/test_rhnetworkengine.cpp rh_network_engine)
+publics_enable_live_trading(test_rhnetworkengine)
+publics_add_test(test_rhtradecontroller unit/test_rhtradecontroller.cpp rh_trading)
+# Data-driven deadline/reconciliation suite needs headroom under parallel kits.
+set_tests_properties(test_rhtradecontroller PROPERTIES TIMEOUT 240)
+publics_add_test(test_rhtradingcontext integration/test_rhtradingcontext.cpp rh_trading)
 publics_add_test(test_rhbrowserlogin unit/test_rhbrowserlogin.cpp rh_browser_auth)
 get_target_property(rh_test_browser_backend rh_browser_auth PUBLICS_RH_BROWSER_BACKEND)
 if(rh_test_browser_backend STREQUAL "webengine")
@@ -33,6 +42,15 @@ publics_add_test(test_rhsessionmanager unit/test_rhsessionmanager.cpp rh_session
 publics_add_test(test_rhdevicetoken unit/test_rhdevicetoken.cpp rh_sessions)
 publics_add_test(test_securecredentiallocker unit/test_securecredentiallocker.cpp rh_sessions OpenSSL::Crypto)
 publics_add_test(test_robinhoodapplet unit/test_robinhoodapplet.cpp robin_hood_applet Qt6::Qml)
+# Avoid QFINDTESTDATA selecting a sibling build's generated static-module QML.
+foreach(native_form_test IN ITEMS test_rhsessionmanager_native test_robinhoodapplet)
+    target_compile_definitions(${native_form_test} PRIVATE
+        "PUBLICS_RH_NATIVE_FORM_SOURCE=\"${PROJECT_SOURCE_DIR}/applets/robin_hood/qml/RobinHoodInterface/NativeLoginForm.qml\""
+    )
+endforeach()
+target_compile_definitions(test_robinhoodapplet PRIVATE
+    "PUBLICS_RH_EXPECT_LIVE=$<OR:$<CONFIG:Release>,$<BOOL:${RELEASE_BUILD}>>"
+)
 publics_add_test(test_autotradecontroller integration/test_auto_sequence.cpp
     publics_trading_preflight publics_auth publics_api
 )

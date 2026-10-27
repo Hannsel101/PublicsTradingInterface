@@ -23,6 +23,41 @@ TestCase {
         return window
     }
 
+    function test_chooserHeadingAndButtonTypography_data() {
+        return [{tag: "desktop", width: 1000, height: 700, robinAvailable: true},
+                {tag: "compact", width: 360, height: 620, robinAvailable: true},
+                {tag: "android-desktop", width: 1000, height: 700, robinAvailable: false},
+                {tag: "android-compact", width: 360, height: 620, robinAvailable: false}]
+    }
+    function test_chooserHeadingAndButtonTypography(data) {
+        const window = createLauncher(data.width, data.height)
+        try {
+            window.robinHoodAvailable = data.robinAvailable
+            verify(waitForPolish(window))
+            const publics = findChild(window.contentItem, "openPublics")
+            verify(publics !== null)
+            compare(publics.parent.children[0].text, "Choose an Applet")
+            for (const name of ["openPublics", "openRobinHood", "openWellsFargo", "openFidelity", "openChase"]) {
+                const button = findChild(window.contentItem, name)
+                verify(button !== null)
+                compare(button.font.pixelSize, 18)
+                compare(button.font.bold, true)
+                compare(button.contentItem.font.pixelSize, 18)
+                compare(button.contentItem.font.bold, true)
+                tryVerify(() => button.contentItem.implicitWidth <= button.availableWidth + 1)
+                verify(button.mapToItem(window.contentItem, 0, 0).x >= 0)
+                verify(button.mapToItem(window.contentItem, button.width, 0).x <= window.width)
+            }
+            compare(publics.enabled, true)
+            compare(findChild(window.contentItem, "openRobinHood").enabled, data.robinAvailable)
+            for (const name of ["openWellsFargo", "openFidelity", "openChase"])
+                compare(findChild(window.contentItem, name).enabled, false)
+            compare(Launcher.activeAppletId, "")
+            if (qmlTestArtifactDirectory.length > 0)
+                grabImage(window.contentItem).save(qmlTestArtifactDirectory + "/applet-chooser-" + data.tag + ".png")
+        } finally { window.destroy() }
+    }
+
     function test_neutralAppletChoicesHaveThemeStripes_data() {
         return [{tag: "desktop", width: 1000, height: 700},
                 {tag: "compact", width: 360, height: 620}]
@@ -38,8 +73,11 @@ TestCase {
             compare(publics.appletName, qsTr("Publics"))
             compare(robin.appletName, qsTr("Robin Hood"))
             compare(publics.enabled, true)
-            compare(robin.enabled, true)
-            compare(publics.background.color, robin.background.color)
+            compare(robin.enabled, Qt.platform.os !== "android")
+            if (robin.enabled)
+                compare(publics.background.color, robin.background.color)
+            else
+                verify(publics.background.color !== robin.background.color)
             compare(publics.stripeColor, "#25285f")
             compare(robin.stripeColor, "#a3e635")
             tryVerify(() => publics.background.width > 0 && robin.background.width > 0)
@@ -49,6 +87,52 @@ TestCase {
             verify(Math.abs(robinStripe.x + robinStripe.width / 2 - robin.background.width * 0.7) < 1)
             verify(Math.abs(publics.width - (window.width - 48)) <= 1)
             verify(Math.abs(robin.width - (window.width - 48)) <= 1)
+        } finally {
+            window.destroy()
+        }
+    }
+
+    function test_robinHoodPlatformAvailability_data() {
+        return [{tag: "android-desktop-size", available: false, width: 1000, height: 700},
+                {tag: "android-compact", available: false, width: 360, height: 620},
+                {tag: "desktop", available: true, width: 1000, height: 700},
+                {tag: "desktop-compact", available: true, width: 360, height: 620}]
+    }
+    function test_robinHoodPlatformAvailability(data) {
+        const window = createLauncher(data.width, data.height)
+        try {
+            compare(window.robinHoodAvailable, Qt.platform.os !== "android")
+            window.robinHoodAvailable = data.available
+            const robin = findChild(window.contentItem, "openRobinHood")
+            const publics = findChild(window.contentItem, "openPublics")
+            const loader = findChild(window.contentItem, "robinHoodLoader")
+            compare(robin.visible, true)
+            compare(robin.enabled, data.available)
+            compare(publics.enabled, true)
+            tryVerify(() => robin.width > 0 && robin.height > 0)
+            const position = robin.mapToItem(window.contentItem, 0, 0)
+            verify(position.y >= 0 && position.y + robin.height <= window.height)
+            if (!data.available) {
+                compare(robin.background.color, "#18191d")
+                compare(robin.contentItem.color, "#9299a3")
+                compare(robin.background.children[0].opacity, 0.65)
+                waitForRendering(window.contentItem)
+                const image = grabImage(window.contentItem)
+                const scale = image.width / window.width
+                compare(image.pixel(Math.round((position.x + 12) * scale),
+                                    Math.round((position.y + robin.height / 2) * scale)), "#18191d")
+                compare(robin.Accessible.name, "Robin Hood (unavailable on Android)")
+                mouseClick(robin)
+                compare(Launcher.activeAppletId, "")
+                compare(loader.item, null)
+                mouseClick(publics)
+                tryCompare(Launcher, "activeAppletId", "publics")
+            } else {
+                compare(robin.background.color, publics.background.color)
+                compare(robin.Accessible.name, "Robin Hood")
+                mouseClick(robin)
+                tryCompare(Launcher, "activeAppletId", "robin_hood")
+            }
         } finally {
             window.destroy()
         }
@@ -120,51 +204,50 @@ TestCase {
             window.destroy()
         }
     }
-    function test_robinBrowserFillsAppletViewport_data() {
+    function test_robinNativeLoginFillsAppletViewport_data() {
         return [{tag: "desktop", width: 1000, height: 700},
                 {tag: "compact", width: 360, height: 620}]
     }
-    function test_robinBrowserFillsAppletViewport(data) {
+    function test_robinNativeLoginFillsAppletViewport(data) {
         RobinSessions.clear()
         RobinSessions.sessionActive = false
         RobinSessions.busy = false
-        RobinSessions.browserLoginPending = false
-        RobinBrowser.available = true
-        RobinBrowser.active = false
-        RobinBrowser.viewSource = Qt.resolvedUrl("MockWebLogin.qml")
+        RobinSessions.cancelSignIn()
         const window = createLauncher(data.width, data.height)
+        window.robinHoodAvailable = true // Exercise the mocked applet on any host.
         try {
             mouseClick(findChild(window.contentItem, "openRobinHood"))
             const applet = findChild(window.contentItem, "robinHoodLoader")
             tryVerify(() => applet.status === Loader.Ready && applet.item !== null
                         && applet.item.width >= window.width - 2 && applet.item.height > 0)
             const add = findChild(applet.item, "addRobinAccount")
-            const scroller = findChild(applet.item, "robinSessionScroller")
-            tryVerify(() => add.width > 0 && add.height > 0 && scroller.height > 0)
-            scroller.contentY = Math.max(0, add.mapToItem(scroller.contentItem, 0, add.height).y
-                                        - scroller.height + 12)
+            const picker = findChild(applet.item, "robinSessionScroller")
+            tryVerify(() => add.width > 0 && add.height > 0 && picker.height > 0)
+            picker.contentY = Math.max(0, add.mapToItem(picker.contentItem, 0, add.height).y
+                                      - picker.height + 12)
             mouseClick(add)
-            tryCompare(RobinBrowser, "active", true)
-            tryVerify(() => findChild(applet.item, "robinWebLoginLoader") !== null)
-            const browser = findChild(applet.item, "robinWebLoginLoader")
-            tryVerify(() => browser.status === Loader.Ready && browser.item !== null
-                        && browser.item.width >= applet.width - 2
-                        && browser.item.height > applet.height * 0.6)
-            compare(browser.item.objectName, "mockRobinWebLogin")
-            const origin = findChild(applet.item, "robinBrowserOrigin")
-            const cancel = findChild(applet.item, "cancelRobinBrowserLogin")
-            const originEnd = origin.mapToItem(window.contentItem, origin.width, origin.height)
+            tryCompare(RobinSessions, "nativeLoginPending", true)
+            const form = findChild(applet.item, "robinNativeLoginForm")
+            verify(form !== null)
+            tryVerify(() => form.visible && form.width >= applet.width - 2
+                        && form.height > applet.height * 0.6)
+            verify(waitForPolish(window))
+            const scroller = findChild(form, "robinNativeLoginScroller")
+            const cancel = findChild(form, "cancelRobinNativeLogin")
+            const start = form.mapToItem(window.contentItem, 0, 0)
+            const end = form.mapToItem(window.contentItem, form.width, form.height)
             const cancelStart = cancel.mapToItem(window.contentItem, 0, 0)
             const cancelEnd = cancel.mapToItem(window.contentItem, cancel.width, cancel.height)
-            const webStart = browser.item.mapToItem(window.contentItem, 0, 0)
-            const webEnd = browser.item.mapToItem(window.contentItem, browser.item.width, browser.item.height)
-            verify(originEnd.x <= cancelStart.x)
-            verify(cancelStart.y >= 0 && cancelEnd.x <= window.width)
-            verify(webStart.y >= Math.max(originEnd.y, cancelEnd.y))
-            verify(webEnd.y <= window.height + 1)
-            compare(findChild(applet.item, "robinSessionScroller").visible, false)
+            verify(start.x >= 0 && start.y >= 0)
+            verify(end.x <= window.width + 1 && end.y <= window.height + 1)
+            verify(scroller.height > 0 && scroller.contentWidth <= scroller.width + 1)
+            verify(cancel.visible && cancel.enabled && cancelStart.y >= start.y)
+            verify(cancelEnd.x <= window.width && cancelEnd.y <= window.height + 1)
+            compare(findChild(form, "robinNativePassword").echoMode, TextInput.Password)
+            compare(findChild(applet.item, "robinWebLoginLoader"), null)
+            compare(picker.visible, false)
             mouseClick(cancel)
-            tryCompare(RobinBrowser, "active", false)
+            tryCompare(RobinSessions, "nativeLoginPending", false)
             mouseClick(findChild(window.contentItem, "returnHome"))
             tryCompare(applet, "item", null)
         } finally {
@@ -174,6 +257,7 @@ TestCase {
     }
     function test_robinAppletUsesSameWindowAndReturnsHome() {
         const window = createLauncher()
+        window.robinHoodAvailable = true // Exercise the mocked applet on any host.
         try {
             const robin = findChild(window.contentItem, "openRobinHood")
             const loader = findChild(window.contentItem, "robinHoodLoader")

@@ -1,6 +1,9 @@
 #include "rhsessionmanager.h"
 #include "rhnetworkengine.h"
 #include "rhbrowserlogin.h"
+#include "rhnativeauthclient.h"
+#include "rhcredentialstore.h"
+#include "rhoauthgrant.h"
 #include "securecredentiallocker.h"
 
 #include <QJsonDocument>
@@ -8,11 +11,6 @@
 #include <QNetworkRequest>
 #include <utility>
 
-bool RHSessionManager::signIn(const QString &, const QString &, const QString &)
-{
-    setError(QStringLiteral("Password sign-in is disabled. Use browser sign-in."));
-    return false;
-}
 
 void RHSessionManager::setBrowserLoginPending(bool pending)
 {
@@ -48,6 +46,7 @@ void RHSessionManager::setBrowserLogin(RHBrowserLogin *browser)
 
 bool RHSessionManager::beginBrowserLogin(const QString &accountId)
 {
+    if (m_sessionCommit) return false;
     if (m_busy || !m_loaded || !m_network.isConfigured()) {
         setError(QStringLiteral("Cannot sign in while busy or without network configuration."));
         return false;
@@ -81,19 +80,21 @@ bool RHSessionManager::beginBrowserLogin(const QString &accountId)
 }
 
 void RHSessionManager::readBrowserEndpoint(const QString &endpoint, const QByteArray &token,
+                                          const QString &tokenType, quint64 generation,
                                           std::function<void(QJsonObject)> done)
 {
+    if (generation != m_authGeneration) return;
     QString problem;
-    QNetworkReply *reply = m_network.sendAuthenticated(endpoint, token,
-        RHNetworkEngine::AuthKind::WebSecondaryBearer, &problem);
+    const auto kind = tokenType == QStringLiteral("Bearer")
+        ? RHNetworkEngine::AuthKind::OAuthBearer : RHNetworkEngine::AuthKind::WebSecondaryBearer;
+    QNetworkReply *reply = m_network.sendAuthenticated(endpoint, token, kind, &problem);
     if (!reply) {
         failLogin(QStringLiteral("Browser token could not be verified using the configured read-only endpoint."));
         return;
     }
     m_reply = reply;
-    const quint64 generation = m_authGeneration;
     connect(reply, &QNetworkReply::finished, this,
-        [this, reply, generation, done = std::move(done)] {
+        [this, reply, generation, tokenType, done = std::move(done)] {
         if (generation != m_authGeneration) {
             reply->deleteLater();
             return;
@@ -108,7 +109,9 @@ void RHSessionManager::readBrowserEndpoint(const QString &endpoint, const QByteA
         if (!ok || !document.isObject()) {
             // Never echo server bodies, token contents, URLs or error strings.
             failLogin(status == 401 || status == 403
-                ? QStringLiteral("The secondary browser token is not accepted by the read-only API (HTTP %1). The session was not saved.").arg(status)
+                ? (tokenType == QStringLiteral("Bearer")
+                    ? QStringLiteral("The primary browser token is not accepted by the API (HTTP %1). The session was not saved.").arg(status)
+                    : QStringLiteral("The secondary browser token is not accepted by the read-only API (HTTP %1). The session was not saved.").arg(status))
                 : QStringLiteral("Browser token verification failed (HTTP %1). The session was not saved.").arg(status));
             return;
         }
@@ -117,6 +120,18 @@ void RHSessionManager::readBrowserEndpoint(const QString &endpoint, const QByteA
 }
 
 void RHSessionManager::acceptBrowserToken(QByteArray token, QDateTime expiresAt)
+{
+    acceptBrowserTokenImpl(std::move(token), expiresAt, QStringLiteral("WebSecondaryBearer"));
+}
+
+void RHSessionManager::acceptPrimaryBrowserToken(QByteArray token)
+{
+    // No lifetime is inferred from a request header. Validate identity/accounts
+    // and cache for at most one hour; the server still authorizes every request.
+    acceptBrowserTokenImpl(std::move(token), {}, QStringLiteral("Bearer"));
+}
+
+void RHSessionManager::acceptBrowserTokenImpl(QByteArray token, QDateTime expiresAt, const QString &tokenType)
 {
     if (!m_browserLoginPending || !m_busy || m_browserVerifying || !m_browser || !m_browser->active()) {
         SecureCredentialLocker::wipe(token);
@@ -130,9 +145,11 @@ void RHSessionManager::acceptBrowserToken(QByteArray token, QDateTime expiresAt)
     }
     // Cookie expiry is an upper bound, not an OAuth lifetime. Session cookies
     // get one hour; even persistent cookies are capped to 24 hours.
-    m_browserExpiry = expiresAt.isValid() ? qMin(expiresAt.toUTC(), now.addSecs(86400)) : now.addSecs(3600);
+    const QDateTime expiry = expiresAt.isValid() ? qMin(expiresAt.toUTC(), now.addSecs(86400)) : now.addSecs(3600);
+    const quint64 generation = m_authGeneration;
     m_browserVerifying = true;
-    readBrowserEndpoint(QStringLiteral("UserProfile"), token, [this, token](const QJsonObject &profile) {
+    readBrowserEndpoint(QStringLiteral("UserProfile"), token, tokenType, generation,
+        [this, token, tokenType, expiry, generation](const QJsonObject &profile) {
         const QString id = profile.value("id").toString().trimmed();
         const QString email = profile.value("email").toString().trimmed();
         const QString username = profile.value("username").toString().trimmed();
@@ -155,64 +172,257 @@ void RHSessionManager::acceptBrowserToken(QByteArray token, QDateTime expiresAt)
                 return;
             }
         }
-        readBrowserEndpoint(QStringLiteral("Accounts"), token, [this, token, id, label](const QJsonObject &response) {
-            if (!response.value("results").isArray() || m_browserExpiry <= QDateTime::currentDateTimeUtc()) {
+        readBrowserEndpoint(QStringLiteral("Accounts"), token, tokenType, generation,
+            [this, token, tokenType, expiry, generation, id, label](const QJsonObject &response) {
+            if (!response.value("results").isArray() || expiry <= QDateTime::currentDateTimeUtc()) {
                 failLogin(QStringLiteral("Browser token did not verify usable accounts and expiry."));
                 return;
             }
-            const qint64 seconds = QDateTime::currentDateTimeUtc().secsTo(m_browserExpiry);
+            const qint64 seconds = QDateTime::currentDateTimeUtc().secsTo(expiry);
             if (seconds <= 0) {
                 failLogin(QStringLiteral("Browser token expired during verification."));
                 return;
             }
-            // Stop cancellation before entering the keychain/metadata transaction.
-            // Keep busy throughout; do not expose a false-idle transition.
-            setBrowserLoginPending(false);
-            m_browserVerifying = false;
-            ++m_authGeneration;
-            if (m_browser)
-                m_browser->finish();
-            if (!saveSession(label, QString::fromLatin1(token), seconds, QStringLiteral("WebSecondaryBearer"), id, true)) {
-                setReauthenticating(false);
-                setBusy(false);
-            }
-            m_browserTarget.clear();
+            commitBrowserSession(label, id, token, tokenType, expiry, generation);
         });
     });
     SecureCredentialLocker::wipe(token);
 }
 
+void RHSessionManager::commitBrowserSession(const QString &label, const QString &id,
+    const QByteArray &token, const QString &tokenType, QDateTime expiry, quint64 generation,
+    const QString &secret, bool canRefresh, bool activate)
+{
+    const QPointer<RHSessionManager> guard(this);
+    const quint64 readGeneration = m_readGeneration;
+    const quint64 operationGeneration = m_operationGeneration;
+    const auto current = [guard, generation, readGeneration, operationGeneration] {
+        return guard && guard->m_authGeneration == generation && guard->m_readGeneration == readGeneration
+            && guard->m_operationGeneration == operationGeneration;
+    };
+    if (!current()) return;
+    bool nativeLabel = false;
+    if (canRefresh) {
+        RHOAuthGrant checked;
+        if (secret.isEmpty() || !RHOAuthGrant::deserialize(secret, &checked)) {
+            failLogin(QStringLiteral("OAuth credentials could not be encoded safely; sign in again."));
+            return;
+        }
+        nativeLabel = !checked.nativeEmail.isEmpty();
+    }
+    int slot = 0;
+    bool replacing = false;
+    for (const Session &existing : m_sessions) {
+        if ((!m_browserTarget.isEmpty()
+                && (existing.accountId.isEmpty() ? existing.accountName : existing.accountId) == m_browserTarget)
+            || existing.accountId == id || (existing.accountId.isEmpty() && existing.accountName == label)) {
+            slot = existing.index;
+            replacing = true;
+            break;
+        }
+    }
+    if (!replacing) while (find(slot)) ++slot;
+    QString failure;
+    auto reservation = reserveCredentials(&failure);
+    if (!reservation || !credentialOwnershipCurrent(slot, &failure)) {
+        releaseCredentialReservation(); failLogin(failure); return;
+    }
+    const quint64 revision = allocateCredentialRevision(&failure);
+    if (!revision) { releaseCredentialReservation(); failLogin(failure); return; }
+    const QString payload = canRefresh ? secret : QString::fromLatin1(token);
+    const auto previous = find(slot);
+    const Session session{slot, label, QDateTime::currentDateTimeUtc(), expiry, tokenType, id, canRefresh,
+        previous ? previous->renewalAttemptedAt : QDateTime{}, revision, credentialDigest(payload), false, nativeLabel};
+
+    // Acquire the transaction gate before browser teardown or pending=false can
+    // notify direct observers. Keep it through reconciliation and publication.
+    m_sessionCommit = true;
+    m_nativeCredentials.clear();
+    m_oauthPending = false;
+    m_browserVerifying = false;
+    m_browserTarget.clear();
+    m_browserLoginPending = false;
+    if (m_nativeLoginPending) {
+        m_nativeLoginStatus = QStringLiteral("Saving verified session securely");
+        emit nativeLoginChanged();
+        if (!current()) return;
+    }
+    if (m_browser) m_browser->finish();
+    if (!current()) return;
+    emit browserLoginPendingChanged();
+    if (!current()) return;
+    const auto finish = [this, current, session, token, activate](bool saved, const QString &failure = QString{}) {
+        if (!current()) return;
+        m_activateAfterApproval = false;
+        setReauthenticating(false);
+        if (!current()) return;
+        if (!failure.isEmpty()) setError(failure);
+        if (!current()) return;
+        finishNativeLogin();
+        if (!current()) return;
+        m_sessionCommit = false;
+        releaseCredentialReservation();
+        if (saved && activate) {
+            emit sessionSaved(session.index);
+            if (!current()) return;
+            verifySession(session.index, QString::fromLatin1(token));
+            return;
+        }
+        // Last old-attempt action: direct idle observers may start another login.
+        setBusy(false);
+        if (!current()) return;
+        if (saved) emit sessionSaved(session.index);
+    };
+    const auto commit = [this, guard, reservation, current, finish, session, replacing, payload, activate](QString previousToken) {
+        if (!current()) return;
+        QString failure;
+        if (!credentialOwnershipCurrent(session.index, &failure)) { finish(false, failure); return; }
+        m_credentialIOPending = true;
+        m_store->write(session.index, payload,
+            [this, guard, reservation, current, finish, session, replacing, previousToken, activate](bool ok, const QString &message) {
+            if (guard) m_credentialIOPending = false;
+            if (!current()) return;
+            if (!ok) {
+                if (activate) m_unreconciledSessions.insert(session.index);
+                finish(false, message);
+                return;
+            }
+            QList<Session> updated = m_sessions;
+            int row = -1;
+            for (int i = 0; i < updated.size(); ++i) {
+                if (updated.at(i).index == session.index) {
+                    row = i;
+                    updated[i] = session;
+                    break;
+                }
+            }
+            if (!replacing) updated.append(session);
+            QString failure;
+            const bool persisted = persist(updated, &failure);
+            if (!current()) return;
+            if (!persisted) {
+                // Rotation can revoke the predecessor immediately. Keep the
+                // newly validated secure bundle as credential truth.
+                if (activate) {
+                    m_unreconciledSessions.insert(session.index);
+                    finish(false, QStringLiteral("OAuth credentials were renewed securely, but session metadata could not be saved. Sign in again before using this profile."));
+                    return;
+                }
+                m_credentialIOPending = true;
+                const auto rolledBack = [this, guard, reservation, current, finish, failure, session](bool restored, const QString &) {
+                    if (guard) m_credentialIOPending = false;
+                    if (!current()) return;
+                    if (!restored) m_unreconciledSessions.insert(session.index);
+                    finish(false, restored ? failure
+                        : QStringLiteral("Metadata save failed; keychain rollback also failed. Reauthenticate before using this session."));
+                };
+                if (replacing && !previousToken.isEmpty())
+                    m_store->write(session.index, previousToken, rolledBack);
+                else
+                    m_store->remove(session.index, rolledBack);
+                return;
+            }
+            m_unreconciledSessions.remove(session.index);
+            if (replacing) {
+                m_sessions[row] = session;
+                emit dataChanged(index(row), index(row));
+            } else {
+                beginInsertRows({}, m_sessions.size(), m_sessions.size());
+                // The commit gate forbids replacement. A surviving model must
+                // always complete the begin/end pair, regardless of generation.
+                if (!guard) return;
+                m_sessions.append(session);
+                endInsertRows();
+            }
+            if (!current()) return;
+            finish(true);
+        });
+    };
+    if (replacing) {
+        m_credentialIOPending = true;
+        m_store->read(slot, [this, guard, reservation, current, finish, commit](bool ok, QString previousToken, QString message) {
+            if (guard) m_credentialIOPending = false;
+            if (!current()) return;
+            if (!ok) {
+                finish(false, message);
+                return;
+            }
+            commit(std::move(previousToken));
+        });
+    } else {
+        commit({});
+    }
+}
+
 void RHSessionManager::endApproval()
 {
     ++m_authGeneration;
-    setBrowserLoginPending(false);
+    const QPointer<RHSessionManager> guard(this);
+    const auto generation = m_authGeneration;
+    m_oauthPending = false;
+    const bool browserPending = m_browserLoginPending;
+    m_browserLoginPending = false;
     m_browserVerifying = false;
     m_browserTarget.clear();
+    m_pendingCredentials.clear();
+    m_nativeCredentials.clear();
+    const bool nativePending = m_nativeLoginPending;
+    m_nativeLoginPending = false; m_nativeRequestStarted = false;
+    m_nativeLoginStatus.clear(); m_nativeLoginEmail.clear();
     if (m_reply) {
-        QNetworkReply *reply = m_reply;
+        QPointer<QNetworkReply> reply = m_reply;
         m_reply = nullptr;
         reply->abort();
-        reply->deleteLater();
+        if (reply) reply->deleteLater();
+        if (!guard || generation != m_authGeneration) return;
     }
-    if (m_browser)
-        m_browser->cancel();
-    m_pendingCredentials.clear();
+    if (m_nativeClient) m_nativeClient->cancel();
+    if (!guard || generation != m_authGeneration) return;
+    if (m_browser) m_browser->cancel();
+    if (!guard || generation != m_authGeneration) return;
+    if (nativePending) emit nativeLoginChanged();
+    if (!guard || generation != m_authGeneration) return;
+    if (browserPending) emit browserLoginPendingChanged();
 }
 
 void RHSessionManager::failLogin(const QString &message)
 {
+    const QPointer<RHSessionManager> guard(this);
+    const quint64 generation = m_authGeneration;
+    const quint64 readGeneration = m_readGeneration;
+    releaseCredentialReservation();
     endApproval();
+    if (!guard || m_authGeneration != generation + 1 || m_readGeneration != readGeneration) return;
     setReauthenticating(false);
+    if (!guard || m_authGeneration != generation + 1 || m_readGeneration != readGeneration) return;
     setError(message);
+    if (!guard || m_authGeneration != generation + 1 || m_readGeneration != readGeneration) return;
     setBusy(false);
 }
 
 void RHSessionManager::cancelSignIn()
 {
-    if (!m_browserLoginPending)
+    if (m_sessionCommit) return;
+    if (m_readingSession) {
+        const QPointer<RHSessionManager> guard(this);
+        const quint64 generation = m_readGeneration;
+        // Retired error cleanup must precede idle: an idle observer can finish
+        // the held read and synchronously fail a replacement save without
+        // changing the read generation again.
+        setError({});
+        if (guard && generation == m_readGeneration) clearActiveSession();
         return;
+    }
+    if (!m_browserLoginPending && !m_nativeLoginPending)
+        return;
+    const QPointer<RHSessionManager> guard(this);
+    const auto generation = m_authGeneration + 1;
+    const auto readGeneration = m_readGeneration;
     endApproval();
+    if (!guard || generation != m_authGeneration || readGeneration != m_readGeneration) return;
     setReauthenticating(false);
+    if (!guard || generation != m_authGeneration || readGeneration != m_readGeneration) return;
     setError({});
+    if (!guard || generation != m_authGeneration || readGeneration != m_readGeneration) return;
     setBusy(false);
 }

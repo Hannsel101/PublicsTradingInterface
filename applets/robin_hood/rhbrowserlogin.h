@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QList>
 #include <QNetworkCookie>
 #include <QObject>
 #include <QPointer>
@@ -25,6 +26,16 @@ class RHBrowserLogin : public QObject
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
 public:
     using TokenHandler = std::function<void(QByteArray, QDateTime)>;
+    using PrimaryTokenHandler = std::function<void(QByteArray)>;
+    // Configure on the owning QObject thread, before start(). Not a QML API.
+    // Primary capture is currently DISABLED: native request metadata and a
+    // distinct secondary cookie do not establish primary/trading provenance.
+    // The callback is never invoked. Kept for C++ consumer compatibility; when
+    // configured, the legacy callback receives the latest secondary after the
+    // existing bounded 9 s fallback. That delay is not a provenance guarantee.
+    // Consumers must treat the secondary as read-only and validate API identity
+    // before persistence, then finish()/cancel(). No QML token transport.
+    void setPrimaryTokenHandler(PrimaryTokenHandler handler);
     enum class BackendMode { Automatic, Test };
     explicit RHBrowserLogin(TokenHandler handler = {}, QObject *parent = nullptr,
                             BackendMode mode = BackendMode::Automatic);
@@ -53,6 +64,13 @@ signals:
     void errorChanged();
 private:
     friend class TestRHBrowserLogin;
+    friend class RHBrowserNativeTest;
+    using Headers = QList<QPair<QByteArray, QByteArray>>;
+    // Syntax/origin filter only, NOT authorization evidence; no native collector is installed.
+    static QByteArray primaryCandidate(const QUrl &url, const QUrl &firstParty,
+        const QUrl &initiator, const QByteArray &method, bool redirect, const Headers &headers);
+    void acceptPrimary(quint64 generation, QByteArray token);
+    PrimaryTokenHandler m_primaryHandler;
     static bool parseAndroidCookie(const QByteArray &header, QNetworkCookie &cookie, bool &present);
     void androidPollResult(quint64 generation, const QByteArray &header, bool nativeOk);
     void setError(const QString &message);
@@ -75,10 +93,18 @@ private:
     std::shared_ptr<std::atomic<quint64>> m_nativeEpoch = std::make_shared<std::atomic<quint64>>(0);
     QPointer<QObject> m_profile;
     QMetaObject::Connection m_cookieConnection;
+    QMetaObject::Connection m_cookieRemovedConnection;
     QMetaObject::Connection m_profileDestroyed;
     QUrl m_startUrl{QStringLiteral("about:blank")};
     QString m_error;
     QTimer m_poll;
     QTimer m_resetTimeout;
+    QTimer m_secondaryFallback;
+    QElapsedTimer m_secondaryClock;
+    QByteArray m_stagedSecondary;
+    QDateTime m_stagedExpiry;
+    QMetaObject::Connection m_fallbackConnection;
+    void clearStagedSecondary();
+    void deliverSecondary(QByteArray value, QDateTime expiry);
     QElapsedTimer m_resetClock;
 };

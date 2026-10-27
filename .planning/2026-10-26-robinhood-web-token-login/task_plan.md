@@ -2,9 +2,9 @@
 ## Goal
 Replace only the Robinhood applet's direct credential login with official-site embedded browser authentication, native cookie capture, scoped validated token use and QtKeychain sessions.
 ## Next Step
-Deliver the verified source snapshot and explicit partial-support limits; no commit or live login performed.
+Deliver the updated, signature-verified Android debug APK and concise verification result.
 ## Current Phase
-Delivery ready — verified desktop implementation; Android disabled and Phoenix compatibility unverified.
+Phase 8 complete — Android Robin Hood choice greyed out and disabled; desktop/Publics unchanged.
 ## Phases
 ### Phase 1: discovery
 - [x] Verify installed modules, official browser APIs, existing applet and client boundaries.
@@ -21,9 +21,18 @@ Delivery ready — verified desktop implementation; Android disabled and Phoenix
 ### Phase 5: delivery
 - [x] Record real verification and platform/live-site limits; supply implementation and hooks.
 - **Status:** complete
+### Phase 6: updated SDK verification
+- [x] Identify Java prerequisites from installed Gradle/Qt and official documentation; verify newly installed Qt6.12 modules with a real build/test run.
+- **Status:** complete
+### Phase 7: installed Java and APK packaging
+- [x] Verify installed Java/Javac and retry the previously failed APK target without device deployment or changing Android login safety gates.
+- **Status:** complete
+### Phase 8: Android launcher availability
+- [x] Grey out and disable Robin Hood on Android, preserve desktop/Publics behavior, add UI regressions and rebuild the APK.
+- **Status:** complete
 ## Delivered support boundary
 - Desktop official-site browser flow, native capture, verified-token QtKeychain handoff and QML hooks implemented and tested offline.
-- Android source scaffold compiled but production sign-in disabled pending a verified native pre-navigation interceptor. APK packaging additionally requires a missing JDK.
+- Android source scaffold compiled but production sign-in disabled pending a verified native pre-navigation interceptor. APK packaging is now verified using installed JDK21 and the existing Qt6.11.2 arm64 build.
 - Secondary-token UserProfile/Accounts mapping is provisional; rejected candidates are not saved. Phoenix routes remain disabled without a verified auth contract. No live provider/CAPTCHA/push success is claimed.
 ## Decisions
 - Scope remains Robinhood only; preserve Publics and existing dirty work.
@@ -38,4 +47,4 @@ Delivery ready — verified desktop implementation; Android disabled and Phoenix
 | Desktop QML component not yet created during parallel work | 1 | UI agent owns file creation; do not repeat configure until interface sources are ready. |
 | Android reset simulation stopped after token capture on late native failure | 1 | Ignore native poll completions after capture delivery; rebuilt unit suite 60/60 passes. |
 | Native Chromium cookie integration hangs after synthetic cookie queued | 1 | Lazy Chromium backend needs an actual about:blank view; real capture now passes repeatedly with sandbox unchanged. |
-| Android APK Gradle launch cannot find Java runtime | 1 | Native arm64 build passes; standard installed JDK locations absent. Packaging blocked pending JDK, no device deployment attempted. |
+| Android APK Gradle launch cannot find Java runtime | 2 | Resolved after user installed Temurin21.0.13 arm64; Gradle packaging succeeds and APK v2 signature verifies. No device deployment attempted. |

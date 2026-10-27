@@ -153,9 +153,12 @@ private slots:
             QCOMPARE(f.store.calls, 0);
             QCOMPARE(f.keys, 0);
         } else {
-            QVERIFY(manager.saveAuthenticatedSession("owner@example.test", "token", 3600));
-            QTRY_VERIFY(!manager.busy());
+            // Ownership validation rejects corrupt metadata before any secret-store access.
+            QVERIFY(!manager.saveAuthenticatedSession("owner@example.test", "token", 3600));
+            QVERIFY(!manager.busy());
             QCOMPARE(manager.rowCount(), 0);
+            QCOMPARE(f.store.calls, 0);
+            QCOMPARE(f.keys, 0);
             QVERIFY(f.store.values.isEmpty());
         }
         QVERIFY(!manager.error().isEmpty());

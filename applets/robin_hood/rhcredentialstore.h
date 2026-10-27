@@ -4,6 +4,8 @@
 #include <QString>
 #include <functional>
 
+namespace QKeychain { class Job; }
+
 // Asynchronous secret-store seam: no credentials are exposed through QML roles.
 class RHCredentialStore : public QObject
 {
@@ -26,7 +28,13 @@ class RHQtKeychainStore final : public RHCredentialStore
     Q_OBJECT
 public:
     explicit RHQtKeychainStore(QObject *parent = nullptr);
+    // C++-only dispatch seam: tests can finish real jobs without starting an OS backend.
+    using JobStarter = std::function<void(QKeychain::Job *)>;
+    explicit RHQtKeychainStore(JobStarter starter, QObject *parent = nullptr);
     void write(int index, const QString &token, Completion done) override;
     void read(int index, ReadCompletion done) override;
     void remove(int index, Completion done) override;
+private:
+    void startJob(QKeychain::Job *job);
+    JobStarter m_starter;
 };

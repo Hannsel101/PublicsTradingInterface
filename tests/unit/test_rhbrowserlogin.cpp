@@ -5,6 +5,327 @@ class TestRHBrowserLogin : public QObject
 {
     Q_OBJECT
 private slots:
+    void refreshedSecondaryHeaderBeforeItsCookieNeverDeliversPrimary()
+    {
+        int primary = 0, secondary = 0;
+        QByteArray captured;
+        RHBrowserLogin login([&](QByteArray token, QDateTime) {
+            captured = token; ++secondary;
+        }, nullptr, RHBrowserLogin::BackendMode::Test);
+        login.setPrimaryTokenHandler([&](QByteArray) { ++primary; });
+        QVERIFY(login.start());
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "secondary-A");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        QVERIFY(login.observeCookie(cookie));
+        const auto candidate = RHBrowserLogin::primaryCandidate(
+            QUrl("https://api.robinhood.com/user/"), QUrl("https://robinhood.com/"),
+            QUrl("https://robinhood.com/"), "GET", false,
+            {{"Authorization", "Bearer secondary-B"}});
+        login.acceptPrimary(login.m_generation, candidate);
+        QCOMPARE(primary, 0); // B can be a refreshed secondary whose cookie event is still queued.
+        cookie.setValue("secondary-B");
+        QVERIFY(login.observeCookie(cookie));
+        login.m_secondaryFallback.start(1);
+        QTRY_COMPARE_WITH_TIMEOUT(secondary, 1, 200);
+        QCOMPARE(captured, QByteArray("secondary-B"));
+        QCOMPARE(primary, 0);
+    }
+    void distinctReadBearerDoesNotEstablishPrimaryEvenAfterTimeout()
+    {
+        int primary = 0, secondary = 0;
+        RHBrowserLogin login([&](QByteArray token, QDateTime) {
+            QCOMPARE(token, QByteArray("secondary")); ++secondary;
+        }, nullptr, RHBrowserLogin::BackendMode::Test);
+        login.setPrimaryTokenHandler([&](QByteArray) { ++primary; });
+        QVERIFY(login.start());
+        login.acceptPrimary(login.m_generation, "different-read-bearer");
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "secondary");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        QVERIFY(login.observeCookie(cookie));
+        QCOMPARE(primary, 0);
+        QVERIFY(!login.m_captureDelivered);
+        login.m_secondaryFallback.start(1);
+        QTRY_COMPARE_WITH_TIMEOUT(secondary, 1, 200);
+        login.acceptPrimary(login.m_generation, "late-different-read-bearer");
+        QCOMPARE(primary, 0);
+        QVERIFY(!login.observeCookie(cookie));
+    }
+    void untrustedHeaderSyntaxPolicy_data()
+    {
+        QTest::addColumn<QByteArray>("name");
+        QTest::addColumn<QByteArray>("value");
+        QTest::addColumn<bool>("accepted");
+        QTest::newRow("canonical") << QByteArray("Authorization") << QByteArray("Bearer synthetic") << true;
+        QTest::newRow("case-insensitive-header-and-scheme") << QByteArray("aUtHoRiZaTiOn") << QByteArray("bEaReR synthetic") << true;
+        QTest::newRow("wrong-name") << QByteArray("Authorization ") << QByteArray("Bearer synthetic") << false;
+        for (const auto &value : {QByteArray(), QByteArray("Basic synthetic"), QByteArray("Bearers synthetic"),
+             QByteArray("Bearer "), QByteArray("Bearer  synthetic"), QByteArray(" Bearer synthetic"),
+             QByteArray("Bearer synthetic "), QByteArray("Bearer synthetic\r\nx"),
+             QByteArray("Bearer one,two"), QByteArray("Bearer ="), QByteArray("Bearer x=y"),
+             QByteArray("Bearer x;"), QByteArray("Bearer x\\"), QByteArray("Bearer x\x80"),
+             QByteArray("Bearer ") + QByteArray(16385, 'x')}) {
+            QTest::newRow(qPrintable(QString("invalid-%1").arg(value.size()) + QString::fromLatin1(value.left(24))))
+                << QByteArray("Authorization") << value << false;
+        }
+    }
+    void untrustedHeaderSyntaxPolicy()
+    {
+        QFETCH(QByteArray, name); QFETCH(QByteArray, value); QFETCH(bool, accepted);
+        const auto candidate = RHBrowserLogin::primaryCandidate(QUrl("https://api.robinhood.com/accounts/"),
+            QUrl("https://robinhood.com/"), QUrl("https://robinhood.com/"), "GET", false, {{name, value}});
+        QCOMPARE(!candidate.isEmpty(), accepted);
+    }
+    void untrustedRequestPolicyAndGeneration()
+    {
+        const QUrl site("https://robinhood.com/");
+        const RHBrowserLogin::Headers headers{{"Authorization", "Bearer synthetic"}};
+        const auto candidate = [&](QUrl url, QUrl party, QUrl origin, QByteArray method = "GET", bool redirect = false) {
+            return RHBrowserLogin::primaryCandidate(url, party, origin, method, redirect, headers);
+        };
+        for (const auto *url : {"http://api.robinhood.com/user/", "https://api.robinhood.com:443/user/",
+             "https://user@api.robinhood.com/user/", "https://@api.robinhood.com/user/",
+             "https://api.robinhood.com/user/#x", "https://api.robinhood.com/user/?x=y",
+             "https://api.robinhood.com/user", "https://api.robinhood.com/orders/",
+             "https://api.robinhood.com.evil/user/", "https://api.robinhood.com./user/"})
+            QVERIFY2(candidate(QUrl(url), site, site).isEmpty(), url);
+        const QUrl api("https://api.robinhood.com/user/");
+        for (const auto *method : {"POST", "get", "PUT", "DELETE"})
+            QVERIFY(candidate(api, site, site, method).isEmpty());
+        for (const QUrl &foreign : {QUrl(), QUrl("https://evil.com/"), QUrl("http://robinhood.com/"),
+             QUrl("https://robinhood.com:443/"), QUrl("https://user@robinhood.com/")}) {
+            QVERIFY(candidate(api, foreign, site).isEmpty());
+            QVERIFY(candidate(api, site, foreign).isEmpty());
+        }
+        QVERIFY(candidate(api, site, site, "GET", true).isEmpty());
+        QVERIFY(RHBrowserLogin::primaryCandidate(api, site, site, "GET", false,
+            {{"Authorization", "Bearer one"}, {"authorization", "Bearer two"}}).isEmpty());
+        int calls = 0;
+        RHBrowserLogin login({}, nullptr, RHBrowserLogin::BackendMode::Test);
+        login.setPrimaryTokenHandler([&](QByteArray) { ++calls; });
+        login.acceptPrimary(0, "synthetic");
+        QVERIFY(login.start()); const auto old = login.m_generation;
+        login.cancel(); login.cancel();
+        login.acceptPrimary(old, "synthetic");
+        QVERIFY(login.start());
+        login.acceptPrimary(old, "synthetic");
+        login.m_trustedNavigation = false;
+        login.acceptPrimary(login.m_generation, "synthetic");
+        QCOMPARE(calls, 0);
+        login.navigationChanged(site);
+        login.acceptPrimary(login.m_generation, "synthetic");
+        QCOMPARE(calls, 0); // Trusted origin still does not prove primary provenance.
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "secondary");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        QVERIFY(login.observeCookie(cookie));
+        QCOMPARE(calls, 0);
+    }
+    void refreshedSecondaryPermutations_data()
+    {
+        QTest::addColumn<QByteArray>("events");
+        for (const auto *order : {"AHB", "HAB", "ABH", "BHA", "HBA", "BAH"})
+            QTest::newRow(order) << QByteArray(order);
+    }
+    void refreshedSecondaryPermutations()
+    {
+        QFETCH(QByteArray, events);
+        int primary = 0, secondary = 0;
+        QByteArray captured, latest;
+        RHBrowserLogin login([&](QByteArray token, QDateTime) {
+            captured = token; ++secondary;
+        }, nullptr, RHBrowserLogin::BackendMode::Test);
+        login.setPrimaryTokenHandler([&](QByteArray) { ++primary; });
+        QVERIFY(login.start());
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "secondary-A");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        for (const char event : events) {
+            if (event == 'H') {
+                login.acceptPrimary(login.m_generation, "secondary-B");
+                login.acceptPrimary(login.m_generation, "unclassified-read-bearer");
+            } else {
+                latest = event == 'A' ? "secondary-A" : "secondary-B";
+                cookie.setValue(latest);
+                QVERIFY(login.observeCookie(cookie));
+            }
+            QCOMPARE(primary, 0);
+            QVERIFY(!login.m_captureDelivered);
+        }
+        login.m_secondaryFallback.start(1);
+        QTRY_COMPARE_WITH_TIMEOUT(secondary, 1, 200);
+        QCOMPARE(captured, latest);
+        QCOMPARE(primary, 0);
+    }
+    void primaryAndSecondaryEventOrdering_data()
+    {
+        QTest::addColumn<int>("order");
+        QTest::newRow("cookie-before-primary") << 0;
+        QTest::newRow("primary-before-cookie") << 1;
+        QTest::newRow("secondary-header-primary-header-cookie") << 2;
+        QTest::newRow("primary-header-secondary-header-cookie") << 3;
+    }
+    void primaryAndSecondaryEventOrdering()
+    {
+        QFETCH(int, order);
+        int primary = 0, secondary = 0;
+        RHBrowserLogin login([&](QByteArray, QDateTime) { ++secondary; }, nullptr,
+                             RHBrowserLogin::BackendMode::Test);
+        login.setPrimaryTokenHandler([&](QByteArray token) {
+            QCOMPARE(token, QByteArray("primary")); ++primary;
+        });
+        QVERIFY(login.start());
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "secondary");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        if (order == 0) QVERIFY(login.observeCookie(cookie));
+        if (order == 2) login.acceptPrimary(login.m_generation, "secondary");
+        login.acceptPrimary(login.m_generation, "primary");
+        if (order == 3) login.acceptPrimary(login.m_generation, "secondary");
+        if (order != 0) {
+            QCOMPARE(primary, 0);
+            QVERIFY(login.observeCookie(cookie));
+        }
+        QCOMPARE(primary, 0); QCOMPARE(secondary, 0);
+        QCOMPARE(login.m_stagedSecondary, QByteArray("secondary"));
+        QVERIFY(login.m_secondaryFallback.isActive());
+        login.m_secondaryFallback.start(1);
+        QTRY_COMPARE_WITH_TIMEOUT(secondary, 1, 200);
+        QCOMPARE(primary, 0);
+        QVERIFY(login.m_stagedSecondary.isEmpty());
+        QVERIFY(!login.m_secondaryFallback.isActive());
+        login.acceptPrimary(login.m_generation, "primary");
+        QVERIFY(!login.observeCookie(cookie));
+        QCOMPARE(primary, 0);
+    }
+    void secondaryBearerNeverBecomesPrimary_data()
+    {
+        QTest::addColumn<bool>("headerFirst");
+        QTest::newRow("header-first") << true;
+        QTest::newRow("cookie-first") << false;
+    }
+    void secondaryBearerNeverBecomesPrimary()
+    {
+        QFETCH(bool, headerFirst);
+        int secondary = 0, primary = 0;
+        RHBrowserLogin login([&](QByteArray token, QDateTime) {
+            QCOMPARE(token, QByteArray("secondary")); ++secondary;
+        }, nullptr, RHBrowserLogin::BackendMode::Test);
+        login.setPrimaryTokenHandler([&](QByteArray) { ++primary; });
+        QVERIFY(login.start());
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "secondary");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        if (headerFirst) login.acceptPrimary(login.m_generation, "secondary");
+        QVERIFY(login.observeCookie(cookie));
+        login.acceptPrimary(login.m_generation, "secondary");
+        QCOMPARE(primary, 0); QCOMPARE(secondary, 0);
+        login.m_secondaryFallback.start(1);
+        QTRY_COMPARE_WITH_TIMEOUT(secondary, 1, 200);
+        QCOMPARE(primary, 0);
+        login.acceptPrimary(login.m_generation, "late-primary");
+        QCOMPARE(primary, 0);
+    }
+    void noCandidateRetentionAcrossFloodCancelAndRestart()
+    {
+        int primary = 0, secondary = 0;
+        RHBrowserLogin login([&](QByteArray, QDateTime) { ++secondary; }, nullptr,
+                             RHBrowserLogin::BackendMode::Test);
+        login.setPrimaryTokenHandler([&](QByteArray) { ++primary; });
+        QVERIFY(login.start());
+        for (int i = 0; i < 1000; ++i)
+            login.acceptPrimary(login.m_generation, QByteArray(16384, 'x'));
+        QVERIFY(login.m_stagedSecondary.isEmpty());
+        QVERIFY(!login.m_captureDelivered);
+        const auto stale = login.m_generation;
+        login.cancel();
+        QVERIFY(login.start());
+        login.acceptPrimary(stale, "stale");
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "secondary");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        QVERIFY(login.observeCookie(cookie));
+        login.acceptPrimary(stale, "stale-after-cookie");
+        login.acceptPrimary(login.m_generation, "ambiguous-current");
+        QCOMPARE(primary, 0);
+        login.cancel();
+        QVERIFY(login.m_stagedSecondary.isEmpty());
+        QVERIFY(!login.m_secondaryFallback.isActive());
+        QTest::qWait(20);
+        QCOMPARE(secondary, 0);
+    }
+    void secondaryRefreshRetainsFallbackBound()
+    {
+        int primary = 0, secondary = 0;
+        RHBrowserLogin login([&](QByteArray token, QDateTime) {
+            QCOMPARE(token, QByteArray("new-secondary")); ++secondary;
+        }, nullptr, RHBrowserLogin::BackendMode::Test);
+        login.setPrimaryTokenHandler([&](QByteArray) { ++primary; });
+        QVERIFY(login.start());
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "old-secondary");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        QVERIFY(login.observeCookie(cookie));
+        login.m_secondaryFallback.start(100);
+        cookie.setValue("new-secondary");
+        QVERIFY(login.observeCookie(cookie));
+        QVERIFY(login.m_secondaryFallback.remainingTime() <= 100);
+        login.acceptPrimary(login.m_generation, "old-secondary");
+        login.acceptPrimary(login.m_generation, "new-secondary");
+        QCOMPARE(primary, 0);
+        QTRY_COMPARE_WITH_TIMEOUT(secondary, 1, 300);
+    }
+    void invalidCookieCannotEnablePrimaryOrStageFallback()
+    {
+        int primary = 0;
+        RHBrowserLogin login({}, nullptr, RHBrowserLogin::BackendMode::Test);
+        login.setPrimaryTokenHandler([&](QByteArray) { ++primary; });
+        QVERIFY(login.start());
+        login.acceptPrimary(login.m_generation, "primary");
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "secondary");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        cookie.setExpirationDate(QDateTime::currentDateTimeUtc().addSecs(-1));
+        QVERIFY(!login.observeCookie(cookie));
+        QCOMPARE(primary, 0);
+        cookie.setExpirationDate({});
+        cookie.setSecure(false);
+        QVERIFY(!login.observeCookie(cookie));
+        QCOMPARE(primary, 0);
+        login.m_trustedNavigation = false;
+        cookie.setSecure(true);
+        QVERIFY(!login.observeCookie(cookie));
+        QCOMPARE(primary, 0);
+        login.cancel();
+    }
+    void expiredStagedCookieCannotAuthorizePrimaryOrFallback()
+    {
+        int primary = 0, secondary = 0;
+        RHBrowserLogin login([&](QByteArray, QDateTime) { ++secondary; }, nullptr,
+                             RHBrowserLogin::BackendMode::Test);
+        login.setPrimaryTokenHandler([&](QByteArray) { ++primary; });
+        QVERIFY(login.start());
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "secondary");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        QVERIFY(login.observeCookie(cookie));
+        login.m_stagedExpiry = QDateTime::currentDateTimeUtc().addSecs(-1);
+        login.acceptPrimary(login.m_generation, "primary");
+        QCOMPARE(primary, 0);
+        login.m_secondaryFallback.start(1);
+        QTRY_VERIFY_WITH_TIMEOUT(login.m_stagedSecondary.isEmpty(), 200);
+        QCOMPARE(primary, 0); QCOMPARE(secondary, 0);
+    }
+    void secondaryFallbackConsumerMayDestroyBridgeSynchronously()
+    {
+        int secondary = 0, primary = 0;
+        std::unique_ptr<RHBrowserLogin> login;
+        login = std::make_unique<RHBrowserLogin>([&](QByteArray token, QDateTime) {
+            QCOMPARE(token, QByteArray("secondary")); ++secondary;
+            login.reset();
+        }, nullptr, RHBrowserLogin::BackendMode::Test);
+        login->setPrimaryTokenHandler([&](QByteArray) { ++primary; });
+        QVERIFY(login->start());
+        login->acceptPrimary(login->m_generation, "ambiguous");
+        QNetworkCookie cookie("__Host-Web-App-Secondary-Access-Token", "secondary");
+        cookie.setDomain("robinhood.com"); cookie.setPath("/"); cookie.setSecure(true);
+        QVERIFY(login->observeCookie(cookie));
+        login->m_secondaryFallback.start(1);
+        QTRY_VERIFY_WITH_TIMEOUT(!login, 200);
+        QCOMPARE(secondary, 1);
+        QCOMPARE(primary, 0);
+    }
     void failedPageDoubleCancelAndDestructionPreserveCleanupEpoch()
     {
         std::shared_ptr<std::atomic<quint64>> epoch;

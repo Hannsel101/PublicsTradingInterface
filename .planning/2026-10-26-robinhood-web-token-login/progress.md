@@ -1,4 +1,12 @@
 # Progress
+## Android launcher availability
+- Added Android-only Robin Hood launcher disablement via Qt.platform.os, reusing existing muted background/text/stripe styling. Kept desktop and Publics selection enabled; disabled accessibility label explicitly states unavailable on Android.
+- New regression first failed four data rows before implementation, then passed Android-unavailable/desktop-enabled states at 1000x700 and 360x620. Verifies viewport placement, grey pixel rendering, ignored disabled clicks, no Robinhood loader creation, and normal Publics navigation.
+- Initial optional pixel probe sampled the wrong snapshot coordinates; corrected to a composed-window capture with mapped coordinates, rendering wait and physical-pixel scale. Focused and whole QML tests pass.
+- Qt6.12 application rebuilt and full CTest13/13 passes; final QML suite passes after pixel coverage. QtCreator Qt6.11.2 app rebuilt and QML suite passes.
+- Android arm64 debug APK rebuilt successfully with the updated launcher; apksigner verifies v2 signature. No device deployment/runtime claim.
+- Independent read-only review PASSED with no concerns, logic errors or suggestions. Changes remain uncommitted. Updated Android APK is built and signature verified; no device runtime test performed.
+
 ## Discovery
 - Read skills, repository guidance, CodeGraph, existing applet/session/network source and previous plan without changing prior task history.
 - Inspected installed Qt modules; researched official Qt and Android cookie APIs.
@@ -28,4 +36,8 @@
 - Parent rebuilt all final C++ changes: QtCreator Qt6.11.2 full CTest 13/13 PASS, Qt6.12 no-browser full CTest 12/12 PASS; Android arm64 app and browser-unit native targets compile successfully. Native Android tests were not run on a device.
 - Updated configure/unavailable UI copy so installing QtWebView alone is not represented as enabling safe Android sign-in. All three application targets rebuilt after the configure-copy changes.
 - Independent read-only security-fix re-review PASSED: no security concerns or logic errors. Nonblocking stale session-manager unavailable copy was corrected with a new observed RED/GREEN regression. Parent rebuilt/reran full Qt6.11.2 CTest 13/13, Qt6.12 CTest 12/12 and Android app compile after that final change.
+- APK follow-up complete: with installed Temurin21.0.13, the existing Qt6.11.2 arm64 appPublicsTradingInterface_make_apk target succeeds (Gradle BUILD SUCCESSFUL). ZIP integrity and required DEX/manifest/native app/WebView/OpenSSL entries checked; apksigner verifies APK Signature Scheme v2; aapt reports arm64-v8a, minSDK28 and targetSDK36. APK is 77,214,856 bytes at build/hermes-qt6112-android-arm64-s24-make/launcher/android-build/build/outputs/apk/debug/android-build-debug.apk. No device install/run and no change to Android login security gates.
+- JDK follow-up: java_home detects Temurin21.0.13 arm64 at /Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home; java and javac both report21.0.13. Retrying existing Qt6.11.2 Android APK packaging with JAVA_HOME set for the build; not modifying global shell/QtCreator settings or deploying to a device.
+- Follow-up verification complete: newly installed Qt6.12 desktop WebEngine backend builds, native synthetic cookie capture runs, and full CTest13/13 passes. JDK21 ARM64 identified and Homebrew Temurin21 availability checked; no JDK installed without user authorization. Android pre-navigation/Phoenix compatibility gates remain unchanged.
+- Follow-up: user installed Qt6.12 packages. Live inspection confirms desktop WebEngineQuick/WebEngineCore/WebView/TaskTree and Android WebView modules now exist. JAVA_HOME is unset and java_home finds no JDK; Qt6.12 official prerequisites require JDK21 or newer. Revalidating desktop build with installed browser backend, not installing a system JDK without request.
 - Prepared verified 37-entry source archive at /Users/hannsel101/.hermes/cache/scratch/rh-browser-source-20261026/robinhood-browser-refactor.zip with full current Robinhood classes, QML, integration hooks, regression tests and explicit compatibility/platform limits. Archive is a selected-file snapshot, not a standalone app or automatic patch.

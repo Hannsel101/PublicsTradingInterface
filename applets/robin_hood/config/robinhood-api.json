@@ -22,7 +22,11 @@
       "Enabled": false
     },
     "TokenRefresh": {
-      "Enabled": false
+      "Enabled": true,
+      "URL": "https://api.robinhood.com/oauth2/token/",
+      "Method": "POST",
+      "BodyEncoding": "form",
+      "HeaderSets": ["Common", "Form"]
     },
     "BeginVerification": {
       "Enabled": false

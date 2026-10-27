@@ -6,6 +6,8 @@ import RobinHoodInterface as RH
 
 ApplicationWindow {
     id: launcherWindow
+    property bool robinHoodAvailable: Qt.platform.os !== "android"
+
     width: 1000
     height: 700
     minimumWidth: 360
@@ -33,7 +35,7 @@ ApplicationWindow {
                 spacing: 18
 
                 Label {
-                    text: qsTr("Choose an applet")
+                    text: qsTr("Choose an Applet")
                     font.pixelSize: 30
                     font.bold: true
                     color: "#f7f8f8"
@@ -57,6 +59,9 @@ ApplicationWindow {
                     appletName: qsTr("Robin Hood")
                     stripeColor: "#a3e635"
                     Layout.fillWidth: true
+                    enabled: launcherWindow.robinHoodAvailable
+                    Accessible.name: enabled ? appletName
+                                     : qsTr("%1 (unavailable on Android)").arg(appletName)
                     onClicked: Launcher.activate("robin_hood")
                 }
                 AppletChoice {

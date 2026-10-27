@@ -4,12 +4,106 @@
 #include <QQmlEngine>
 #include <QQmlExtensionPlugin>
 #include <QFileInfo>
+#include <QInputMethodEvent>
+#include <QCoreApplication>
 
 Q_IMPORT_QML_PLUGIN(PublicsTradingInterfacePlugin)
 Q_IMPORT_QML_PLUGIN(RobinHoodInterfacePlugin)
 Q_IMPORT_QML_PLUGIN(TradingLauncherPlugin)
 
 // No production backends are linked: these objects cannot access a brokerage or keychain.
+class MockRobinTrades final : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(bool available MEMBER available NOTIFY availableChanged)
+    Q_PROPERTY(QString unavailableReason MEMBER unavailableReason NOTIFY unavailableReasonChanged)
+    Q_PROPERTY(QVariantList tradeResults MEMBER tradeResults NOTIFY tradeResultsChanged)
+    Q_PROPERTY(QString currentTransactionTitle MEMBER currentTransactionTitle NOTIFY currentTransactionTitleChanged)
+    Q_PROPERTY(bool tradeResultsVisible MEMBER tradeResultsVisible NOTIFY tradeResultsVisibleChanged)
+    Q_PROPERTY(bool tradeResultsComplete MEMBER tradeResultsComplete NOTIFY tradeResultsCompleteChanged)
+    Q_PROPERTY(bool tradeResultsBusy MEMBER tradeResultsBusy NOTIFY tradeResultsBusyChanged)
+    Q_PROPERTY(bool liveOrdersEnabled MEMBER liveOrdersEnabled NOTIFY liveOrdersEnabledChanged)
+    Q_PROPERTY(QString error MEMBER error NOTIFY errorChanged)
+    Q_PROPERTY(QString lastInput MEMBER lastInput NOTIFY lastInputChanged)
+    Q_PROPERTY(QString lastSide MEMBER lastSide NOTIFY lastSideChanged)
+    Q_PROPERTY(int submitCalls MEMBER submitCalls NOTIFY submitCallsChanged)
+    Q_PROPERTY(int cancelCalls MEMBER cancelCalls NOTIFY cancelCallsChanged)
+    Q_PROPERTY(int dismissCalls MEMBER dismissCalls NOTIFY dismissCallsChanged)
+public:
+    bool available{};
+    QString unavailableReason{};
+    QVariantList tradeResults{};
+    QString currentTransactionTitle{};
+    bool tradeResultsVisible{};
+    bool tradeResultsComplete{};
+    bool tradeResultsBusy{};
+    bool liveOrdersEnabled{};
+    QString error{};
+    QString lastInput{};
+    QString lastSide{};
+    int submitCalls{};
+    int cancelCalls{};
+    int dismissCalls{};
+signals:
+    void availableChanged();
+    void unavailableReasonChanged();
+    void tradeResultsChanged();
+    void currentTransactionTitleChanged();
+    void tradeResultsVisibleChanged();
+    void tradeResultsCompleteChanged();
+    void tradeResultsBusyChanged();
+    void liveOrdersEnabledChanged();
+    void errorChanged();
+    void lastInputChanged();
+    void lastSideChanged();
+    void submitCallsChanged();
+    void cancelCallsChanged();
+    void dismissCallsChanged();
+public:
+    using QObject::QObject;
+    Q_INVOKABLE void typeText(QObject *target, const QString &text) {
+        QInputMethodEvent event;
+        event.setCommitString(text);
+        QCoreApplication::sendEvent(target, &event);
+    }
+    Q_INVOKABLE void reset() {
+        setProperty("available", true);
+        setProperty("unavailableReason", QString());
+        setProperty("tradeResults", QVariantList());
+        setProperty("currentTransactionTitle", QString());
+        setProperty("tradeResultsVisible", false);
+        setProperty("tradeResultsComplete", true);
+        setProperty("tradeResultsBusy", false);
+        setProperty("liveOrdersEnabled", false);
+        setProperty("error", QString());
+        setProperty("lastInput", QString());
+        setProperty("lastSide", QString());
+        setProperty("submitCalls", 0);
+        setProperty("cancelCalls", 0);
+        setProperty("dismissCalls", 0);
+    }
+    Q_INVOKABLE bool submit(const QString &input, const QString &side) {
+        if (!available || tradeResultsBusy) return false;
+        setProperty("lastInput", input);
+        setProperty("lastSide", side);
+        setProperty("submitCalls", submitCalls + 1);
+        setProperty("currentTransactionTitle", side == "buy" ? "Buy 1 each" : "Sell All");
+        setProperty("tradeResultsComplete", false);
+        setProperty("tradeResultsBusy", true);
+        setProperty("tradeResultsVisible", true);
+        return true;
+    }
+    Q_INVOKABLE void cancel() {
+        setProperty("cancelCalls", cancelCalls + 1);
+        setProperty("tradeResultsBusy", false);
+        setProperty("tradeResultsComplete", true);
+    }
+    Q_INVOKABLE void dismissTradeResults() {
+        if (tradeResultsBusy || !tradeResultsComplete) return;
+        setProperty("dismissCalls", dismissCalls + 1);
+        setProperty("tradeResultsVisible", false);
+    }
+};
 class QmlTestSetup : public QObject
 {
     Q_OBJECT
@@ -30,7 +124,11 @@ public slots:
     void qmlEngineAvailable(QQmlEngine *engine)
     {
         auto *context = engine->rootContext();
+        auto *trades = new MockRobinTrades(engine);
+        trades->reset();
+        context->setContextProperty("RobinTrades", trades);
         context->setContextProperty("isDebugMode", true);
+        context->setContextProperty("qmlTestArtifactDirectory", qEnvironmentVariable("QML_TEST_ARTIFACT_DIR"));
         context->setContextProperty("Launcher", mock(engine, R"(
             property string activeAppletId: ""
             property bool canReturnHome: activeAppletId !== ""
@@ -96,6 +194,9 @@ public slots:
             property bool sessionActive: false
             property string activeAccount: ""
             property var accounts: null
+            property var mockCachedAccounts: ({})
+            signal accountCacheChanged()
+            function cachedAccounts(index) { return mockCachedAccounts[index] || [] }
             property string error: ""
             property int lastStarted: -1
             property bool reauthenticating: false
@@ -107,6 +208,56 @@ public slots:
             signal sessionDeleted(int index)
             signal reauthenticationRequested(string accountName)
             function startSession(index) { lastStarted = index; return true }
+            property bool nativeLoginPending: false
+            property bool nativeRequestStarted: false
+            readonly property bool nativeLoginWorking: nativeLoginPending && nativeRequestStarted && !nativeCodeRequired
+            property bool nativeCodeRequired: false
+            property bool nativeLoginCancellable: true
+            property string nativeLoginStatus: ""
+            property string nativeLoginEmail: ""
+            property int beginNativeCalls: 0
+            property int signInCalls: 0
+            property int codeCalls: 0
+            property string lastNativeAccountId: ""
+            property string lastNativeEmail: ""
+            property bool passwordMatched: false
+            property bool mfaMatched: false
+            property bool codeMatched: false
+            property bool acceptSignIn: true
+            function beginNativeLogin(accountId = "") {
+                if (busy) return false
+                ++beginNativeCalls
+                nativeRequestStarted = false
+                busy = true
+                lastNativeAccountId = accountId
+                nativeLoginPending = true
+                nativeLoginCancellable = true
+                nativeCodeRequired = false
+                nativeLoginEmail = ""
+                nativeLoginStatus = ""
+                error = ""
+                return true
+            }
+            function signIn(email, password, mfaCode = "") {
+                if (nativeRequestStarted || !nativeLoginPending || !acceptSignIn) return false
+                ++signInCalls
+                nativeRequestStarted = true
+                lastNativeEmail = email
+                passwordMatched = password === "  päss+密碼  "
+                mfaMatched = mfaCode === "123456"
+                error = ""
+                busy = true
+                nativeLoginStatus = "Approve sign-in in the Robinhood mobile app."
+                return true
+            }
+            function submitNativeVerificationCode(code) {
+                if (nativeLoginWorking || !nativeCodeRequired) return
+                ++codeCalls
+                nativeRequestStarted = true
+                codeMatched = code === "654321"
+                nativeCodeRequired = false
+                busy = true
+            }
             property bool browserLoginPending: false
             property int beginBrowserCalls: 0
             property string lastBrowserAccountId: ""
@@ -130,7 +281,9 @@ public slots:
                 ++reauthenticateCalls
                 for (let i = 0; i < count; ++i) {
                     if (get(i).sessionIndex === index) {
-                        prepareReauthentication(get(i).accountId)
+                        if (!beginNativeLogin(get(i).accountId)) return false
+                        nativeLoginEmail = get(i).accountName
+                        reauthenticating = true
                         return true
                     }
                 }
@@ -147,6 +300,18 @@ public slots:
                 return false
             }
             function cancelSignIn() {
+                if (nativeLoginPending) {
+                    if (!nativeLoginCancellable) return
+                    ++cancelCalls
+                    nativeLoginPending = false
+                    nativeRequestStarted = false
+                    nativeCodeRequired = false
+                    nativeLoginEmail = ""
+                    nativeLoginStatus = ""
+                    reauthenticating = false
+                    busy = false
+                    return
+                }
                 if (!browserLoginPending)
                     return
                 ++cancelCalls
@@ -157,7 +322,7 @@ public slots:
                 reauthenticating = false
                 busy = false
             }
-            function clearActiveSession() { sessionActive = false }
+            function clearActiveSession() { sessionActive = false; accounts.clear(); busy = false }
         )", "ListModel");
         sessions->setProperty("accounts", QVariant::fromValue(mock(engine, {}, "ListModel")));
         context->setContextProperty("RobinSessions", sessions);

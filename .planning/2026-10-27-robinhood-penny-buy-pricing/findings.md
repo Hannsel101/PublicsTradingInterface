@@ -1,0 +1,8 @@
+# Findings
+- User reports a real buy above $1 succeeded, while a penny-stock buy failed; no exact provider failure reason supplied. Implement requested policy without claiming the specific failure cause is proven.
+- Existing controller fetches instrument/quote per account row; network transport unconditionally sends buy limit + preset_percent_limit 0.05. Both conflict with requested policy.
+- Pinned upstream 1b4ef98be36d1df127886889c843256799a1dfea stocks.get_quotes exposes last_trade_price, ask_price, bid_price, symbol, instrument and updated_at. Its regular-hours orders.order unconditionally overwrites buy type with limit and preset_percent_limit 0.05, even with an explicit limit. This change intentionally deviates for the requested fixed-price/market policy.
+- Upstream retrieved with system curl and certificate verification. Python urllib CA validation failed; generic extraction backend cannot extract; neither was worked around by disabling TLS.
+- Robinhood official limit-order support states limits are not guaranteed to execute; market-order support states market prices are not guaranteed and OTC securities remain limit-only. These are execution caveats, not evidence for inventing a different user policy or diagnosing the failed penny order.
+- Relevant source: applets/robin_hood/rhtradecontroller.{h,cpp}, rhnetworkengine.{h,cpp}, qml/RobinHoodInterface/StockTrade.qml; controller/network/context and QML tests. CodeGraph synced at task start; dirty prior work retained.
+- Native login previous task is complete. Do not modify its credential lifecycle for this pricing change.

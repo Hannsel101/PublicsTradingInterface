@@ -6,6 +6,8 @@ Button {
     required property color stripeColor
     property string appletName: ""
     text: appletName
+    font.pixelSize: 18
+    font.bold: true
     height: 76
     implicitHeight: 76
     Accessible.name: appletName + (enabled ? "" : qsTr(" (coming soon)"))

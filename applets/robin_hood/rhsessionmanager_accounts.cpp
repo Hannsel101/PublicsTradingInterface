@@ -60,36 +60,40 @@ QString balance(const QJsonObject &item)
 
 QString displayName(const QJsonObject &item)
 {
+    // Brokerage product is distinct from cash/margin settlement mechanics.
+    if (item.contains("brokerage_account_type")) {
+        const QString product = item.value("brokerage_account_type").toString().trimmed().toLower();
+        if (product == "individual") return QStringLiteral("Standard Brokerage");
+        if (product == "ira_roth") return QStringLiteral("Roth IRA");
+        if (product == "ira_traditional") return QStringLiteral("IRA");
+        return QStringLiteral("Account type unavailable");
+    }
     QStringList labels;
-    for (const char *key : {"type", "rh_account_type", "account_type", "description", "nickname", "retirement_type"})
-        labels.append(item.value(QLatin1String(key)).toString());
-    const QJsonValue retirement = item.value(QStringLiteral("retirement"));
+    for (const char *key : {"type", "rh_account_type", "account_type", "retirement_type"})
+        if (item.value(QLatin1String(key)).isString())
+            labels.append(item.value(QLatin1String(key)).toString());
+    const auto retirement = item.value("retirement");
+    if (retirement.isString()) labels.append(retirement.toString());
     if (retirement.isObject()) {
-        labels.append(QStringLiteral("ira"));
-        const QJsonObject details = retirement.toObject();
-        for (const char *key : {"type", "rh_account_type", "account_type", "subtype", "description"})
-            labels.append(details.value(QLatin1String(key)).toString());
-    } else if (retirement.isString()) {
-        labels.append(retirement.toString());
+        const auto details = retirement.toObject();
+        for (const char *key : {"type", "rh_account_type", "account_type", "subtype"})
+            if (details.value(QLatin1String(key)).isString()) labels.append(details.value(QLatin1String(key)).toString());
     }
-    const QString normalized = labels.join(QLatin1Char('_')).toLower().replace(
-        QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("_"));
-    if (normalized.contains(QStringLiteral("roth_ira")) || normalized.contains(QStringLiteral("ira_roth")))
-        return QStringLiteral("Roth IRA");
-    if (normalized.contains(QStringLiteral("traditional_ira")) || normalized.contains(QStringLiteral("ira_traditional")))
-        return QStringLiteral("Traditional IRA");
-    if (retirement.isObject() || retirement.isString() || item.value(QStringLiteral("is_retirement")).toBool()
-        || normalized.contains(QStringLiteral("_ira")) || normalized.contains(QStringLiteral("_retirement")))
-        return QStringLiteral("Retirement Account");
-    if (item.value(QStringLiteral("type")).toString().compare(QStringLiteral("margin"), Qt::CaseInsensitive) == 0)
-        return QStringLiteral("Individual Investing");
-    for (const char *key : {"nickname", "description"}) {
-        const QString label = item.value(QLatin1String(key)).toString().trimmed();
-        if (!label.isEmpty() && label.compare(QStringLiteral("cash"), Qt::CaseInsensitive) != 0)
-            return label;
+    bool standard = false, traditional = false, roth = false, unknown = false, retirementMarker = false;
+    for (QString label : labels) {
+        label = label.trimmed().toLower().replace(QRegularExpression("[ -]+"), "_");
+        if (QStringList{"cash", "margin", "individual", "brokerage", "standard"}.contains(label)) standard = true;
+        else if (QStringList{"traditional", "traditional_ira", "ira_traditional"}.contains(label)) traditional = true;
+        else if (QStringList{"roth", "roth_ira", "ira_roth"}.contains(label)) roth = true;
+        else if (label == "retirement" || label == "ira") retirementMarker = true;
+        else if (!label.isEmpty()) unknown = true;
     }
-    return item.value(QStringLiteral("type")).toString().compare(QStringLiteral("cash"), Qt::CaseInsensitive) == 0
-        ? QStringLiteral("Cash Account") : QStringLiteral("Brokerage Account");
+    if (unknown || (traditional && roth)) return QStringLiteral("Account type unavailable");
+    if (roth) return QStringLiteral("Roth IRA");
+    if (traditional) return QStringLiteral("IRA");
+    if (retirementMarker || retirement.isObject() || retirement.isString() || item.value("is_retirement").toBool())
+        return QStringLiteral("Account type unavailable");
+    return standard ? QStringLiteral("Standard Brokerage") : QStringLiteral("Account type unavailable");
 }
 }
 
@@ -107,6 +111,10 @@ QVariant RHAccountModel::data(const QModelIndex &index, int role) const
     case DisplayNameRole: return account.displayName;
     case AccountNumberRole: return account.accountNumber;
     case CurrentBalanceRole: return account.currentBalance;
+    case HoldingsRole: return account.holdings;
+    case HoldingsUpdatedAtRole: return account.holdingsUpdatedAt;
+    case HoldingsStatusRole: return account.holdingsStatus;
+    case HoldingsErrorRole: return account.holdingsError;
     default: return {};
     }
 }
@@ -114,7 +122,9 @@ QVariant RHAccountModel::data(const QModelIndex &index, int role) const
 QHash<int, QByteArray> RHAccountModel::roleNames() const
 {
     return {{DisplayNameRole, "displayName"}, {AccountNumberRole, "accountNumber"},
-            {CurrentBalanceRole, "currentBalance"}};
+            {CurrentBalanceRole, "currentBalance"}, {HoldingsRole, "holdings"},
+            {HoldingsUpdatedAtRole, "holdingsUpdatedAt"}, {HoldingsStatusRole, "holdingsStatus"},
+            {HoldingsErrorRole, "holdingsError"}};
 }
 
 void RHAccountModel::setAccounts(const QJsonArray &results)
@@ -132,6 +142,19 @@ void RHAccountModel::setAccounts(const QJsonArray &results)
     beginResetModel();
     m_items = std::move(accounts);
     endResetModel();
+}
+
+void RHAccountModel::setCachedAccounts(const QVariantList &accounts)
+{
+    QList<Account> items;
+    for (const auto &value : accounts) {
+        const auto row = value.toMap();
+        items.append({row.value("displayName").toString(), row.value("accountNumber").toString(),
+            row.value("currentBalance").toString(), row.value("holdings").toList(),
+            row.value("holdingsUpdatedAt").toString(), row.value("holdingsStatus", "unavailable").toString(),
+            row.value("holdingsError").toString()});
+    }
+    beginResetModel(); m_items = std::move(items); endResetModel();
 }
 
 void RHAccountModel::clear()

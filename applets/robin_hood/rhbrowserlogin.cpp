@@ -1,5 +1,5 @@
 #include "rhbrowserlogin.h"
-#include <utility>
+#include <QScopeGuard>
 #if defined(Q_OS_ANDROID) && defined(PUBLICS_RH_ANDROID_WEBVIEW)
 #include <QtCore/qcoreapplication_platform.h>
 #include <QJniObject>
@@ -11,6 +11,17 @@
 #include <QtWebEngineQuick/qtwebenginequickglobal.h>
 #include <QtWebEngineCore/QWebEngineCookieStore>
 #endif
+#include <utility>
+
+namespace {
+constexpr int captureWaitMs = 9000;
+void wipe(QByteArray &value)
+{
+    // Best effort: browser-owned and implicitly shared Qt copies are not ours.
+    value.fill('\0');
+    value.clear();
+}
+}
 
 namespace {
 const QByteArray cookieName = QByteArrayLiteral("__Host-Web-App-Secondary-Access-Token");
@@ -23,6 +34,63 @@ bool safeValue(const QByteArray &value)
     }
     return true;
 }
+}
+
+void RHBrowserLogin::setPrimaryTokenHandler(PrimaryTokenHandler handler)
+{
+    if (!m_active) m_primaryHandler = std::move(handler);
+}
+
+QByteArray RHBrowserLogin::primaryCandidate(const QUrl &url, const QUrl &firstParty,
+    const QUrl &initiator, const QByteArray &method, bool redirect, const Headers &headers)
+{
+    const auto official = [](const QUrl &origin) {
+        return origin.isValid() && origin.scheme() == QStringLiteral("https")
+            && origin.authority() == QStringLiteral("robinhood.com")
+            && !origin.hasFragment();
+    };
+    if (method != "GET" || redirect || !url.isValid()
+        || url.scheme() != QStringLiteral("https")
+        || url.authority() != QStringLiteral("api.robinhood.com")
+        || url.hasFragment() || url.hasQuery()
+        || (url.path(QUrl::FullyEncoded) != QStringLiteral("/user/")
+            && url.path(QUrl::FullyEncoded) != QStringLiteral("/accounts/"))
+        || !official(firstParty) || !official(initiator)) return {};
+    QByteArray authorization;
+    const auto discardAuthorization = qScopeGuard([&authorization] { wipe(authorization); });
+    bool found = false;
+    for (const auto &header : headers) {
+        if (header.first.compare("Authorization", Qt::CaseInsensitive) != 0) continue;
+        if (found) return {};
+        found = true;
+        authorization = header.second;
+    }
+    if (authorization.left(7).compare("Bearer ", Qt::CaseInsensitive) != 0) return {};
+    auto token = authorization.sliced(7);
+    bool accepted = false;
+    const auto discardToken = qScopeGuard([&token, &accepted] { if (!accepted) wipe(token); });
+    if (token.isEmpty() || token.size() > 16 * 1024) return {};
+    bool padding = false;
+    for (const unsigned char byte : token) {
+        if (byte == '=') { padding = true; continue; }
+        if (padding || !((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')
+            || (byte >= '0' && byte <= '9') || byte == '-' || byte == '.' || byte == '_'
+            || byte == '~' || byte == '+' || byte == '/')) return {};
+    }
+    if (token.front() == '=') return {};
+    accepted = true;
+    return token;
+}
+
+void RHBrowserLogin::acceptPrimary(quint64 generation, QByteArray token)
+{
+    Q_UNUSED(generation);
+    // Fail closed, including already queued native observations. A bearer on
+    // /user/ or /accounts/ proves neither token class nor trading permission;
+    // a later cookieAdded event may identify it as a refreshed secondary.
+    // No documented native/provider provenance contract is available here.
+    // Never retain candidates or promote them after a timeout/quiet period.
+    wipe(token);
 }
 
 bool RHBrowserLogin::parseAndroidCookie(const QByteArray &header, QNetworkCookie &cookie, bool &present)
@@ -108,6 +176,7 @@ bool RHBrowserLogin::start()
     m_nativeEpoch->store(m_generation, std::memory_order_release);
     m_active = true;
     m_captureDelivered = false;
+    m_secondaryClock.invalidate();
     m_initialBlank = true;
     m_trustedNavigation = m_mode == BackendMode::Test;
     setError({});
@@ -123,7 +192,13 @@ bool RHBrowserLogin::start()
     }
     return m_active;
 }
-void RHBrowserLogin::disconnectProfile() { disconnect(m_cookieConnection); disconnect(m_profileDestroyed); m_profile = nullptr; }
+void RHBrowserLogin::disconnectProfile()
+{
+    disconnect(m_cookieConnection);
+    disconnect(m_cookieRemovedConnection);
+    disconnect(m_profileDestroyed);
+    m_profile = nullptr;
+}
 void RHBrowserLogin::stop()
 {
     // Only an active cancellation advances the epoch. Reentrant cancel() and
@@ -132,6 +207,8 @@ void RHBrowserLogin::stop()
     if (!m_active) return;
     ++m_generation;
     m_nativeEpoch->store(m_generation, std::memory_order_release);
+    clearStagedSecondary();
+    m_secondaryClock.invalidate();
     m_poll.stop();
     m_resetTimeout.stop();
     disconnectProfile();
@@ -172,12 +249,21 @@ void RHBrowserLogin::attachProfile(QObject *object)
     profile->setProperty("_publicsRhLoginUsed", true);
     m_profile = profile; // QML owns the profile, never this bridge.
     const auto generation = m_generation;
+    // Primary capture is disabled: request metadata has no authoritative token
+    // class/permission provenance. Do not install a header interceptor at all.
     const QPointer<QQuickWebEngineProfile> guardedProfile(profile);
     m_cookieConnection = connect(profile->cookieStore(), &QWebEngineCookieStore::cookieAdded,
         this, [this, generation, guardedProfile](const QNetworkCookie &cookie) {
             if (!m_active || generation != m_generation || !guardedProfile
                 || m_profile != guardedProfile || !guardedProfile->isOffTheRecord()) return;
             acceptCookie(cookie);
+        }, Qt::QueuedConnection);
+    m_cookieRemovedConnection = connect(profile->cookieStore(), &QWebEngineCookieStore::cookieRemoved,
+        this, [this, generation](const QNetworkCookie &cookie) {
+            if (!m_active || m_captureDelivered || generation != m_generation
+                || cookie.name() != cookieName || cookie.domain() != QStringLiteral("robinhood.com")
+                || cookie.path() != QStringLiteral("/") || !cookie.isSecure()) return;
+            if (cookie.value() == m_stagedSecondary) clearStagedSecondary();
         }, Qt::QueuedConnection);
     m_profileDestroyed = connect(profile, &QObject::destroyed, this, [this, generation] {
         if (m_active && generation == m_generation) {
@@ -241,15 +327,56 @@ bool RHBrowserLogin::acceptCookie(const QNetworkCookie &cookie)
         if (byte < 0x21 || byte > 0x7e || byte == '"' || byte == ','
             || byte == ';' || byte == '\\') return false;
     }
+    if (m_primaryHandler) {
+        // Keep only the latest validated secondary, within the original fallback
+        // bound. This timer preserves legacy read-only delivery, NOT provenance.
+        const bool waiting = m_secondaryFallback.isActive();
+        wipe(m_stagedSecondary);
+        m_stagedSecondary = value;
+        m_stagedExpiry = cookie.expirationDate();
+        if (waiting) return true;
+        if (!m_secondaryClock.isValid()) m_secondaryClock.start();
+        const auto generation = m_generation;
+        m_secondaryFallback.setSingleShot(true);
+        m_secondaryFallback.setTimerType(Qt::PreciseTimer);
+        m_fallbackConnection = connect(&m_secondaryFallback, &QTimer::timeout, this,
+            [this, generation] {
+                if (!m_active || m_captureDelivered || generation != m_generation) return;
+                auto staged = std::move(m_stagedSecondary);
+                const auto discard = qScopeGuard([&staged] { wipe(staged); });
+                const auto expiry = m_stagedExpiry;
+                clearStagedSecondary();
+                if (staged.isEmpty() || (expiry.isValid()
+                    && expiry <= QDateTime::currentDateTimeUtc())) return;
+                deliverSecondary(std::move(staged), expiry);
+            });
+        m_secondaryFallback.start(int(qMax<qint64>(0, captureWaitMs - m_secondaryClock.elapsed())));
+        return true;
+    }
+    deliverSecondary(value, cookie.expirationDate());
+    return true;
+}
+void RHBrowserLogin::clearStagedSecondary()
+{
+    m_secondaryFallback.stop();
+    disconnect(m_fallbackConnection);
+    // Best effort only: Qt/browser buffers can hold implicitly shared copies.
+    wipe(m_stagedSecondary);
+    m_stagedExpiry = {};
+}
+void RHBrowserLogin::deliverSecondary(QByteArray value, QDateTime expiry)
+{
+    const auto discard = qScopeGuard([&value] { wipe(value); });
+    clearStagedSecondary();
     m_captureDelivered = true;
     m_poll.stop();
     m_resetTimeout.stop();
     disconnect(m_cookieConnection);
+    disconnect(m_cookieRemovedConnection);
     // Keep the QML-owned profile and active state alive while the C++ consumer
     // verifies and stores the token. Only its finish()/cancel() closes the view.
     const auto handler = m_handler;
-    if (handler) handler(cookie.value(), cookie.expirationDate());
-    return true;
+    if (handler) handler(std::move(value), expiry);
 }
 void RHBrowserLogin::androidPollResult(quint64 generation, const QByteArray &header, bool nativeOk)
 {
