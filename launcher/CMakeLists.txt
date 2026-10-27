@@ -72,8 +72,8 @@ if(ANDROID)
         QT_ANDROID_PACKAGE_SOURCE_DIR "${PROJECT_SOURCE_DIR}/android"
         QT_ANDROID_PACKAGE_NAME "org.qtproject.example.appPublicsTradingInterface"
         QT_ANDROID_APP_NAME "Publics Trading Interface"
-        QT_ANDROID_VERSION_NAME "2.1.2"
-        QT_ANDROID_VERSION_CODE 4
+        QT_ANDROID_VERSION_NAME "3.0.0"
+        QT_ANDROID_VERSION_CODE 5
         QT_ANDROID_MIN_SDK_VERSION 28
         QT_ANDROID_TARGET_SDK_VERSION 36
     )
