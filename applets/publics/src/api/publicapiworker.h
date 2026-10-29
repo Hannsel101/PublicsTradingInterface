@@ -12,17 +12,17 @@
 #include <QString>
 #include <QStringList>
 #include <QUrl>
-#include <QFuture>
+#include <QDeadlineTimer>
+#include <QDateTime>
 #include <QHash>
 #include <QVariantList>
 #include <QVariantMap>
-#include <QtConcurrent>
+
 
 // For Debugging
 #include <QDebug>
 
 // For adding delays to trades
-#include <QEventLoop>
 #include <QTimer>
 
 // Helper structure to bundle results
@@ -30,6 +30,19 @@ struct AccountData {
     QString accountId;
     QString accountType;
     QHash<QString, float> stockShareBalances;
+    bool holdingsLoaded = false;
+};
+
+struct PublicRequestPolicy {
+    int portfolioPauseMs = 500;
+    int symbolPauseMs = 100;
+    int accountPauseMs = 200;
+    int gatewayCooldownMs = 5000;
+    int retryBaseMs = 1000;
+    int retryCapMs = 30000;
+    int maxRetries = 3;
+    int timeoutMs = 30000;
+    qint64 retryDelayMs(int attempt, const QByteArray &retryAfter, const QDateTime &now, quint32 jitterMs) const;
 };
 
 class PublicApiWorkerTest;
@@ -39,8 +52,7 @@ class PublicApiWorker : public QObject {
 public:
     explicit PublicApiWorker(QObject *parent = nullptr)
         : PublicApiWorker(QUrl(QStringLiteral("https://api.public.com/")), parent) {}
-    explicit PublicApiWorker(const QUrl &apiBaseUrl, QObject *parent = nullptr)
-        : QObject(parent), manager(new QNetworkAccessManager(this)), m_apiBaseUrl(apiBaseUrl) {}
+    explicit PublicApiWorker(const QUrl &apiBaseUrl, QObject *parent = nullptr);
 
     Q_PROPERTY(QVariantList tradeResults READ tradeResults NOTIFY tradeResultsChanged FINAL)
     Q_PROPERTY(QString currentTransactionTitle READ currentTransactionTitle NOTIFY currentTransactionTitleChanged FINAL)
@@ -48,11 +60,9 @@ public:
     Q_PROPERTY(bool tradeResultsComplete READ tradeResultsComplete NOTIFY tradeResultsCompleteChanged FINAL)
     Q_PROPERTY(bool tradeResultsBusy READ tradeResultsBusy NOTIFY tradeResultsBusyChanged FINAL)
 
-    /*
-     * Performs a pull of all the available accounts and their base level data such as
-     * ability to buy, sell, and what balance the accounts have.
-     * */
-    void fetchAllSubaccountsConcurrently();
+    // Policy is read from QSettings at construction and can be changed while idle.
+    void setRequestPolicy(const PublicRequestPolicy &policy);
+    PublicRequestPolicy requestPolicy() const { return m_policy; }
 
 
     /*
@@ -115,7 +125,7 @@ private:
     quint64 m_accountLoadGeneration = 0;
 
     /*
-     * List of accounts that can perform a trade
+     * Discovered eligible accounts, including accounts whose holdings failed to load.
      *
      * Each AccountData entry stores its ID, type, and a ticker-to-share-balance
      * map populated from the account portfolio response.
@@ -130,22 +140,24 @@ private:
      * */
     void addAccountToList(QString id,
                           QString accountType = QString(),
-                          const QHash<QString, float> &stockShareBalances = {});
+                          const QHash<QString, float> &stockShareBalances = {},
+                          bool holdingsLoaded = false);
 
-    static QHash<QString, float> stockShareBalancesFromPortfolio(const QByteArray &responseData);
+    static QHash<QString, float> stockShareBalancesFromPortfolio(const QByteArray &responseData, bool *valid = nullptr);
     static QJsonObject orderPayload(const QString &symbol,
                                     const QString &side,
                                     float quantity);
 
 
     /*
-     * Pulls data from multiple accounts in parallel using QFutures and an event loop that runs in
-     * the background
+     * Loads portfolios sequentially with completion-based pacing and bounded GET retries.
      * */
-    void executeConcurrentQueries(const QList<AccountData> &accounts,
-                                  const QString &baseUrl,
-                                  const QString &token,
-                                  quint64 accountLoadGeneration);
+    void fetchAccounts(int attempt = 0);
+    void fetchPortfolio(int index, int attempt, quint64 generation);
+    void reconcileOrder(const QString &accountId, const QString &orderId, int resultIndex, quint64 generation, int attempt = 0);
+    PublicRequestPolicy m_policy;
+    QDeadlineTimer m_cooldown{0};
+    bool m_loadingAccounts = false;
 
     void applyDiscoveredAccounts(const QList<AccountData> &accounts,
                                  quint64 accountLoadGeneration,
@@ -180,14 +192,13 @@ private:
                                  quint64 generation);
 
     void beginTradeResults(const QStringList &symbols, const QString &side, bool isPreflight);
-    void updateTradeResult(int resultIndex, bool success, const QString &message);
+    void updateTradeResult(int resultIndex, bool success, const QString &message, const QString &status = {});
     void startTrades(const QString &input, const QString &side, bool isPreflight);
     void dispatchNextTrade(quint64 generation);
-    void finishTradeStep(int resultIndex, bool success, const QString &message, quint64 generation);
+    void finishTradeStep(int resultIndex, bool success, const QString &message, quint64 generation, const QString &status = {});
     void setCurrentTransactionTitle(const QString &title);
     void setTradeResultsComplete(bool complete);
     QString transactionTitle(const QString &symbol, const QString &side, bool isPreflight) const;
-    QString apiErrorMessage(const QNetworkReply *reply, const QByteArray &responseData) const;
     QStringList m_tradeSymbols;
     QList<AccountData> m_tradeAccounts;
     QString m_tradeSide;

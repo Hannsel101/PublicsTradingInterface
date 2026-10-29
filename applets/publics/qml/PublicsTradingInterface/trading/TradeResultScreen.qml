@@ -48,8 +48,8 @@ Item {
                         Layout.fillWidth: true
                         text: root.resultController.tradeResultsBusy
                               ? qsTr("Waiting for each account and ticker to return a result…")
-                              : qsTr("Every account and ticker has returned a transaction result.")
-                        color: root.resultController.tradeResultsBusy ? Theme.mutedText : Theme.successColor
+                              : qsTr("Processing complete. Review each outcome before submitting again.")
+                        color: Theme.mutedText
                         font.pixelSize: 14
                         wrapMode: Text.WordWrap
                     }
@@ -109,7 +109,7 @@ Item {
 
                             Label {
                                 anchors.centerIn: parent
-                                text: resultDelegate.status === "success" ? "✓" : resultDelegate.status === "failed" ? "!" : "…"
+                                text: resultDelegate.status === "success" ? "✓" : resultDelegate.status === "pending" ? "…" : "!"
                                 color: "white"
                                 font.pixelSize: 22
                                 font.weight: Font.Bold
@@ -132,10 +132,14 @@ Item {
                             Label {
                                 Layout.fillWidth: true
                                 text: resultDelegate.status === "success"
-                                      ? qsTr("Trade success")
+                                      ? qsTr("Request acknowledged")
                                       : resultDelegate.status === "failed"
                                         ? qsTr("Trade failed")
-                                        : qsTr("Pending")
+                                        : resultDelegate.status === "uncertain"
+                                          ? qsTr("Outcome uncertain")
+                                          : resultDelegate.status === "not_submitted"
+                                            ? qsTr("Not submitted")
+                                            : qsTr("Pending")
                                 color: resultDelegate.status === "success"
                                        ? Theme.successColor
                                        : resultDelegate.status === "failed"
@@ -151,8 +155,7 @@ Item {
                                 color: Theme.secondaryText
                                 font.pixelSize: 13
                                 wrapMode: Text.WordWrap
-                                maximumLineCount: 3
-                                elide: Text.ElideRight
+                                textFormat: Text.PlainText
                             }
                         }
                     }
