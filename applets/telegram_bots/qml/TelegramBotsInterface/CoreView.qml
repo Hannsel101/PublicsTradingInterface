@@ -150,7 +150,10 @@ Item {
                 controller: root.controller
                 Component.onCompleted: open()
                 onClosed: exitLoader.active = false
-                onConfirmed: root.leaveConfirmed()
+                onConfirmed: {
+                    exitLoader.active = false
+                    root.leaveConfirmed()
+                }
             }
         }
     }

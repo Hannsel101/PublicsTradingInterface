@@ -6,9 +6,24 @@ Dialog {
     id: dialog
     objectName: "stopBotsExitDialog"
     required property QtObject controller
+    property bool waitingForStop: false
+    readonly property bool stopComplete: controller !== null && !controller.hasRunningBots && !controller.busy
+    function finishIfStopped() {
+        if (waitingForStop && stopComplete) {
+            waitingForStop = false
+            confirmed()
+        }
+    }
+    function beginStop() {
+        if (waitingForStop || controller === null || controller.busy) return
+        waitingForStop = true
+        controller.stopAll()
+        Qt.callLater(finishIfStopped)
+    }
+    onStopCompleteChanged: if (waitingForStop) Qt.callLater(finishIfStopped)
     signal confirmed()
     modal: true
-    closePolicy: Popup.CloseOnEscape
+    closePolicy: waitingForStop ? Popup.NoAutoClose : Popup.CloseOnEscape
     title: qsTr("Stop bots before leaving")
     palette.window: Theme.cardColor
     palette.windowText: Theme.primaryText
@@ -35,17 +50,17 @@ Dialog {
         Button {
             objectName: "cancelStopBotsExit"
             text: qsTr("Cancel")
+            enabled: !dialog.waitingForStop
             DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
         }
         BotActionButton {
             objectName: "confirmStopBotsExit"
             text: qsTr("Confirm")
             actionColor: Theme.stopAction
-            enabled: dialog.controller !== null && !dialog.controller.busy
-            DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+            enabled: dialog.controller !== null && !dialog.controller.busy && !dialog.waitingForStop
+            DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+            onClicked: dialog.beginStop()
         }
     }
-    onAccepted: {
-        if (dialog.controller !== null && dialog.controller.stopAll()) dialog.confirmed()
-    }
+
 }

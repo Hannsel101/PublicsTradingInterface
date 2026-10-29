@@ -18,8 +18,15 @@ publics_add_test(test_launcher unit/test_launcher.cpp launcher_controller)
 if(TARGET telegram_bots_ui)
     publics_add_test(test_telegrambotstore unit/test_telegrambotstore.cpp telegram_bots_storage OpenSSL::Crypto)
     publics_add_test(test_telegrambotruntime unit/test_telegrambotruntime.cpp telegram_bots_runtime)
+    publics_add_test(test_telegramwebhookhost unit/test_telegramwebhookhost.cpp telegram_bots_runtime)
+    publics_add_test(test_telegramwebhookagent unit/test_telegramwebhookagent.cpp telegram_bots_runtime)
+    set_tests_properties(test_telegramwebhookhost test_telegramwebhookagent PROPERTIES TIMEOUT 240)
     publics_add_test(test_telegrambotscontroller unit/test_telegrambotscontroller.cpp
         telegram_bots_backend Qt6::Network
+    )
+    add_dependencies(test_telegrambotscontroller test_telegramwebhookagent)
+    target_compile_definitions(test_telegrambotscontroller PRIVATE
+        "PUBLICS_WEBHOOK_TEST_EXECUTABLE=\"$<TARGET_FILE:test_telegramwebhookagent>\""
     )
     publics_add_test(test_telegrambotsapplet unit/test_telegrambotsapplet.cpp
         telegram_bots_applet telegram_bots_backend launcher_controller telegram_bots_ui telegram_bots_uiplugin Qt6::Quick

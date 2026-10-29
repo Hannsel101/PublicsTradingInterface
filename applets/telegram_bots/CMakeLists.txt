@@ -7,9 +7,12 @@ target_link_libraries(telegram_bots_storage PUBLIC Qt6::Core
 )
 
 qt_add_library(telegram_bots_applet STATIC src/telegrambotsapplet.cpp src/telegrambotsapplet.h)
-qt_add_library(telegram_bots_runtime STATIC src/telegrambotruntime.cpp src/telegrambotruntime.h)
+find_package(Qt6 6.12 REQUIRED COMPONENTS HttpServer GLOBAL)
+qt_add_library(telegram_bots_runtime STATIC src/telegramagent.cpp src/telegramagent.h
+    src/telegrambotruntime.cpp src/telegrambotruntime.h
+    src/telegramwebhookhost.cpp src/telegramwebhookhost.h)
 target_include_directories(telegram_bots_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(telegram_bots_runtime PUBLIC Qt6::Network)
+target_link_libraries(telegram_bots_runtime PUBLIC Qt6::Network PRIVATE Qt6::HttpServer)
 qt_add_library(telegram_bots_backend STATIC src/telegrambotscontroller.cpp src/telegrambotscontroller.h)
 target_include_directories(telegram_bots_backend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(telegram_bots_backend PUBLIC telegram_bots_storage telegram_bots_runtime)

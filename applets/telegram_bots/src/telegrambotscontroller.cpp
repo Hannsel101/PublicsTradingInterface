@@ -21,7 +21,7 @@ TelegramBotsController::~TelegramBotsController()
 bool TelegramBotsController::hasRunningBots() const
 {
     for (const auto &runtime : m_runtimes)
-        if (runtime && (runtime->active() || runtime->starting())) return true;
+        if (runtime && (runtime->active() || runtime->starting() || runtime->stopping())) return true;
     return false;
 }
 
@@ -29,13 +29,14 @@ bool TelegramBotsController::canStart() const
 {
     const auto runtime = m_runtimes.value(m_selectedId);
     return !m_busy && !m_stoppingAll && !m_selectedId.isEmpty()
-        && (!runtime || (!runtime->active() && !runtime->starting()));
+        && (!runtime || (!runtime->active() && !runtime->starting() && !runtime->stopping()));
 }
 
 bool TelegramBotsController::canStop() const
 {
     const auto runtime = m_runtimes.value(m_selectedId);
-    return !m_busy && !m_stoppingAll && runtime && (runtime->active() || runtime->starting());
+    return !m_busy && !m_stoppingAll && runtime && !runtime->stopping()
+        && (runtime->active() || runtime->starting());
 }
 
 QVariantList TelegramBotsController::bots() const
@@ -45,8 +46,9 @@ QVariantList TelegramBotsController::bots() const
     for (const auto &entry : m_entries) {
         const auto runtime = m_runtimes.value(entry.id);
         rows.append(QVariantMap{{QStringLiteral("id"), entry.id}, {QStringLiteral("nickname"), entry.nickname},
-                                {QStringLiteral("active"), runtime && runtime->active()},
-                                {QStringLiteral("starting"), runtime && runtime->starting()}});
+                                {QStringLiteral("active"), runtime && runtime->active() && runtime->healthy()},
+                                {QStringLiteral("starting"), runtime && runtime->starting()},
+                                {QStringLiteral("stopping"), runtime && runtime->stopping()}});
     }
     return rows;
 }

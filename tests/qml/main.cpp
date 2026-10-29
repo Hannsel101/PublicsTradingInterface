@@ -142,10 +142,10 @@ public slots:
             property int saveCalls: 0
             property int startCalls: 0
             property int stopAllCalls: 0
-            readonly property bool hasRunningBots: bots.some(row => row.active || row.starting)
+            readonly property bool hasRunningBots: bots.some(row => row.active || row.starting || row.stopping)
             readonly property var selected: bots.find(row => row.id === selectedId)
-            readonly property bool canStart: !busy && !!selected && !selected.active && !selected.starting
-            readonly property bool canStop: !busy && !!selected && (selected.active || selected.starting)
+            readonly property bool canStart: !busy && !!selected && !selected.active && !selected.starting && !selected.stopping
+            readonly property bool canStop: !busy && !!selected && !selected.stopping && (selected.active || selected.starting)
             signal botSaved(string id)
             function reset() {
                 bots = []; selectedId = ""; busy = false; error = ""; holdSave = false

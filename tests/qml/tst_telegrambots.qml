@@ -11,6 +11,47 @@ TestCase {
     width: 1000
     height: 700
     property var appWindow: null
+    Component {
+        id: delayedStopController
+        QtObject {
+            property bool busy: false
+            property bool hasRunningBots: true
+            property var bots: []
+            property string selectedId: ""
+            property string error: ""
+            property bool canStart: false
+            property bool canStop: true
+            property int stopCalls: 0
+            signal botSaved(string id)
+            function clearError() { error = "" }
+            function stopAll() { stopCalls++; return false }
+            function finishStop() { hasRunningBots = false }
+        }
+    }
+
+    function test_exitWaitsForAsynchronousTunnelShutdown() {
+        const view = openConsole()
+        const controller = createTemporaryObject(delayedStopController, testCase)
+        verify(controller !== null)
+        view.controller = controller
+        view.requestLeave()
+        let dialog = findChild(view, "stopBotsExitDialog")
+        verify(dialog !== null)
+        tryCompare(dialog, "visible", true)
+        mouseClick(findChild(dialog, "confirmStopBotsExit"))
+        tryCompare(controller, "stopCalls", 1)
+        compare(Launcher.activeAppletId, "telegram_bots")
+        tryVerify(() => {
+            const pending = findChild(view, "stopBotsExitDialog")
+            return pending !== null && pending.visible
+        }, 1000)
+        dialog = findChild(view, "stopBotsExitDialog")
+        compare(findChild(dialog, "confirmStopBotsExit").enabled, false)
+        compare(findChild(dialog, "cancelStopBotsExit").enabled, false)
+        controller.finishStop()
+        tryCompare(Launcher, "activeAppletId", "")
+        compare(controller.stopCalls, 1)
+    }
 
     function initTestCase() {
         if (Qt.platform.os !== "windows" && Qt.platform.os !== "osx")

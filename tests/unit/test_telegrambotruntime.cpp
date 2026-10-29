@@ -68,7 +68,409 @@ class TestTelegramBotRuntime final : public QObject
             {"from", QJsonObject{{"id", 42}, {"is_bot", bot}, {"first_name", "Human"}}},
             {"chat", QJsonObject{{"id", 42}, {"type", type}, {"first_name", "Human"}}}}}};
     }
+    static QJsonObject statusUpdate(qint64 id)
+    {
+        auto incoming = update(id);
+        auto message = incoming["message"].toObject(); message["text"] = "/status";
+        incoming["message"] = message;
+        return incoming;
+    }
+    static void acknowledge(const BotServer::Request &r)
+    {
+        BotServer::answer(r, QJsonObject{{"message_id", 90}, {"date", 1700000001},
+            {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}});
+    }
 private slots:
+    void healthSuccessUsesInjectedLocalEndpoint()
+    {
+        BotServer server;
+        BotServer health;
+        TelegramBotRuntime runtime(server.root(), health.root().resolved(QUrl("/health")));
+        QVERIFY(!runtime.healthy());
+        runtime.start(QStringLiteral("123456:synthetic"));
+        QTRY_COMPARE(server.requests.size(), 1);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        QVERIFY(runtime.healthy()); // Legacy activation, no startup health request.
+        QCOMPARE(health.requests.size(), 0);
+        auto incoming = update(10);
+        auto message = incoming["message"].toObject(); message["text"] = "/status";
+        incoming["message"] = message;
+        BotServer::answer(server.requests[1], QJsonArray{incoming});
+        QTRY_COMPARE_WITH_TIMEOUT(health.requests.size(), 1, 1000);
+        QCOMPARE(health.requests[0].method, QByteArray("GET"));
+        QCOMPARE(health.requests[0].path, QByteArray("/health"));
+        QCOMPARE(server.requests.size(), 2); // No optimistic Telegram reply.
+        BotServer::raw(health.requests[0], "ok", 204);
+        QTRY_COMPARE(server.requests.size(), 3);
+        QCOMPARE(server.requests[2].body.value("text").toString(), QStringLiteral("Active"));
+        QVERIFY(runtime.healthy());
+        runtime.stop();
+        QVERIFY(!runtime.healthy());
+    }
+    void healthTimeoutSettlesExactlyOnce()
+    {
+        BotServer server;
+        BotServer health;
+        TelegramBotRuntime runtime(server.root(), health.root().resolved(QUrl("/health")));
+        runtime.start(QStringLiteral("123456:synthetic"));
+        QTRY_COMPARE(server.requests.size(), 1);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        auto incoming = update(10);
+        auto message = incoming["message"].toObject(); message["text"] = "status";
+        incoming["message"] = message;
+        QElapsedTimer elapsed; elapsed.start();
+        BotServer::answer(server.requests[1], QJsonArray{incoming});
+        QTRY_COMPARE(health.requests.size(), 1);
+        QSignalSpy changes(&runtime, &TelegramBotRuntime::stateChanged);
+        QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 3, 3800);
+        QVERIFY(elapsed.elapsed() >= 2900);
+        QVERIFY(elapsed.elapsed() < 3800);
+        QCOMPARE(server.requests[2].body.value("text").toString(), QStringLiteral("Inactive"));
+        QVERIFY(runtime.active()); // Transport stays cancellable and recoverable.
+        QVERIFY(!runtime.healthy());
+        QCOMPARE(changes.size(), 1);
+        BotServer::raw(health.requests[0], "late success");
+        QTest::qWait(250);
+        QCOMPARE(server.requests.size(), 3); // No duplicate timeout/error/finished reply.
+        QCOMPARE(changes.size(), 1);
+        QTRY_VERIFY(!health.requests[0].socket || health.requests[0].socket->state() == QAbstractSocket::UnconnectedState);
+        runtime.stop();
+    }
+    void rejectsUnsafeHealthEndpoints_data()
+    {
+        QTest::addColumn<QString>("url");
+        for (const auto *url : {"http://example.com/health", "https://localhost/health",
+                 "http://127.0.0.1.example.com/health", "http://user:password@localhost/health",
+                 "http://localhost/health?secret=1", "http://localhost/health#fragment",
+                 "file:///health"})
+            QTest::newRow(url) << QString::fromLatin1(url);
+    }
+    void rejectsUnsafeHealthEndpoints()
+    {
+        QFETCH(QString, url);
+        BotServer server;
+        TelegramBotRuntime runtime(server.root(), QUrl(url));
+        QSignalSpy errors(&runtime, &TelegramBotRuntime::errorOccurred);
+        runtime.start(QStringLiteral("123456:synthetic"));
+        QVERIFY(!runtime.starting());
+        QVERIFY(!runtime.active());
+        QVERIFY(!runtime.healthy());
+        QCOMPARE(errors.size(), 1);
+        QTest::qWait(50);
+        QCOMPARE(server.requests.size(), 0);
+    }
+    void healthFailureRecoversWithoutRestart_data()
+    {
+        QTest::addColumn<int>("mode");
+        QTest::newRow("http-error") << 0;
+        QTest::newRow("early-network-error") << 1;
+        QTest::newRow("redirect") << 2;
+        QTest::newRow("oversized-body") << 3;
+        QTest::newRow("truncated-2xx") << 4;
+    }
+    void healthFailureRecoversWithoutRestart()
+    {
+        QFETCH(int, mode);
+        BotServer server;
+        BotServer health;
+        BotServer redirectTarget;
+        TelegramBotRuntime runtime(server.root(), health.root().resolved(QUrl("/health")));
+        QSignalSpy errors(&runtime, &TelegramBotRuntime::errorOccurred);
+        runtime.start(QStringLiteral("123456:synthetic"));
+        QTRY_COMPARE(server.requests.size(), 1);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        QSignalSpy changes(&runtime, &TelegramBotRuntime::stateChanged);
+        BotServer::answer(server.requests[1], QJsonArray{statusUpdate(10)});
+        QTRY_COMPARE(health.requests.size(), 1);
+        QElapsedTimer elapsed; elapsed.start();
+        const auto failed = health.requests[0];
+        if (mode == 0) BotServer::raw(failed, "unavailable", 503);
+        else if (mode == 1) {
+            failed.socket->write("HTTP/1.1 500 Failure\r\nContent-Length: 20\r\n\r\nx");
+            failed.socket->disconnectFromHost();
+        } else if (mode == 2) BotServer::raw(failed, {}, 302,
+            "Location: " + redirectTarget.root().toEncoded() + "/stolen\r\n");
+        else if (mode == 3) BotServer::raw(failed, QByteArray(64 * 1024 + 1, 'x'));
+        else {
+            failed.socket->write("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nx");
+            failed.socket->disconnectFromHost();
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 3, 1000);
+        QVERIFY(elapsed.elapsed() < 1500); // Errors settle before the deadline.
+        QCOMPARE(server.requests[2].body.value("text").toString(), QStringLiteral("Inactive"));
+        QVERIFY(runtime.active());
+        QVERIFY(!runtime.healthy());
+        QCOMPARE(changes.size(), 1);
+        QCOMPARE(errors.size(), 0); // Local health is not a Telegram transport failure.
+        acknowledge(server.requests[2]);
+        QTRY_COMPARE(server.requests.size(), 4);
+        BotServer::answer(server.requests[3], QJsonArray{statusUpdate(11)});
+        QTRY_COMPARE(health.requests.size(), 2);
+        BotServer::raw(health.requests[1], "healthy", 201);
+        QTRY_COMPARE(server.requests.size(), 5);
+        QCOMPARE(server.requests[4].body.value("text").toString(), QStringLiteral("Active"));
+        QVERIFY(runtime.healthy());
+        QCOMPARE(changes.size(), 2);
+        acknowledge(server.requests[4]);
+        QTRY_COMPARE(server.requests.size(), 6);
+        QTest::qWait(3100); // Retired error timer cannot overwrite recovered health.
+        QCOMPARE(changes.size(), 2);
+        QCOMPARE(server.requests.size(), 6);
+        QCOMPARE(redirectTarget.requests.size(), 0);
+        runtime.stop();
+    }
+    void healthDrippingBodyStillHasAbsoluteDeadline()
+    {
+        BotServer server;
+        BotServer health;
+        TelegramBotRuntime runtime(server.root(), health.root().resolved(QUrl("/health")));
+        runtime.start(QStringLiteral("123456:synthetic"));
+        QTRY_COMPARE(server.requests.size(), 1);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        BotServer::answer(server.requests[1], QJsonArray{statusUpdate(10)});
+        QTRY_COMPARE(health.requests.size(), 1);
+        const auto socket = health.requests[0].socket;
+        socket->write("HTTP/1.1 200 OK\r\nContent-Length: 10000\r\n\r\nx");
+        QTimer drip;
+        connect(&drip, &QTimer::timeout, &health, [socket] {
+            if (socket && socket->state() == QAbstractSocket::ConnectedState) socket->write("x");
+        });
+        drip.start(50);
+        QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 3, 3800);
+        QCOMPARE(server.requests[2].body.value("text").toString(), QStringLiteral("Inactive"));
+        QVERIFY(!runtime.healthy());
+        runtime.stop();
+    }
+    void healthDeadlineRejectsLateCompletionAfterEventLoopStall()
+    {
+        BotServer server;
+        BotServer health;
+        TelegramBotRuntime runtime(server.root(), health.root().resolved(QUrl("/health")));
+        runtime.start(QStringLiteral("123456:synthetic"));
+        QTRY_COMPARE(server.requests.size(), 1);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        BotServer::answer(server.requests[1], QJsonArray{statusUpdate(10)});
+        QTRY_COMPARE(health.requests.size(), 1);
+        BotServer::raw(health.requests[0], "ok");
+        QThread::msleep(3100); // Both network completion and timer are ready together.
+        QTRY_COMPARE(server.requests.size(), 3);
+        QCOMPARE(server.requests[2].body.value("text").toString(), QStringLiteral("Inactive"));
+        QVERIFY(!runtime.healthy());
+        QTest::qWait(150);
+        QCOMPARE(server.requests.size(), 3);
+        runtime.stop();
+    }
+    void healthPendingCancellation_data()
+    {
+        QTest::addColumn<int>("action");
+        QTest::newRow("stop") << 0;
+        QTest::newRow("restart") << 1;
+        QTest::newRow("destroy") << 2;
+    }
+    void healthPendingCancellation()
+    {
+        QFETCH(int, action);
+        BotServer server;
+        BotServer health;
+        auto runtime = std::make_unique<TelegramBotRuntime>(server.root(), health.root().resolved(QUrl("/health")));
+        runtime->start(QStringLiteral("123456:synthetic"));
+        QTRY_COMPARE(server.requests.size(), 1);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        BotServer::answer(server.requests[1], QJsonArray{statusUpdate(10)});
+        QTRY_COMPARE(health.requests.size(), 1);
+        const auto stale = health.requests[0];
+        if (action == 0) {
+            runtime->stop();
+            QVERIFY(!runtime->healthy());
+            QVERIFY(!runtime->active());
+        } else if (action == 1) {
+            runtime->start(QStringLiteral("123456:replacement"));
+            QTRY_COMPARE(server.requests.size(), 3);
+            BotServer::answer(server.requests[2], BotServer::bot());
+            QTRY_COMPARE(server.requests.size(), 4);
+            QVERIFY(runtime->healthy());
+        } else runtime.reset();
+        QTRY_VERIFY(!stale.socket || stale.socket->state() == QAbstractSocket::UnconnectedState);
+        BotServer::raw(stale, "late");
+        QTest::qWait(3200);
+        QCOMPARE(server.requests.size(), action == 1 ? 4 : 2);
+        if (action == 1) QVERIFY(runtime->healthy());
+    }
+    void healthSignalReentrancy_data()
+    {
+        QTest::addColumn<int>("action");
+        QTest::newRow("stop") << 0;
+        QTest::newRow("restart") << 1;
+        QTest::newRow("delete") << 2;
+    }
+    void healthSignalReentrancy()
+    {
+        QFETCH(int, action);
+        BotServer server;
+        BotServer health;
+        QPointer<TelegramBotRuntime> runtime = new TelegramBotRuntime(server.root(), health.root().resolved(QUrl("/health")));
+        runtime->start(QStringLiteral("123456:synthetic"));
+        QTRY_COMPARE(server.requests.size(), 1);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        BotServer::answer(server.requests[1], QJsonArray{statusUpdate(10)});
+        QTRY_COMPARE(health.requests.size(), 1);
+        bool acted = false;
+        connect(runtime, &TelegramBotRuntime::stateChanged, &server, [&] {
+            if (acted || !runtime || runtime->healthy()) return;
+            acted = true;
+            if (action == 0) runtime->stop();
+            else if (action == 1) runtime->start(QStringLiteral("123456:replacement"));
+            else delete runtime.data();
+        });
+        BotServer::raw(health.requests[0], "down", 503);
+        QTRY_VERIFY(acted);
+        QTest::qWait(200);
+        QCOMPARE(server.requests.size(), action == 1 ? 3 : 2);
+        if (action == 1) QCOMPARE(server.requests[2].path, QByteArray("/bot123456:replacement/getMe"));
+        delete runtime.data();
+    }
+    void statusCommandReplies_data()
+    {
+        QTest::addColumn<QString>("command");
+        QTest::addColumn<QString>("expectedText");
+        QTest::newRow("status") << "status" << "Active";
+        QTest::newRow("slash-status") << "/status" << "Active";
+        QTest::newRow("surrounding-whitespace") << " \tstatus\n" << "Active";
+        QTest::newRow("unknown-command") << "help" << "Message received.";
+        QTest::newRow("not-a-command-prefix") << "status now" << "Message received.";
+        QTest::newRow("not-a-substring") << "mystatus" << "Message received.";
+        QTest::newRow("other-bot") << "/status@other_bot" << "Message received.";
+    }
+    void statusCommandReplies()
+    {
+        QFETCH(QString, command);
+        QFETCH(QString, expectedText);
+        BotServer server;
+        BotServer health;
+        health.handler = [](const BotServer::Request &r) { BotServer::raw(r, "ok"); };
+        TelegramBotRuntime runtime(server.root(), health.root().resolved(QUrl("/health")));
+        QSignalSpy errors(&runtime, &TelegramBotRuntime::errorOccurred);
+        runtime.start(QStringLiteral("123456:synthetic"));
+        QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 1, 1000);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 2, 1000);
+        auto incoming = update(10);
+        auto message = incoming.value("message").toObject();
+        message["text"] = command;
+        incoming["message"] = message;
+        BotServer::answer(server.requests[1], QJsonArray{incoming, incoming});
+        QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 3, 1000);
+        const auto sent = server.requests[2];
+        QCOMPARE(sent.method, QByteArray("POST"));
+        QCOMPARE(sent.path, QByteArray("/bot123456:synthetic/sendMessage"));
+        QCOMPARE(sent.body, (QJsonObject{{"chat_id", 42}, {"text", expectedText}}));
+        // Provider-shaped receipt: text echo is optional, not copied from the request.
+        BotServer::answer(sent, QJsonObject{{"message_id", 90}, {"date", 1700000001},
+            {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}});
+        QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 4, 1000);
+        QVERIFY(server.requests[3].path.endsWith("getUpdates"));
+        QCOMPARE(server.requests[3].body.value("offset").toInteger(), 11);
+        QVERIFY(runtime.active());
+        QCOMPARE(errors.size(), 0);
+        runtime.stop();
+        QTest::qWait(300);
+        QCOMPARE(server.requests.size(), 4);
+    }
+    void statusReplyReceiptMatchesActualReply_data()
+    {
+        QTest::addColumn<QString>("receiptText");
+        QTest::addColumn<bool>("accepted");
+        QTest::newRow("status-echo") << "Active" << true;
+        QTest::newRow("stale-acknowledgement-echo") << "Message received." << false;
+    }
+    void statusReplyReceiptMatchesActualReply()
+    {
+        QFETCH(QString, receiptText);
+        QFETCH(bool, accepted);
+        BotServer server;
+        BotServer health;
+        health.handler = [](const BotServer::Request &r) { BotServer::raw(r, "ok"); };
+        TelegramBotRuntime runtime(server.root(), health.root().resolved(QUrl("/health")));
+        QSignalSpy errors(&runtime, &TelegramBotRuntime::errorOccurred);
+        runtime.start(QStringLiteral("123456:synthetic"));
+        QTRY_COMPARE(server.requests.size(), 1);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        auto incoming = update(10);
+        auto message = incoming.value("message").toObject();
+        message["text"] = "status";
+        incoming["message"] = message;
+        BotServer::answer(server.requests[1], QJsonArray{incoming});
+        QTRY_COMPARE(server.requests.size(), 3);
+        QCOMPARE(server.requests[2].body.value("text").toString(), QStringLiteral("Active"));
+        BotServer::answer(server.requests[2], QJsonObject{{"message_id", 90}, {"date", 1700000001},
+            {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}, {"text", receiptText}});
+        if (accepted) {
+            QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 4, 1000);
+            QVERIFY(server.requests[3].path.endsWith("getUpdates"));
+            QVERIFY(runtime.active());
+            QCOMPARE(errors.size(), 0);
+        } else {
+            QTRY_COMPARE_WITH_TIMEOUT(errors.size(), 1, 1000);
+            QVERIFY(errors[0][0].toString().contains("uncertain", Qt::CaseInsensitive));
+            QVERIFY(!runtime.active());
+            QTest::qWait(300);
+            QCOMPARE(server.requests.size(), 3);
+        }
+        runtime.stop();
+    }
+    void queuedStatusRepliesKeepTheirOriginAndText()
+    {
+        BotServer server;
+        BotServer health;
+        health.handler = [](const BotServer::Request &r) { BotServer::raw(r, "ok"); };
+        TelegramBotRuntime runtime(server.root(), health.root().resolved(QUrl("/health")));
+        QSignalSpy errors(&runtime, &TelegramBotRuntime::errorOccurred);
+        runtime.start(QStringLiteral("123456:synthetic"));
+        QTRY_COMPARE(server.requests.size(), 1);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        const auto command = [](qint64 id, qint64 chat, const QString &text) {
+            auto incoming = update(id);
+            auto message = incoming.value("message").toObject();
+            message["text"] = text;
+            auto sender = message.value("from").toObject(); sender["id"] = chat;
+            auto origin = message.value("chat").toObject(); origin["id"] = chat;
+            message["from"] = sender;
+            message["chat"] = origin;
+            incoming["message"] = message;
+            return incoming;
+        };
+        const auto first = command(10, 42, QStringLiteral("status"));
+        BotServer::answer(server.requests[1], QJsonArray{
+            command(12, 84, QStringLiteral("/status")), first,
+            command(11, 42, QStringLiteral("hello")), first});
+        const QList<QPair<qint64, QString>> expected{
+            {42, QStringLiteral("Active")}, {42, QStringLiteral("Message received.")},
+            {84, QStringLiteral("Active")}};
+        for (int i = 0; i < expected.size(); ++i) {
+            QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), i + 3, 1000);
+            const auto sent = server.requests[i + 2];
+            QVERIFY(sent.path.endsWith("sendMessage"));
+            QCOMPARE(sent.body, (QJsonObject{{"chat_id", expected[i].first}, {"text", expected[i].second}}));
+            // Explicit independent provider receipt, including the matching expected text.
+            BotServer::answer(sent, QJsonObject{{"message_id", 90 + i}, {"date", 1700000001},
+                {"chat", QJsonObject{{"id", expected[i].first}, {"type", "private"}}},
+                {"text", expected[i].second}});
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 6, 1000);
+        QVERIFY(server.requests[5].path.endsWith("getUpdates"));
+        QCOMPARE(server.requests[5].body.value("offset").toInteger(), 13);
+        QCOMPARE(errors.size(), 0);
+        runtime.stop();
+    }
     void rejectsUnsafeEndpointsAndTokens_data()
     {
         QTest::addColumn<QString>("url");

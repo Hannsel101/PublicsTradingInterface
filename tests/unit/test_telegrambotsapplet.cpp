@@ -25,6 +25,54 @@ class TelegramBotsAppletTest final : public QObject
 {
     Q_OBJECT
 private slots:
+    void healthFailureShowsNotActiveAndRecoveryRestoresBadge()
+    {
+        QQmlApplicationEngine engine;
+        ControllerBotServer server;
+        ControllerBotServer health;
+        health.healthStatus = 503;
+        AppletMemoryBotStore store;
+        TelegramBotsController controller(&store, [&server, &health](QObject *owner) {
+            return new TelegramBotRuntime(server.root(), health.healthUrl(), owner);
+        });
+        TelegramBotsApplet telegram(&controller);
+        LauncherController launcher(engine, {&telegram});
+        QVERIFY(launcher.activate(telegram.id()));
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import TelegramBotsInterface
+            BotListRow { width: 360; record: TelegramBots.bots[0] }
+        )qml", QUrl(QStringLiteral("qrc:/health-row-test.qml")));
+        std::unique_ptr<QObject> row(component.create());
+        QVERIFY2(row, qPrintable(component.errorString()));
+        auto *label = row->findChild<QObject *>(QStringLiteral("botActivityText"));
+        auto *badge = row->findChild<QObject *>(QStringLiteral("botActivityBadge"));
+        QVERIFY(label && badge);
+        QCOMPARE(label->property("text").toString(), QStringLiteral("Not Active"));
+        controller.selectBot(QStringLiteral("one"));
+        QVERIFY(controller.startBot());
+        QTRY_COMPARE(label->property("text").toString(), QStringLiteral("Active"));
+        const auto runningColor = badge->property("color");
+        QTRY_COMPARE(server.polls.size(), 1);
+        server.sendStatus(10);
+        QTRY_COMPARE_WITH_TIMEOUT(label->property("text").toString(), QStringLiteral("Not Active"), 1500);
+        QVERIFY(!badge->property("active").toBool());
+        QVERIFY(!badge->property("motionRunning").toBool());
+        QVERIFY(badge->property("color") != runningColor);
+        QVERIFY(controller.hasRunningBots());
+        QVERIFY(!launcher.canReturnHome()); // Health failure never bypasses the Stop guard.
+        QTRY_COMPARE(server.messages.size(), 1);
+        QCOMPARE(server.messages[0].value("text").toString(), QStringLiteral("Inactive"));
+        health.healthStatus = 200;
+        QTRY_COMPARE(server.polls.size(), 1);
+        server.sendStatus(11);
+        QTRY_COMPARE_WITH_TIMEOUT(label->property("text").toString(), QStringLiteral("Active"), 1500);
+        QCOMPARE(badge->property("color"), runningColor);
+        QVERIFY(controller.stopAll());
+        QTRY_COMPARE(label->property("text").toString(), QStringLiteral("Not Active"));
+        QVERIFY(launcher.canReturnHome());
+    }
     void consoleLoadsWithoutAnyBrokerageModule()
     {
         QQmlApplicationEngine engine;
