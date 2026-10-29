@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>Robot head</title>
+  <g stroke="#00D2FF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M64 27v15" fill="none"/>
+    <circle cx="64" cy="20" r="6" fill="#00D2FF" stroke="none"/>
+    <rect x="17" y="61" width="13" height="25" rx="5" fill="#003a4b"/>
+    <rect x="98" y="61" width="13" height="25" rx="5" fill="#003a4b"/>
+    <rect x="28" y="42" width="72" height="66" rx="16" fill="#101b24"/>
+    <path d="M44 93h40" fill="none"/>
+  </g>
+  <circle cx="48" cy="67" r="7" fill="#00D2FF"/>
+  <circle cx="80" cy="67" r="7" fill="#00D2FF"/>
+  <path d="M45 65h2m30 0h2" stroke="#f7f8f8" stroke-width="3" stroke-linecap="round"/>
+</svg>

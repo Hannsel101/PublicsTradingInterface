@@ -7,6 +7,7 @@ import RobinHoodInterface as RH
 ApplicationWindow {
     id: launcherWindow
     property bool robinHoodAvailable: Qt.platform.os !== "android"
+    property bool telegramBotsAvailable: Qt.platform.os === "windows" || Qt.platform.os === "osx"
 
     width: 1000
     height: 700
@@ -22,6 +23,7 @@ ApplicationWindow {
 
         ScrollView {
             id: home
+            objectName: "appletChooser"
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
@@ -65,6 +67,16 @@ ApplicationWindow {
                     onClicked: Launcher.activate("robin_hood")
                 }
                 AppletChoice {
+                    objectName: "openTelegramBots"
+                    appletName: qsTr("Telegram Bots")
+                    stripeColor: "#00D2FF"
+                    artworkSource: visible ? "qrc:/qt/qml/TelegramBotsInterface/assets/robot-head.svg" : ""
+                    Layout.fillWidth: true
+                    visible: launcherWindow.telegramBotsAvailable
+                    enabled: launcherWindow.telegramBotsAvailable
+                    onClicked: Launcher.activate("telegram_bots")
+                }
+                AppletChoice {
                     objectName: "openWellsFargo"
                     appletName: qsTr("Wells Fargo")
                     stripeColor: "#c5303e"
@@ -106,8 +118,14 @@ ApplicationWindow {
                         text: qsTr("← Applets")
                         Layout.preferredWidth: 100
                         Layout.preferredHeight: 44
-                        enabled: Launcher.canReturnHome
-                        onClicked: Launcher.returnHome()
+                        enabled: Launcher.canReturnHome || (Launcher.activeAppletId === "telegram_bots"
+                                 && telegramBotsLoader.status === Loader.Ready
+                                 && telegramBotsLoader.item !== null && telegramBotsLoader.item.canRequestLeave)
+                        onClicked: {
+                            if (Launcher.activeAppletId === "telegram_bots" && telegramBotsLoader.status === Loader.Ready)
+                                telegramBotsLoader.item.requestLeave()
+                            else Launcher.returnHome()
+                        }
                         background: Rectangle {
                             radius: 6
                             color: backButton.pressed ? "#292b31" : "#202126"
@@ -121,7 +139,9 @@ ApplicationWindow {
                         }
                     }
                     Label {
-                        text: Launcher.activeAppletId === "robin_hood"
+                        objectName: "activeAppletTitle"
+                        text: Launcher.activeAppletId === "telegram_bots" ? qsTr("Telegram Bots")
+                              : Launcher.activeAppletId === "robin_hood"
                               ? qsTr("Robin Hood") : qsTr("Publics Trading")
                         color: "#f7f8f8"
                         font.bold: true
@@ -147,6 +167,19 @@ ApplicationWindow {
                 active: Launcher.activeAppletId === "robin_hood"
                 visible: active
                 sourceComponent: Component { RH.CoreView {} }
+            }
+            Loader {
+                id: telegramBotsLoader
+                objectName: "telegramBotsLoader"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                active: launcherWindow.telegramBotsAvailable && Launcher.activeAppletId === "telegram_bots"
+                visible: active
+                source: active ? "qrc:/qt/qml/TelegramBotsInterface/CoreView.qml" : ""
+            }
+            Connections {
+                target: telegramBotsLoader.status === Loader.Ready ? telegramBotsLoader.item : null
+                function onLeaveConfirmed() { Launcher.returnHome() }
             }
         }
     }

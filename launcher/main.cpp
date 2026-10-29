@@ -7,10 +7,16 @@
 #include "launchercontroller.h"
 #include "publicsapplet.h"
 #include "robinhoodapplet.h"
+#ifdef PUBLICS_HAS_TELEGRAM_BOTS
+#include "telegrambotsapplet.h"
+#endif
 
 Q_IMPORT_QML_PLUGIN(PublicsTradingInterfacePlugin)
 Q_IMPORT_QML_PLUGIN(RobinHoodInterfacePlugin)
 Q_IMPORT_QML_PLUGIN(TradingLauncherPlugin)
+#ifdef PUBLICS_HAS_TELEGRAM_BOTS
+Q_IMPORT_QML_PLUGIN(TelegramBotsInterfacePlugin)
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -26,7 +32,12 @@ int main(int argc, char *argv[])
     QQmlApplicationEngine engine;
     PublicsApplet publics;
     RobinHoodApplet robinHood;
-    LauncherController launcher(engine, {&publics, &robinHood});
+    QList<AppletInterface *> applets{&publics, &robinHood};
+#ifdef PUBLICS_HAS_TELEGRAM_BOTS
+    TelegramBotsApplet telegramBots;
+    applets.append(&telegramBots);
+#endif
+    LauncherController launcher(engine, applets);
     engine.rootContext()->setContextProperty(QStringLiteral("Launcher"), &launcher);
 
 #ifdef RELEASE

@@ -10,6 +10,9 @@
 Q_IMPORT_QML_PLUGIN(PublicsTradingInterfacePlugin)
 Q_IMPORT_QML_PLUGIN(RobinHoodInterfacePlugin)
 Q_IMPORT_QML_PLUGIN(TradingLauncherPlugin)
+#ifdef PUBLICS_HAS_TELEGRAM_BOTS
+Q_IMPORT_QML_PLUGIN(TelegramBotsInterfacePlugin)
+#endif
 
 // No production backends are linked: these objects cannot access a brokerage or keychain.
 class MockRobinTrades final : public QObject
@@ -129,9 +132,65 @@ public slots:
         context->setContextProperty("RobinTrades", trades);
         context->setContextProperty("isDebugMode", true);
         context->setContextProperty("qmlTestArtifactDirectory", qEnvironmentVariable("QML_TEST_ARTIFACT_DIR"));
+        context->setContextProperty("TelegramBots", mock(engine, R"(
+            property var bots: []
+            property string selectedId: ""
+            property bool busy: false
+            property string error: ""
+            property bool holdSave: false
+            property string pendingNickname: ""
+            property int saveCalls: 0
+            property int startCalls: 0
+            property int stopAllCalls: 0
+            readonly property bool hasRunningBots: bots.some(row => row.active || row.starting)
+            readonly property var selected: bots.find(row => row.id === selectedId)
+            readonly property bool canStart: !busy && !!selected && !selected.active && !selected.starting
+            readonly property bool canStop: !busy && !!selected && (selected.active || selected.starting)
+            signal botSaved(string id)
+            function reset() {
+                bots = []; selectedId = ""; busy = false; error = ""; holdSave = false
+                pendingNickname = ""; saveCalls = 0; startCalls = 0; stopAllCalls = 0
+            }
+            function clearError() { error = "" }
+            function selectBot(id) { selectedId = bots.some(row => row.id === id) ? id : "" }
+            function saveBot(nickname, token) {
+                if (busy || !nickname.trim() || !token) return false
+                saveCalls++; pendingNickname = nickname.trim(); busy = true
+                if (!holdSave) finishSave(true)
+                return true
+            }
+            function finishSave(ok) {
+                if (!busy) return
+                busy = false
+                if (!ok) { error = "Secure storage failed."; return }
+                const id = "bot-" + saveCalls
+                bots = bots.concat([{id: id, nickname: pendingNickname, active: false, starting: false}])
+                pendingNickname = ""; botSaved(id)
+            }
+            function startBot() {
+                if (!canStart) return false
+                startCalls++
+                bots = bots.map(row => ({id: row.id, nickname: row.nickname,
+                    active: row.id === selectedId ? true : row.active, starting: false}))
+                return true
+            }
+            function stopBot() {
+                if (!canStop) return false
+                bots = bots.map(row => ({id: row.id, nickname: row.nickname,
+                    active: row.id === selectedId ? false : row.active, starting: false}))
+                return true
+            }
+            function stopAll() {
+                if (busy) return false
+                stopAllCalls++
+                bots = bots.map(row => ({id: row.id, nickname: row.nickname, active: false, starting: false}))
+                return true
+            }
+        )"));
         context->setContextProperty("Launcher", mock(engine, R"(
             property string activeAppletId: ""
-            property bool canReturnHome: activeAppletId !== ""
+            property bool canReturnHome: activeAppletId !== "" && (activeAppletId !== "telegram_bots"
+                                        || (!TelegramBots.busy && !TelegramBots.hasRunningBots))
             function activate(id) { activeAppletId = id; return true }
             function returnHome() { activeAppletId = ""; return true }
         )"));

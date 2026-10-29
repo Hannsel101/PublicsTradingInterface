@@ -65,6 +65,12 @@ target_link_libraries(appPublicsTradingInterface PRIVATE
     Qt6::Quick launcher_controller publics_applet robin_hood_applet
     launcher_ui launcher_uiplugin publics_ui publics_uiplugin rh_ui rh_uiplugin
 )
+if(TARGET telegram_bots_ui)
+    target_link_libraries(appPublicsTradingInterface PRIVATE
+        telegram_bots_applet telegram_bots_ui telegram_bots_uiplugin
+    )
+    target_compile_definitions(appPublicsTradingInterface PRIVATE PUBLICS_HAS_TELEGRAM_BOTS)
+endif()
 publics_enable_live_trading(appPublicsTradingInterface)
 
 if(ANDROID)

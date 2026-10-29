@@ -23,16 +23,125 @@ TestCase {
         return window
     }
 
+    function test_telegramChoiceHasCyanStripeAndCenteredRobot_data() {
+        return [{tag: "desktop", width: 1000, height: 700},
+                {tag: "compact", width: 360, height: 620}]
+    }
+    function test_telegramChoiceHasCyanStripeAndCenteredRobot(data) {
+        const window = createLauncher(data.width, data.height)
+        if (!window.telegramBotsAvailable) {
+            window.destroy()
+            skip("Telegram Bots is desktop-only")
+            return
+        }
+        try {
+            const button = findChild(window.contentItem, "openTelegramBots")
+            verify(button !== null, "Object exists")
+            compare(button.appletName, "Telegram Bots")
+            compare(button.enabled, true)
+            compare(button.stripeColor, "#00d2ff")
+            verify(waitForPolish(window))
+            const robot = findChild(button, "appletArtwork")
+            verify(robot !== null, "Object exists")
+            tryCompare(robot, "status", Image.Ready)
+            const stripe = button.background.children[0]
+            const stripeRight = stripe.mapToItem(button, stripe.width, 0).x
+            const center = robot.mapToItem(button, robot.width / 2, robot.height / 2)
+            verify(Math.abs(center.x - (stripeRight + button.width) / 2) < 1)
+            verify(Math.abs(center.y - button.height / 2) < 1)
+            verify(robot.width > 0 && center.x - robot.width / 2 > stripeRight)
+            verify(center.x + robot.width / 2 < button.width)
+            compare(button.contentItem.truncated, false)
+            const label = button.contentItem
+            const labelCenter = label.mapToItem(button,
+                (label.width + label.leftPadding - label.rightPadding) / 2, label.height / 2)
+            verify(Math.abs(labelCenter.x - button.width / 2) < 1, "Label is centered across the button")
+            verify(labelCenter.x + label.contentWidth / 2 + 6 < stripe.mapToItem(button, 0, 0).x,
+                   "Centered text stays clear of the stripe")
+            const position = button.mapToItem(window.contentItem, 0, 0)
+            verify(position.y >= 0 && position.y + button.height <= window.height)
+        } finally { window.destroy() }
+    }
+
+    function test_telegramConsoleIsSeparateAndReturnsHome_data() {
+        return [{tag: "desktop", width: 1000, height: 700},
+                {tag: "compact", width: 360, height: 620}]
+    }
+    function test_telegramConsoleIsSeparateAndReturnsHome(data) {
+        const window = createLauncher(data.width, data.height)
+        if (!window.telegramBotsAvailable) {
+            window.destroy()
+            skip("Telegram Bots is desktop-only")
+            return
+        }
+        try {
+            const selectedKey = AuthClient.selectedApiKeyLabel
+            const sessionActive = AuthClient.sessionActive
+            mouseClick(findChild(window.contentItem, "openTelegramBots"))
+            tryCompare(Launcher, "activeAppletId", "telegram_bots")
+            const loader = findChild(window.contentItem, "telegramBotsLoader")
+            verify(loader !== null, "Object exists")
+            tryVerify(() => loader.status === Loader.Ready && loader.item !== null)
+            verify(waitForPolish(window))
+            tryVerify(() => loader.item.width >= window.width - 2 && loader.item.height >= window.height - 54)
+            compare(findChild(window.contentItem, "activeAppletTitle").text, "Telegram Bots")
+            const brand = findChild(loader.item, "telegramBrand")
+            compare(brand.text, "Telegram Bots")
+            compare(brand.color, "#00d2ff")
+            compare(findChild(loader.item, "telegramConsoleTitle").text, "Telegram Bot Console")
+            compare(findChild(loader.item, "telegramManageTitle").text, "Manage Telegram Bots")
+            compare(findChild(loader.item, "telegramEmptyState").text, "No bots configured")
+            tryCompare(findChild(loader.item, "telegramEmptyRobot"), "status", Image.Ready)
+            compare(findChild(window.contentItem, "appletLoader").item, null)
+            compare(findChild(window.contentItem, "robinHoodLoader").item, null)
+            compare(AuthClient.selectedApiKeyLabel, selectedKey)
+            compare(AuthClient.sessionActive, sessionActive)
+            if (qmlTestArtifactDirectory.length > 0)
+                grabImage(window.contentItem).save(qmlTestArtifactDirectory + "/telegram-bots-" + data.tag + ".png")
+            mouseClick(findChild(window.contentItem, "returnHome"))
+            tryCompare(Launcher, "activeAppletId", "")
+            tryCompare(loader, "item", null)
+        } finally { window.destroy() }
+    }
+
+    function test_telegramUnavailableDoesNotLoadDesktopResources_data() {
+        return [{tag: "wide-unavailable", width: 1000, height: 700},
+                {tag: "narrow-unavailable", width: 360, height: 620}]
+    }
+    function test_telegramUnavailableDoesNotLoadDesktopResources(data) {
+        const window = createLauncher(data.width, data.height)
+        try {
+            compare(window.telegramBotsAvailable, Qt.platform.os === "windows" || Qt.platform.os === "osx")
+            window.telegramBotsAvailable = false
+            verify(waitForPolish(window))
+            const button = findChild(window.contentItem, "openTelegramBots")
+            verify(button !== null, "Object exists")
+            compare(button.visible, false)
+            compare(button.enabled, false)
+            compare(button.artworkSource.toString(), "")
+            Launcher.activeAppletId = "telegram_bots"
+            const loader = findChild(window.contentItem, "telegramBotsLoader")
+            verify(loader !== null, "Object exists")
+            compare(loader.active, false)
+            compare(loader.source.toString(), "")
+            compare(loader.item, null)
+        } finally { window.destroy() }
+    }
+
     function test_chooserHeadingAndButtonTypography_data() {
-        return [{tag: "desktop", width: 1000, height: 700, robinAvailable: true},
-                {tag: "compact", width: 360, height: 620, robinAvailable: true},
-                {tag: "android-desktop", width: 1000, height: 700, robinAvailable: false},
-                {tag: "android-compact", width: 360, height: 620, robinAvailable: false}]
+        const desktopBots = Qt.platform.os === "windows" || Qt.platform.os === "osx"
+        return [{tag: "desktop", width: 1000, height: 700, robinAvailable: true, telegramAvailable: desktopBots},
+                {tag: "compact", width: 360, height: 620, robinAvailable: true, telegramAvailable: desktopBots},
+                {tag: "android-desktop", width: 1000, height: 700, robinAvailable: false, telegramAvailable: false},
+                {tag: "android-compact", width: 360, height: 620, robinAvailable: false, telegramAvailable: false},
+                {tag: "ios-desktop", width: 1000, height: 700, robinAvailable: true, telegramAvailable: false},
+                {tag: "ios-compact", width: 360, height: 620, robinAvailable: true, telegramAvailable: false}]
     }
     function test_chooserHeadingAndButtonTypography(data) {
         const window = createLauncher(data.width, data.height)
         try {
             window.robinHoodAvailable = data.robinAvailable
+            window.telegramBotsAvailable = data.telegramAvailable
             verify(waitForPolish(window))
             const publics = findChild(window.contentItem, "openPublics")
             verify(publics !== null)
@@ -50,6 +159,7 @@ TestCase {
             }
             compare(publics.enabled, true)
             compare(findChild(window.contentItem, "openRobinHood").enabled, data.robinAvailable)
+            compare(findChild(window.contentItem, "openTelegramBots").visible, data.telegramAvailable)
             for (const name of ["openWellsFargo", "openFidelity", "openChase"])
                 compare(findChild(window.contentItem, name).enabled, false)
             compare(Launcher.activeAppletId, "")
@@ -163,6 +273,10 @@ TestCase {
                 verify(choice.background.color !== publics.background.color)
                 verify(choice.contentItem.color !== publics.contentItem.color)
                 verify(Math.abs(choice.width - (window.width - 48)) <= 1)
+                const scroller = findChild(window.contentItem, "appletChooser").contentItem
+                scroller.contentY = Math.max(0, choice.mapToItem(scroller.contentItem, 0, choice.height).y
+                                            - scroller.height + 12)
+                verify(waitForPolish(window))
                 const position = choice.mapToItem(window.contentItem, 0, 0)
                 verify(position.y >= 0 && position.y + choice.height <= window.height)
                 mouseClick(choice)

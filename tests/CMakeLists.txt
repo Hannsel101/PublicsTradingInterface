@@ -15,6 +15,16 @@ endfunction()
 publics_add_test(test_publicauthclient integration/test_publicauthclient.cpp publics_auth)
 publics_add_test(test_publicapiworker unit/test_publicapiworker.cpp publics_api)
 publics_add_test(test_launcher unit/test_launcher.cpp launcher_controller)
+if(TARGET telegram_bots_ui)
+    publics_add_test(test_telegrambotstore unit/test_telegrambotstore.cpp telegram_bots_storage OpenSSL::Crypto)
+    publics_add_test(test_telegrambotruntime unit/test_telegrambotruntime.cpp telegram_bots_runtime)
+    publics_add_test(test_telegrambotscontroller unit/test_telegrambotscontroller.cpp
+        telegram_bots_backend Qt6::Network
+    )
+    publics_add_test(test_telegrambotsapplet unit/test_telegrambotsapplet.cpp
+        telegram_bots_applet telegram_bots_backend launcher_controller telegram_bots_ui telegram_bots_uiplugin Qt6::Quick
+    )
+endif()
 publics_add_test(test_publicsapplet unit/test_publicsapplet.cpp publics_applet Qt6::Qml)
 publics_add_test(test_rhoauthgrant unit/test_rhoauthgrant.cpp rh_network_engine)
 publics_add_test(test_rhnativeauthclient unit/test_rhnativeauthclient.cpp rh_native_auth)
@@ -63,6 +73,10 @@ set_target_properties(test_qml PROPERTIES MACOSX_BUNDLE FALSE WIN32_EXECUTABLE F
 target_link_libraries(test_qml PRIVATE Qt6::QuickTest Qt6::Quick
     publics_ui publics_uiplugin rh_ui rh_uiplugin launcher_ui launcher_uiplugin
 )
+if(TARGET telegram_bots_ui)
+    target_link_libraries(test_qml PRIVATE telegram_bots_ui telegram_bots_uiplugin)
+    target_compile_definitions(test_qml PRIVATE PUBLICS_HAS_TELEGRAM_BOTS)
+endif()
 add_test(NAME test_qml COMMAND test_qml -input "${CMAKE_CURRENT_SOURCE_DIR}/qml")
 set_tests_properties(test_qml PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
