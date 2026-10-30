@@ -194,37 +194,55 @@ private slots:
         QCOMPARE(f.provider.count("sendMessage"), 0);
         agent.stop(); QTRY_VERIFY(!agent.stopping());
     }
+    void saturatedCommandQueueIsRetryableNotAcknowledged_data()
+    {
+        QTest::addColumn<int>("route");
+        QTest::newRow("publics") << 0; QTest::newRow("robinhood") << 1; QTest::newRow("combined") << 2;
+    }
     void saturatedCommandQueueIsRetryableNotAcknowledged()
     {
+        QFETCH(int, route);
+        const bool robinhood = route == 1;
+        const QString prefix = route == 2 ? "auto_" : robinhood ? "robinhood_auto_" : "publics_auto_";
+        const auto signal = route == 2 ? &TelegramAgent::combinedTradeCommandReceived : robinhood ? &TelegramAgent::robinhoodTradeCommandReceived : &TelegramAgent::tradeCommandReceived;
         QTemporaryDir ledger;
         WebhookFixture f;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
         agent.setAllowedChatIds({"42"});
         agent.setCommandLedgerPathForTests(ledger.path());
         agent.setAllowedChatIds({"42"});
-        QSignalSpy commands(&agent, &TelegramAgent::tradeCommandReceived);
+        QSignalSpy commands(&agent, signal);
         agent.start("123456:synthetic", "persisted_secret_123456");
         QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
-        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200);
+        QCOMPARE(f.post(f.update(1, prefix + "buy AAPL")), 200);
         QTRY_COMPARE(commands.size(), 1);
         for (int i = 2; i <= 101; ++i)
-            QCOMPARE(f.post(f.update(i, "publics_auto_buy MSFT")), 200);
-        QCOMPARE(f.post(f.update(102, "publics_auto_buy NVDA")), 503);
-        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200); // duplicate, no work
+            QCOMPARE(f.post(f.update(i, prefix + "buy MSFT")), 200);
+        QCOMPARE(f.post(f.update(102, prefix + "buy NVDA")), 503);
+        QCOMPARE(f.post(f.update(1, prefix + "buy AAPL")), 200); // duplicate, no work
         QCOMPARE(commands.size(), 1);
         QFile watermark(ledger.filePath("123456.watermark"));
         QVERIFY(watermark.open(QIODevice::ReadOnly));
         QCOMPARE(watermark.readAll(), QByteArray("PTI-TRADE-1\n123456\n101\n"));
-        connect(&agent, &TelegramAgent::tradeCommandReceived, &agent,
+        connect(&agent, signal, &agent,
             [&agent](const QString &id, const auto &, const auto &) { agent.completeTradeCommand(id, {}); });
         agent.completeTradeCommand(commands[0][0].toString(), {});
         QTRY_COMPARE(commands.size(), 101);
-        QCOMPARE(f.post(f.update(102, "publics_auto_buy NVDA")), 200);
+        QCOMPARE(f.post(f.update(102, prefix + "buy NVDA")), 200);
         QTRY_COMPARE(commands.size(), 102);
         agent.stop(); QTRY_VERIFY(!agent.stopping());
     }
+    void durableAdmissionFailureReturnsRetryable503_data()
+    {
+        QTest::addColumn<int>("route");
+        QTest::newRow("publics") << 0; QTest::newRow("robinhood") << 1; QTest::newRow("combined") << 2;
+    }
     void durableAdmissionFailureReturnsRetryable503()
     {
+        QFETCH(int, route);
+        const bool robinhood = route == 1;
+        const QString prefix = route == 2 ? "auto_" : robinhood ? "robinhood_auto_" : "publics_auto_";
+        const auto signal = route == 2 ? &TelegramAgent::combinedTradeCommandReceived : robinhood ? &TelegramAgent::robinhoodTradeCommandReceived : &TelegramAgent::tradeCommandReceived;
         QTemporaryDir ledger;
         QFile corrupt(ledger.filePath("123456.watermark"));
         QVERIFY(corrupt.open(QIODevice::WriteOnly));
@@ -234,18 +252,27 @@ private slots:
         agent.setAllowedChatIds({"42"});
         agent.setCommandLedgerPathForTests(ledger.path());
         agent.setAllowedChatIds({"42"});
-        QSignalSpy commands(&agent, &TelegramAgent::tradeCommandReceived);
+        QSignalSpy commands(&agent, signal);
         agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
-        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 503);
+        QCOMPARE(f.post(f.update(1, prefix + "buy AAPL")), 503);
         QCOMPARE(commands.size(), 0);
         QVERIFY(agent.active()); // transient ledger failure does not disable the retry route
         QVERIFY(corrupt.remove());
-        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200);
+        QCOMPARE(f.post(f.update(1, prefix + "buy AAPL")), 200);
         QTRY_COMPARE(commands.size(), 1);
         agent.stop(); QTRY_VERIFY(!agent.stopping());
     }
+    void webhookCommandsShareAuthorizationAndDurableBotScopedAdmission_data()
+    {
+        QTest::addColumn<int>("route");
+        QTest::newRow("publics") << 0; QTest::newRow("robinhood") << 1; QTest::newRow("combined") << 2;
+    }
     void webhookCommandsShareAuthorizationAndDurableBotScopedAdmission()
     {
+        QFETCH(int, route);
+        const bool robinhood = route == 1;
+        const QString prefix = route == 2 ? "auto_" : robinhood ? "robinhood_auto_" : "publics_auto_";
+        const auto signal = route == 2 ? &TelegramAgent::combinedTradeCommandReceived : robinhood ? &TelegramAgent::robinhoodTradeCommandReceived : &TelegramAgent::tradeCommandReceived;
         QTemporaryDir ledger;
         WebhookFixture f;
         TelegramAgent first(f.provider.root(), f.healthUrl(), f.options);
@@ -255,28 +282,50 @@ private slots:
         for (auto *agent : {&first, &second}) {
             agent->setCommandLedgerPathForTests(ledger.path()); agent->setAllowedChatIds({"42"});
         }
-        QSignalSpy one(&first, &TelegramAgent::tradeCommandReceived), two(&second, &TelegramAgent::tradeCommandReceived);
+        QSignalSpy one(&first, signal), two(&second, signal);
+        QSignalSpy opposite(&first, robinhood ? &TelegramAgent::tradeCommandReceived : &TelegramAgent::robinhoodTradeCommandReceived);
         first.start("123456:synthetic", "persisted_secret_123456"); second.start("654321:synthetic", "persisted_secret_654321");
         QTRY_VERIFY_WITH_TIMEOUT(first.active() && second.active(), 5000);
-        QVERIFY(f.post(f.update(100, "publics_auto_buy AAPL"), "bot123456:synthetic", "wrong") >= 400);
-        auto denied = f.update(100, "publics_auto_buy AAPL"); auto message = denied["message"].toObject();
+        QVERIFY(f.post(f.update(100, prefix + "buy AAPL"), "bot123456:synthetic", "wrong") >= 400);
+        auto denied = f.update(100, prefix + "buy AAPL"); auto message = denied["message"].toObject();
         auto chat = message["chat"].toObject(); chat["id"] = 84; message["chat"] = chat; denied["message"] = message;
         QCOMPARE(f.post(denied), 200); QCOMPARE(one.size(), 0);
-        QCOMPARE(f.post(f.update(100, "publics_auto_buy aapl, msft,aapl")), 200);
+        QCOMPARE(f.post(f.update(100, prefix + "buy aapl, msft,aapl")), 200);
         QTRY_COMPARE(one.size(), 1);
         QCOMPARE(one[0][2].toStringList(), (QStringList{"AAPL", "MSFT"}));
-        QCOMPARE(f.post(f.update(100, "publics_auto_buy AAPL")), 200);
-        QCOMPARE(f.post(f.update(99, "publics_auto_buy NVDA")), 200); // monotonic old-ID rejection
-        QCOMPARE(f.post(f.update(100, "publics_auto_sell AAPL"), "bot654321:synthetic"), 200);
+        QCOMPARE(f.post(f.update(100, prefix + "buy AAPL")), 200);
+        QCOMPARE(f.post(f.update(99, prefix + "buy NVDA")), 200); // monotonic old-ID rejection
+        QCOMPARE(f.post(f.update(100, prefix + "sell AAPL"), "bot654321:synthetic"), 200);
         QTRY_COMPARE(two.size(), 1); QCOMPARE(two[0][1].toString(), QString("sell"));
         QCOMPARE(one.size(), 1);
         const auto stale = one[0][0].toString();
         first.stop(); QTRY_VERIFY(!first.stopping());
         first.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(first.active(), 5000);
         first.completeTradeCommand(stale, {"STALE"});
-        QCOMPARE(f.post(f.update(100, "publics_auto_buy AAPL")), 200);
-        QTest::qWait(100); QCOMPARE(one.size(), 1); QCOMPARE(f.provider.count("sendMessage"), 0);
+        QCOMPARE(f.post(f.update(100, prefix + "buy AAPL")), 200);
+        QCOMPARE(f.post(f.update(100, robinhood ? "publics_auto_sell AAPL" : "robinhood_auto_sell AAPL")), 200);
+        QTest::qWait(100); QCOMPARE(one.size(), 1); QCOMPARE(opposite.size(), 0); QCOMPARE(f.provider.count("sendMessage"), 0);
         first.stop(); second.stop(); QTRY_VERIFY(!first.stopping() && !second.stopping());
+    }
+    void robinhoodWebhookPreservesEveryTickerBeyondPublicsLimit()
+    {
+        QTemporaryDir ledger; WebhookFixture f;
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy commands(&agent, &TelegramAgent::robinhoodTradeCommandReceived);
+        QSignalSpy publics(&agent, &TelegramAgent::tradeCommandReceived);
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        QStringList symbols;
+        for (int i = 0; i < 700; ++i) symbols.append(QStringLiteral("T%1").arg(i));
+        QCOMPARE(f.post(f.update(1, "/robinhood_auto_sell " + symbols.join(','))), 200);
+        QTRY_COMPARE(commands.size(), 1);
+        QCOMPARE(commands[0][1].toString(), QString("sell"));
+        QCOMPARE(commands[0][2].toStringList(), symbols);
+        QCOMPARE(publics.size(), 0);
+        agent.completeTradeCommand(commands[0][0].toString(), {});
+        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200);
+        QTest::qWait(100); QCOMPARE(commands.size(), 1); QCOMPARE(publics.size(), 0);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
     }
     void explicitWebhookModeIsInitiallyIdle()
     {
@@ -317,21 +366,30 @@ private slots:
         QTcpServer receiver;
         QVERIFY(receiver.listen(QHostAddress::LocalHost, f.options.tunnel.port));
     }
+    void updatesDuringRegistrationWaitForVerifiedActivation_data()
+    {
+        QTest::addColumn<int>("route");
+        QTest::newRow("publics") << 0; QTest::newRow("robinhood") << 1; QTest::newRow("combined") << 2;
+    }
     void updatesDuringRegistrationWaitForVerifiedActivation()
     {
+        QFETCH(int, route);
+        const bool robinhood = route == 1;
+        const QString prefix = route == 2 ? "auto_" : robinhood ? "robinhood_auto_" : "publics_auto_";
+        const auto signal = route == 2 ? &TelegramAgent::combinedTradeCommandReceived : robinhood ? &TelegramAgent::robinhoodTradeCommandReceived : &TelegramAgent::tradeCommandReceived;
         QTemporaryDir ledger;
         WebhookFixture f;
         f.holdInfo = true;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
         agent.setAllowedChatIds({"42"});
         agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
-        QSignalSpy commands(&agent, &TelegramAgent::tradeCommandReceived);
+        QSignalSpy commands(&agent, signal);
         agent.start("123456:synthetic", "persisted_secret_123456");
         QTRY_COMPARE_WITH_TIMEOUT(f.provider.count("getWebhookInfo"), 1, 5000);
         QVERIFY(agent.starting());
         QVERIFY(!agent.active());
         QCOMPARE(f.post(f.update(1, "/status")), 200);
-        QCOMPARE(f.post(f.update(2, "publics_auto_buy AAPL")), 200);
+        QCOMPARE(f.post(f.update(2, prefix + "buy AAPL")), 200);
         QCOMPARE(commands.size(), 0);
         QVERIFY(QFile::exists(ledger.filePath("123456.watermark")));
         QCOMPARE(f.provider.count("sendMessage"), 0);

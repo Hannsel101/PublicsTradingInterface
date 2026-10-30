@@ -49,6 +49,12 @@ public:
     ~RHTradeController() override;
     bool available() const { return !m_busy && m_unavailable.isEmpty(); }
     QString unavailableReason() const { return m_unavailable; }
+    // Each row includes initial POST-only transport evidence: bool
+    // orderPostAttempted/orderPostTransportOk and int orderPostHttpStatus/
+    // orderPostNetworkError, initially false/false/0/0. A non-null send reply
+    // establishes attempted; only a finished NoError + HTTP 2xx establishes ok.
+    // These fields neither establish receipt acceptance/fill nor reflect lookup GETs.
+    // authenticationRequired is a separate bool per row, set on HTTP 401/403.
     QVariantList tradeResults() const { return m_results; }
     QString currentTransactionTitle() const { return m_title; }
     bool tradeResultsVisible() const { return m_visible; }
@@ -56,6 +62,8 @@ public:
     bool tradeResultsBusy() const { return m_busy; }
     bool liveOrdersEnabled() const { return m_network.stockLiveOrdersEnabled(m_deps.loopbackLiveOrdersForTests); }
     QString error() const { return m_error; }
+    // Typed job evidence, including fresh reads and confirmation GETs. Reset at submit.
+    bool authenticationRequired() const { return m_authenticationRequired; }
     Q_INVOKABLE bool submit(QString input, QString side);
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void dismissTradeResults();
@@ -94,6 +102,8 @@ private:
     int m_row = 0;
     bool m_busy = false, m_visible = false, m_complete = false;
     bool m_locked = false, m_acquiring = false, m_cancelled = false, m_posting = false, m_finishing = false;
+    bool m_authenticationRequired = false;
+    void recordAuthenticationFailure(int httpStatus);
     bool notify();
     bool valid();
     bool locallyValid();

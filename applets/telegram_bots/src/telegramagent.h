@@ -53,10 +53,17 @@ public:
     // is escaped. Chunks preserve entities/scalars/bold and are sent serially.
     // Stop/revocation cancels notification context, not previously admitted orders.
     void completeTradeCommand(QString requestId, QStringList htmlMessages);
+    // Intermediate report: preserves the current origin and busy lease. true
+    // admits one report attempt; tradeReportFinished settles it asynchronously,
+    // including cancellation/failure (not proof of delivery). false emits nothing.
+    bool reportTradeCommand(QString requestId, QStringList htmlMessages);
 
 signals:
     void inspectorPortConflict();
     void tradeCommandReceived(QString requestId, QString side, QStringList symbols);
+    void robinhoodTradeCommandReceived(QString requestId, QString side, QStringList symbols);
+    void combinedTradeCommandReceived(QString requestId, QString side, QStringList symbols);
+    void tradeReportFinished(QString requestId);
     void stateChanged();
     void errorOccurred(const QString &message);
 

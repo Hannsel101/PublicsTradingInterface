@@ -199,6 +199,7 @@ private slots:
         runtime.setAllowedChatIds({"42", "84"});
         runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
         QSignalSpy commands(&runtime, &TelegramBotRuntime::tradeCommandReceived);
+        QSignalSpy robinhood(&runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived);
         runtime.start("123456:synthetic");
         QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
         QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, text)});
@@ -210,6 +211,218 @@ private slots:
             QTRY_COMPARE(commands.size(), 1);
             QCOMPARE(commands[0][2].toStringList(), expected);
         }
+        QCOMPARE(robinhood.size(), 0);
+        runtime.stop();
+    }
+    void robinhoodCommandGrammar_data()
+    {
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<QStringList>("expected");
+        QTest::newRow("buy") << "robinhood_auto_buy aapl, msft,aapl" << (QStringList{"AAPL", "MSFT"});
+        QTest::newRow("sell") << "/robinhood_auto_sell BRK.B, BRK-B" << (QStringList{"BRK.B", "BRK-B"});
+        QStringList many;
+        for (int i = 0; i < 300; ++i) many.append(QStringLiteral("T%1").arg(i));
+        QTest::newRow("all-300-not-truncated") << "robinhood_auto_buy " + many.join(',') << many;
+        const QString exact = "robinhood_auto_buy " + QString(4096 - QString("robinhood_auto_buy A").size(), ' ') + "A";
+        QTest::newRow("exact-4096") << exact << (QStringList{"A"});
+        QTest::newRow("over-4096") << exact + " " << QStringList{};
+        for (const auto &text : QStringList{"robinhoodAutoBuy AAPL", "robinhoodAutoSell AAPL", "Robinhood_auto_buy AAPL",
+                "ROBINHOOD_AUTO_BUY AAPL", "/robinhood_auto_buy@other_bot AAPL", "robinhood_auto_buy", "robinhood_auto_buy AAPL,",
+                "robinhood_auto_buy AAPL,,MSFT", "robinhood_auto_buy AAPL MSFT", "robinhood_auto_buy AAPL;MSFT",
+                "robinhood_auto_buy ＡＡＰＬ", "robinhood_auto_buy K", "robinhood_auto_buy ß", "robinhood_auto_buy AAPL\nMSFT",
+                "robinhood_auto_buy " + QString(16, 'A')})
+            QTest::newRow(qPrintable(text)) << text << QStringList{};
+    }
+    void robinhoodCommandGrammar()
+    {
+        QFETCH(QString, text); QFETCH(QStringList, expected);
+        QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
+        runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy publics(&runtime, &TelegramBotRuntime::tradeCommandReceived);
+        QSignalSpy commands(&runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived);
+        QVERIFY(commands.isValid());
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, text)});
+        if (expected.isEmpty()) {
+            QTRY_COMPARE(server.requests.size(), 3);
+            QCOMPARE(commands.size(), 0);
+            QVERIFY(!QFile::exists(ledger.filePath("123456.watermark")));
+        } else {
+            QTRY_COMPARE(commands.size(), 1);
+            QCOMPARE(commands[0][2].toStringList(), expected);
+            QCOMPARE(commands[0][1].toString(), text.contains("_sell") ? QString("sell") : QString("buy"));
+            QFile file(ledger.filePath("123456.watermark")); QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), QByteArray("PTI-TRADE-1\n123456\n1\n"));
+        }
+        QCOMPARE(publics.size(), 0);
+        runtime.stop();
+    }
+    void combinedCommandGrammar_data()
+    {
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<QStringList>("expected");
+        QTest::newRow("buy") << "auto_buy aapl, msft,aapl" << (QStringList{"AAPL", "MSFT"});
+        QTest::newRow("sell") << "/auto_sell AAPL, MSFT" << (QStringList{"AAPL", "MSFT"});
+        QStringList many;
+        for (int i = 0; i < 300; ++i) many.append(QString(1, QChar('A' + i / 26)) + QChar('A' + i % 26));
+        QTest::newRow("all-300-not-truncated") << "auto_buy " + many.join(',') << many;
+        const QString exact = "auto_buy " + QString(4096 - QString("auto_buy A").size(), ' ') + "A";
+        QTest::newRow("exact-4096") << exact << (QStringList{"A"});
+        QTest::newRow("over-4096") << exact + " " << QStringList{};
+        for (const auto &text : QStringList{"autoBuy AAPL", "autoSell AAPL", "Auto_buy AAPL", "AUTO_BUY AAPL", "robinhoodAutoSell AAPL", "Robinhood_auto_buy AAPL",
+                "ROBINHOOD_AUTO_BUY AAPL", "/auto_buy@other_bot AAPL", "auto_buy", "auto_buy AAPL,",
+                "auto_buy AAPL,,MSFT", "auto_buy AAPL MSFT", "auto_buy AAPL;MSFT", "auto_buy BRK.B", "auto_buy BRK-B", "auto_buy T1",
+                "auto_buy ＡＡＰＬ", "auto_buy K", "auto_buy ß", "auto_buy AAPL\nMSFT",
+                "auto_buy " + QString(16, 'A')})
+            QTest::newRow(qPrintable(text)) << text << QStringList{};
+    }
+    void combinedCommandGrammar()
+    {
+        QFETCH(QString, text); QFETCH(QStringList, expected);
+        QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
+        runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy publics(&runtime, &TelegramBotRuntime::tradeCommandReceived);
+        QSignalSpy robinhood(&runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived);
+        QSignalSpy commands(&runtime, &TelegramBotRuntime::combinedTradeCommandReceived);
+        QVERIFY(commands.isValid());
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, text)});
+        if (expected.isEmpty()) {
+            QTRY_COMPARE(server.requests.size(), 3);
+            QCOMPARE(commands.size(), 0);
+            QVERIFY(!QFile::exists(ledger.filePath("123456.watermark")));
+        } else {
+            QTRY_COMPARE(commands.size(), 1);
+            QCOMPARE(commands[0][2].toStringList(), expected);
+            QCOMPARE(commands[0][1].toString(), text.contains("_sell") ? QString("sell") : QString("buy"));
+            QFile file(ledger.filePath("123456.watermark")); QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), QByteArray("PTI-TRADE-1\n123456\n1\n"));
+        }
+        QCOMPARE(publics.size(), 0); QCOMPARE(robinhood.size(), 0);
+        runtime.stop();
+    }
+    void intermediateReportsRemainSerialAndFinalCompletionPreservesQueue()
+    {
+        QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
+        runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy commands(&runtime, &TelegramBotRuntime::combinedTradeCommandReceived);
+        QSignalSpy finished(&runtime, &TelegramBotRuntime::tradeReportFinished);
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, "auto_buy AAPL"), tradeUpdate(2, "auto_sell MSFT")});
+        QTRY_COMPARE(commands.size(), 1);
+        const auto ticket = commands[0][0].toString();
+        QVERIFY(!runtime.reportTradeCommand("wrong-origin", {"WRONG"}));
+        QVERIFY(runtime.reportTradeCommand(ticket, {"<b>Publics</b>" + QString(5000, 'X'), "Publics tail"}));
+        runtime.completeTradeCommand(ticket, {"<b>Robinhood</b>"});
+        QVERIFY(!runtime.reportTradeCommand(ticket, {"TOO LATE"}));
+        for (int i = 0; i < 4; ++i) {
+            QTRY_COMPARE(server.requests.size(), 3 + i);
+            QCOMPARE(commands.size(), 1);
+            QCOMPARE(server.requests.last().body["chat_id"].toInteger(), 42);
+            QCOMPARE(server.requests.last().body["parse_mode"].toString(), QString("HTML"));
+            QVERIFY(server.requests.last().body["text"].toString().size() <= 4096);
+            if (i < 3) QCOMPARE(finished.size(), 0);
+            else { QTRY_COMPARE(finished.size(), 1); QCOMPARE(finished[0][0].toString(), ticket); }
+            if (i == 2) QCOMPARE(server.requests.last().body["text"].toString(), QString("Publics tail"));
+            if (i == 3) QCOMPARE(server.requests.last().body["text"].toString(), QString("<b>Robinhood</b>"));
+            acknowledge(server.requests.last());
+        }
+        QTRY_COMPARE(commands.size(), 2);
+        QCOMPARE(finished.size(), 1);
+        runtime.stop();
+    }
+    void intermediateReportKeepsOriginUntilFinalCompletion()
+    {
+        QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
+        runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy commands(&runtime, &TelegramBotRuntime::combinedTradeCommandReceived);
+        QSignalSpy finished(&runtime, &TelegramBotRuntime::tradeReportFinished);
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, "auto_buy AAPL")});
+        QTRY_COMPARE(commands.size(), 1); const auto ticket = commands[0][0].toString();
+        QVERIFY(runtime.reportTradeCommand(ticket, {"<b>Publics</b>"}));
+        QTRY_COMPARE(server.requests.size(), 3); acknowledge(server.requests[2]);
+        QTRY_COMPARE(finished.size(), 1);
+        QTest::qWait(300); QCOMPARE(server.requests.size(), 3);
+        QVERIFY(runtime.reportTradeCommand(ticket, {})); // empty attempt still settles asynchronously
+        QTRY_COMPARE(finished.size(), 2);
+        runtime.completeTradeCommand(ticket, {"<b>Robinhood</b>"});
+        QTRY_COMPARE(server.requests.size(), 4);
+        QCOMPARE(server.requests[3].body["text"].toString(), QString("<b>Robinhood</b>"));
+        runtime.stop();
+    }
+    void reportFinishedDirectObserversAreLifecycleSafe_data()
+    {
+        QTest::addColumn<int>("action");
+        QTest::newRow("stop") << 0; QTest::newRow("delete") << 1;
+        QTest::newRow("complete") << 2; QTest::newRow("restart") << 3;
+    }
+    void reportFinishedDirectObserversAreLifecycleSafe()
+    {
+        QFETCH(int, action);
+        QTemporaryDir ledger; BotServer server;
+        QPointer<TelegramBotRuntime> runtime = new TelegramBotRuntime(server.root());
+        runtime->setAllowedChatIds({"42"}); runtime->setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy commands(runtime, &TelegramBotRuntime::combinedTradeCommandReceived);
+        bool settled = false;
+        connect(runtime, &TelegramBotRuntime::tradeReportFinished, &server, [&](const QString &id) {
+            settled = true;
+            if (action == 0) runtime->stop();
+            else if (action == 1) delete runtime.data();
+            else if (action == 2) runtime->completeTradeCommand(id, {"Robinhood report"});
+            else { runtime->stop(); runtime->start("123456:synthetic"); }
+        });
+        runtime->start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, "auto_buy AAPL")});
+        QTRY_COMPARE(commands.size(), 1);
+        QVERIFY(runtime->reportTradeCommand(commands[0][0].toString(), {"Publics report"}));
+        QTRY_COMPARE(server.requests.size(), 3); QVERIFY(!settled); acknowledge(server.requests[2]);
+        QTRY_VERIFY(settled);
+        if (action <= 1) { QTest::qWait(100); QCOMPARE(server.requests.size(), 3); }
+        else {
+            QTRY_COMPARE(server.requests.size(), 4);
+            if (action == 2) QCOMPARE(server.requests[3].body["text"].toString(), QString("Robinhood report"));
+            else QVERIFY(server.requests[3].path.endsWith("getMe"));
+        }
+        delete runtime.data();
+    }
+    void failedIntermediateAttemptSettlesWithoutReplay_data()
+    {
+        QTest::addColumn<int>("action");
+        QTest::newRow("lost-ack") << 0; QTest::newRow("stop") << 1; QTest::newRow("revoke") << 2;
+    }
+    void failedIntermediateAttemptSettlesWithoutReplay()
+    {
+        QFETCH(int, action);
+        QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
+        runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy commands(&runtime, &TelegramBotRuntime::combinedTradeCommandReceived);
+        QSignalSpy finished(&runtime, &TelegramBotRuntime::tradeReportFinished);
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(10, "auto_buy AAPL")});
+        QTRY_COMPARE(commands.size(), 1); const auto ticket = commands[0][0].toString();
+        QVERIFY(runtime.reportTradeCommand(ticket, {"Publics result", "Never retried"}));
+        QTRY_COMPARE(server.requests.size(), 3);
+        if (action == 0) server.requests[2].socket->abort();
+        else if (action == 1) runtime.stop();
+        else {
+            runtime.setAllowedChatIds({});
+            QTest::qWait(100); QCOMPARE(finished.size(), 0); // The in-flight attempt has not settled.
+            acknowledge(server.requests[2]);
+        }
+        QTRY_COMPARE(finished.size(), 1); QCOMPARE(finished[0][0].toString(), ticket);
+        QVERIFY(!runtime.reportTradeCommand(ticket, {"NO ORIGIN"}));
+        runtime.stop(); runtime.setAllowedChatIds({"42"}); runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 4); BotServer::answer(server.requests[3], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 5); BotServer::answer(server.requests[4], QJsonArray{tradeUpdate(10, "robinhood_auto_buy AAPL")});
+        QTRY_COMPARE(server.requests.size(), 6); QVERIFY(server.requests[5].path.endsWith("getUpdates"));
+        QCOMPARE(commands.size(), 1); QCOMPARE(finished.size(), 1);
         runtime.stop();
     }
     void revocationCancelsRemainingNotificationChunks()
@@ -273,23 +486,51 @@ private slots:
         runtime.start("123456:synthetic");
         QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
         QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{incoming});
-        QTest::qWait(400);
+        QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 3, 1500);
         QCOMPARE(commands.size(), 0);
         QVERIFY(!QFile::exists(ledger.filePath("123456.watermark")));
         runtime.stop();
     }
+    void robinhoodEnvelopeAuthorization_data() { commandEnvelopeAuthorization_data(); }
+    void robinhoodEnvelopeAuthorization()
+    {
+        QFETCH(QJsonObject, incoming); QFETCH(QStringList, policy);
+        if (incoming.contains("message")) {
+            auto message = incoming["message"].toObject();
+            message["text"] = "robinhood_auto_buy AAPL"; incoming["message"] = message;
+        }
+        QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
+        runtime.setAllowedChatIds({"42", "84"});
+        runtime.setAllowedChatIds(policy); runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy commands(&runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived);
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{incoming});
+        QTRY_COMPARE_WITH_TIMEOUT(server.requests.size(), 3, 1500);
+        QCOMPARE(commands.size(), 0);
+        QVERIFY(!QFile::exists(ledger.filePath("123456.watermark")));
+        runtime.stop();
+    }
+    void tradeLedgerSurvivesObjectAndProcessRestart_data()
+    {
+        QTest::addColumn<bool>("robinhood");
+        QTest::newRow("publics") << false; QTest::newRow("robinhood") << true;
+    }
     void tradeLedgerSurvivesObjectAndProcessRestart()
     {
+        QFETCH(bool, robinhood);
+        const auto signal = robinhood ? &TelegramBotRuntime::robinhoodTradeCommandReceived : &TelegramBotRuntime::tradeCommandReceived;
+        const QString text = robinhood ? "robinhood_auto_buy AAPL" : "publics_auto_buy AAPL";
         QTemporaryDir ledger;
         for (const auto &row : QList<QPair<int, int>>{{10, 1}, {10, 0}, {9, 0}, {11, 1}}) {
             const auto id = row.first;
             BotServer server; TelegramBotRuntime runtime(server.root());
         runtime.setAllowedChatIds({"42", "84"});
             runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
-            QSignalSpy commands(&runtime, &TelegramBotRuntime::tradeCommandReceived);
+            QSignalSpy commands(&runtime, signal);
             runtime.start("123456:synthetic");
             QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
-            QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(id)});
+            QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(id, text)});
             // The first 10 and 11 are admitted; duplicate 10 and lower 9 never execute.
             QFile file(ledger.filePath("123456.watermark"));
             QTRY_VERIFY(file.exists());
@@ -342,19 +583,22 @@ private slots:
     void tradeDirectObserverReentrancy_data()
     {
         QTest::addColumn<int>("action");
-        QTest::newRow("stop") << 0;
-        QTest::newRow("delete") << 1;
-        QTest::newRow("complete") << 2;
-        QTest::newRow("restart-stale-completion") << 3;
+        QTest::addColumn<int>("route");
+        for (int route : {0, 1, 2})
+            for (int action = 0; action < 4; ++action)
+                QTest::newRow(qPrintable(QString("route-%1-action-%2").arg(route).arg(action))) << action << route;
     }
     void tradeDirectObserverReentrancy()
     {
-        QFETCH(int, action);
+        QFETCH(int, action); QFETCH(int, route);
+        const bool robinhood = route == 1;
+        const auto signal = route == 2 ? &TelegramBotRuntime::combinedTradeCommandReceived : robinhood ? &TelegramBotRuntime::robinhoodTradeCommandReceived : &TelegramBotRuntime::tradeCommandReceived;
+        const QString text = route == 2 ? "auto_buy AAPL" : robinhood ? "robinhood_auto_buy AAPL" : "publics_auto_buy AAPL";
         QTemporaryDir ledger; BotServer server;
         QPointer<TelegramBotRuntime> runtime = new TelegramBotRuntime(server.root());
         runtime->setAllowedChatIds({"42"}); runtime->setCommandLedgerPathForTests(ledger.path());
         QString ticket;
-        connect(runtime, &TelegramBotRuntime::tradeCommandReceived, &server,
+        connect(runtime, signal, &server,
             [&](const QString &id, const auto &, const auto &) {
                 ticket = id;
                 if (action == 0) runtime->stop();
@@ -367,17 +611,17 @@ private slots:
             });
         runtime->start("123456:synthetic");
         QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
-        QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1), tradeUpdate(2)});
+        QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, text), tradeUpdate(2, text)});
         QTRY_VERIFY_WITH_TIMEOUT(!ticket.isEmpty(), 1000);
         QTest::qWait(100);
         if (action <= 1) QCOMPARE(server.requests.size(), 2);
         else if (action == 2) {
-            QCOMPARE(server.requests.size(), 3);
+            QTRY_COMPARE(server.requests.size(), 3);
             QCOMPARE(server.requests[2].body["text"].toString(), QString("<b>Done</b>"));
             runtime->completeTradeCommand(ticket, {"AGAIN"});
             QTest::qWait(100); QCOMPARE(server.requests.size(), 3);
         } else {
-            QCOMPARE(server.requests.size(), 3);
+            QTRY_COMPARE(server.requests.size(), 3);
             QVERIFY(server.requests[2].path.endsWith("getMe"));
             auto bot = BotServer::bot(); bot["id"] = 654321; BotServer::answer(server.requests[2], bot);
             QTRY_COMPARE(server.requests.size(), 4);
@@ -462,6 +706,34 @@ private slots:
         QTRY_COMPARE(server.requests.size(), 4); QCOMPARE(commands.size(), 2);
         QVERIFY(commands[1][0].toString().startsWith("123456:2:42:"));
         QCOMPARE(server.requests[3].body["chat_id"].toInteger(), 42);
+        runtime.stop();
+    }
+    void mixedBrokersShareBusyAndImmutableOrigin()
+    {
+        QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
+        runtime.setAllowedChatIds({"42", "84"});
+        runtime.setAllowedChatIds({"42", "84"}); runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy commands(&runtime, &TelegramBotRuntime::tradeCommandReceived);
+        QSignalSpy robinhood(&runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived);
+        connect(&runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived, &runtime,
+            [&runtime](const QString &id, const auto &, const auto &) { runtime.completeTradeCommand(id, {"<b>RH Result</b>"}); });
+        connect(&runtime, &TelegramBotRuntime::tradeCommandReceived, &runtime,
+            [&runtime](const QString &id, const auto &, const auto &) { runtime.completeTradeCommand(id, {"<b>Result</b>"}); });
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, "publics_auto_buy AAPL", 84), tradeUpdate(2, "robinhood_auto_sell MSFT")});
+        QTRY_COMPARE(server.requests.size(), 3);
+        QCOMPARE(commands.size(), 1);
+        QVERIFY(commands[0][0].toString().startsWith("123456:1:84:"));
+        QCOMPARE(server.requests[2].body["chat_id"].toInteger(), 84);
+        BotServer::answer(server.requests[2], QJsonObject{{"message_id", 90}, {"date", 1700000001},
+            {"chat", QJsonObject{{"id", 84}, {"type", "private"}}}, {"text", "Result"}});
+        QTRY_COMPARE(server.requests.size(), 4); QCOMPARE(commands.size(), 1); QTRY_COMPARE(robinhood.size(), 1);
+        QVERIFY(robinhood[0][0].toString().startsWith("123456:2:42:"));
+        QCOMPARE(server.requests[3].body["chat_id"].toInteger(), 42);
+        QCOMPARE(robinhood[0][1].toString(), QString("sell"));
+        QCOMPARE(server.requests[3].body["text"].toString(), QString("<b>RH Result</b>"));
         runtime.stop();
     }
     void healthSuccessUsesInjectedLocalEndpoint()

@@ -336,6 +336,75 @@ private slots:
         QCOMPARE(server.messages.first().value("text").toString(), QString("🟢 Fixture complete"));
         QVERIFY(controller.stopAll());
     }
+    void robinhoodRoutingUsesOriginAndSharedCompletion() {
+        QTemporaryDir ledger; ControllerBotServer server; MemoryBotStore store;
+        store.entries[0].allowedChatIds = {"42"};
+        TelegramBotsController controller(&store, [&server, &ledger](QObject *owner) {
+            auto *runtime = new TelegramBotRuntime(server.root(), owner);
+            runtime->setCommandLedgerPathForTests(ledger.path()); return runtime;
+        });
+        QSignalSpy publics(&controller, &TelegramBotsController::tradeRequested);
+        QSignalSpy trades(&controller, &TelegramBotsController::robinhoodTradeRequested);
+        QVERIFY(trades.isValid());
+        controller.load(); controller.selectBot("one"); QVERIFY(controller.startBotWithPassword(controller.selectedId(), "test password 123"));
+        QTRY_COMPARE(server.polls.size(), 1);
+        controller.selectBot("two");
+        const QJsonObject update{{"update_id", 10}, {"message", QJsonObject{
+            {"message_id", 10}, {"date", 1700000000}, {"text", "robinhood_auto_buy AAPL,MSFT"},
+            {"from", QJsonObject{{"id", 42}, {"is_bot", false}, {"first_name", "Fixture"}}},
+            {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}}}};
+        ControllerBotServer::answer(server.polls.takeFirst(), QJsonArray{update});
+        QTRY_COMPARE(trades.size(), 1);
+        QCOMPARE(trades[0][0].toString(), QString("one"));
+        QCOMPARE(trades[0][2].toString(), QString("buy"));
+        QCOMPARE(trades[0][3].toStringList(), (QStringList{"AAPL", "MSFT"}));
+        QVERIFY(!controller.saveBotWithAllowedChats("Desk", {}, "99"));
+        controller.completeTradeCommand("missing", trades[0][1].toString(), {"Wrong origin"});
+        controller.completeTradeCommand("one", trades[0][1].toString(), {"🟢 Fixture complete"});
+        QTRY_COMPARE(server.messages.size(), 1);
+        QCOMPARE(server.messages.first().value("chat_id").toVariant().toString(), QString("42"));
+        QCOMPARE(server.messages.first().value("text").toString(), QString("🟢 Fixture complete"));
+        QCOMPARE(publics.size(), 0);
+        QVERIFY(controller.stopAll());
+    }
+    void combinedRoutingReportsStagesToCapturedOrigin() {
+        QTemporaryDir ledger; ControllerBotServer server; MemoryBotStore store;
+        store.entries[0].allowedChatIds = {"42"};
+        TelegramBotsController controller(&store, [&server, &ledger](QObject *owner) {
+            auto *runtime = new TelegramBotRuntime(server.root(), owner);
+            runtime->setCommandLedgerPathForTests(ledger.path()); return runtime;
+        });
+        QSignalSpy publics(&controller, &TelegramBotsController::tradeRequested);
+        QSignalSpy trades(&controller, &TelegramBotsController::combinedTradeRequested);
+        QVERIFY(trades.isValid());
+        controller.load(); controller.selectBot("one"); QVERIFY(controller.startBotWithPassword(controller.selectedId(), "test password 123"));
+        QTRY_COMPARE(server.polls.size(), 1);
+        controller.selectBot("two");
+        const QJsonObject update{{"update_id", 10}, {"message", QJsonObject{
+            {"message_id", 10}, {"date", 1700000000}, {"text", "auto_buy AAPL,MSFT"},
+            {"from", QJsonObject{{"id", 42}, {"is_bot", false}, {"first_name", "Fixture"}}},
+            {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}}}};
+        ControllerBotServer::answer(server.polls.takeFirst(), QJsonArray{update});
+        QTRY_COMPARE(trades.size(), 1);
+        QCOMPARE(trades[0][0].toString(), QString("one"));
+        QCOMPARE(trades[0][2].toString(), QString("buy"));
+        QCOMPARE(trades[0][3].toStringList(), (QStringList{"AAPL", "MSFT"}));
+        QVERIFY(!controller.saveBotWithAllowedChats("Desk", {}, "99"));
+        QSignalSpy finished(&controller, &TelegramBotsController::tradeReportFinished);
+        QVERIFY(!controller.reportTradeCommand("missing", trades[0][1].toString(), {"Wrong origin"}));
+        QVERIFY(!controller.reportTradeCommand("one", "wrong ticket", {"Wrong origin"}));
+        QVERIFY(controller.reportTradeCommand("one", trades[0][1].toString(), {"<b>Publics</b>"}));
+        QTRY_COMPARE(finished.size(), 1);
+        QCOMPARE(finished[0][0].toString(), QString("one"));
+        QCOMPARE(finished[0][1].toString(), trades[0][1].toString());
+        controller.completeTradeCommand("one", trades[0][1].toString(), {"🟢 Fixture complete"});
+        QTRY_COMPARE(server.messages.size(), 2);
+        QCOMPARE(server.messages.first().value("text").toString(), QString("<b>Publics</b>"));
+        QCOMPARE(server.messages.first().value("chat_id").toVariant().toString(), QString("42"));
+        QCOMPARE(server.messages.last().value("text").toString(), QString("🟢 Fixture complete"));
+        QCOMPARE(publics.size(), 0);
+        QVERIFY(controller.stopAll());
+    }
     void tradingBusyPreventsPendingCredentialReadFromStartingTransport() {
         MemoryBotStore store; store.holdRead = true;
         int runtimesCreated = 0;

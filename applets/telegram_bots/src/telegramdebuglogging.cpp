@@ -13,11 +13,18 @@ Q_LOGGING_CATEGORY(incomingCommands, "publics.telegram.incoming")
 
 bool recognizedText(const QString &text)
 {
-    if (text.size() > 1024) return false;
+    if (text.size() > 4096) return false;
     static const QRegularExpression syntax(QStringLiteral(
         "\\A(?:/?status|/?publics_auto_(?:buy|sell)[ \t]+[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?"
         "(?:[ \t]*,[ \t]*[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?){0,49})\\z"));
-    return syntax.match(text.trimmed()).hasMatch();
+    static const QRegularExpression robinhoodSyntax(QStringLiteral(
+        "\\A/?robinhood_auto_(?:buy|sell)[ \t]+[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?"
+        "(?:[ \t]*,[ \t]*[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?)*\\z"));
+    static const QRegularExpression combinedSyntax(QStringLiteral(
+        "\\A/?auto_(?:buy|sell)[ \t]+[A-Za-z]{1,10}(?:[ \t]*,[ \t]*[A-Za-z]{1,10})*\\z"));
+    const auto trimmed = text.trimmed();
+    return (text.size() <= 1024 && syntax.match(trimmed).hasMatch())
+        || robinhoodSyntax.match(trimmed).hasMatch() || combinedSyntax.match(trimmed).hasMatch();
 }
 
 QJsonValue redact(const QJsonValue &value, const QString &path, int depth, int &budget)

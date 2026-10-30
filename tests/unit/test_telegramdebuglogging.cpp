@@ -78,6 +78,26 @@ private slots:
         QTest::newRow("status") << QStringLiteral("/status") << true;
         QTest::newRow("buy") << QStringLiteral("publics_auto_buy AAPL, MSFT") << true;
         QTest::newRow("sell") << QStringLiteral("publics_auto_sell AAPL") << true;
+        QTest::newRow("rh-buy") << QStringLiteral("robinhood_auto_buy aapl, MSFT") << true;
+        QTest::newRow("rh-sell") << QStringLiteral("/robinhood_auto_sell BRK.B,BRK-B") << true;
+        QStringList many;
+        for (int i = 0; i < 700; ++i) many.append(QStringLiteral("T%1").arg(i));
+        QTest::newRow("rh-all-700") << "robinhood_auto_buy " + many.join(',') << true;
+        QTest::newRow("rh-exact-4096") << "robinhood_auto_buy " + QString(4096 - QString("robinhood_auto_buy A").size(), ' ') + "A" << true;
+        QTest::newRow("publics-over-50") << "publics_auto_buy " + QString("A,").repeated(50) + "A" << false;
+        QTest::newRow("publics-over-1024") << "publics_auto_buy " + QString(1024, ' ') + "A" << false;
+        QTest::newRow("combined-buy") << QStringLiteral("auto_buy aapl, MSFT") << true;
+        QTest::newRow("combined-sell") << QStringLiteral("/auto_sell AAPL,MSFT") << true;
+        QStringList combined;
+        for (int i = 0; i < 300; ++i) combined.append(QString(1, QChar('A' + i / 26)) + QChar('A' + i % 26));
+        QTest::newRow("combined-300") << "auto_buy " + combined.join(',') << true;
+        QTest::newRow("combined-punctuation") << QStringLiteral("auto_buy BRK.B") << false;
+        QTest::newRow("combined-digits") << QStringLiteral("auto_buy T1") << false;
+        QTest::newRow("combined-case") << QStringLiteral("Auto_buy AAPL") << false;
+        QTest::newRow("rh-old-buy") << QStringLiteral("robinhoodAutoBuy AAPL") << false;
+        QTest::newRow("rh-wrong-case") << QStringLiteral("Robinhood_auto_buy AAPL") << false;
+        QTest::newRow("rh-unicode") << QStringLiteral("robinhood_auto_buy K") << false;
+        QTest::newRow("rh-freeform") << QStringLiteral("robinhood_auto_buy synthetic-private-free-form-text") << false;
         QTest::newRow("old-buy") << QStringLiteral("publicsAutoBuy AAPL") << false;
         QTest::newRow("old-sell") << QStringLiteral("publicsAutoSell AAPL") << false;
         QTest::newRow("unknown-private-text") << QStringLiteral("synthetic-private-free-form-text") << false;
@@ -92,6 +112,10 @@ private slots:
         agent.setAllowedChatIds({QStringLiteral("42")});
         agent.setCommandLedgerPathForTests(directory.path());
         connect(&agent, &TelegramAgent::tradeCommandReceived, &agent,
+            [&](QString ticket, QString, QStringList) { agent.completeTradeCommand(ticket, {QStringLiteral("Fixture result")}); });
+        connect(&agent, &TelegramAgent::robinhoodTradeCommandReceived, &agent,
+            [&](QString ticket, QString, QStringList) { agent.completeTradeCommand(ticket, {QStringLiteral("Fixture result")}); });
+        connect(&agent, &TelegramAgent::combinedTradeCommandReceived, &agent,
             [&](QString ticket, QString, QStringList) { agent.completeTradeCommand(ticket, {QStringLiteral("Fixture result")}); });
         agent.start(QStringLiteral("123456:synthetic"));
         QTRY_COMPARE(provider.polls.size(), 1);
@@ -112,13 +136,16 @@ private slots:
     void messageHandlerMayStopOrDestroyRuntime_data()
     {
         QTest::addColumn<bool>("destroy");
-        QTest::newRow("stop") << false;
-        QTest::newRow("destroy") << true;
+        QTest::addColumn<QString>("command");
+        for (const auto &command : QStringList{"status", "publics_auto_buy AAPL", "robinhood_auto_sell AAPL"}) {
+            QTest::newRow(qPrintable("stop-" + command)) << false << command;
+            QTest::newRow(qPrintable("destroy-" + command)) << true << command;
+        }
     }
     void messageHandlerMayStopOrDestroyRuntime()
     {
 #if PUBLICS_EXPECT_INCOMING_LOGS
-        QFETCH(bool, destroy);
+        QFETCH(bool, destroy); QFETCH(QString, command);
         ControllerBotServer provider, health;
         auto agent = std::make_unique<TelegramAgent>(provider.root(), health.healthUrl());
         agent->setAllowedChatIds({QStringLiteral("42")});
@@ -126,7 +153,7 @@ private slots:
         QTRY_COMPARE(provider.polls.size(), 1);
         Capture capture;
         onCapturedMessage = [&] { if (destroy) agent.reset(); else agent->stop(); };
-        ControllerBotServer::answer(provider.polls.takeFirst(), QJsonArray{incoming(QStringLiteral("status"))});
+        ControllerBotServer::answer(provider.polls.takeFirst(), QJsonArray{incoming(command)});
         QTRY_COMPARE(capture.messages.size(), 1);
         QVERIFY(!agent || !agent->active());
         QCOMPARE(provider.messages.size(), 0);
@@ -165,8 +192,19 @@ private slots:
         QSKIP("Incoming payload logger is compiled out outside Debug.");
 #endif
     }
+    void standaloneWebhookLogsAfterAuthenticationOnly_data()
+    {
+        QTest::addColumn<QString>("command");
+        QTest::newRow("status") << QString("status");
+        QTest::newRow("publics") << QString("publics_auto_buy AAPL");
+        QTest::newRow("rh") << QString("/robinhood_auto_sell aapl,MSFT");
+        QStringList many;
+        for (int i = 0; i < 700; ++i) many.append(QStringLiteral("T%1").arg(i));
+        QTest::newRow("rh-700") << "robinhood_auto_buy " + many.join(',');
+    }
     void standaloneWebhookLogsAfterAuthenticationOnly()
     {
+        QFETCH(QString, command);
         TelegramWebhookManager::Options options; options.port = 0;
         TelegramWebhookManager manager(QStringLiteral("123456:synthetic"), QStringLiteral("fixture_verifier"),
             QStringLiteral("https://example.test/telegram"), 42, options);
@@ -185,7 +223,7 @@ private slots:
             if (!QTest::qWaitFor([&] { response += socket.readAll(); return response.contains("\r\n"); }, 3000)) return -1;
             return response.split(' ').value(1).toInt();
         };
-        const auto update = incoming(QStringLiteral("status"));
+        const auto update = incoming(command);
         QCOMPARE(post("wrong", update), 403);
         QVERIFY(capture.messages.isEmpty());
         auto unauthorized = update;
@@ -198,7 +236,7 @@ private slots:
         QCOMPARE(commands.size(), 0);
         QCOMPARE(post("fixture_verifier", update), 200);
         QCOMPARE(commands.size(), 1);
-        verifyLog(capture.messages, QStringLiteral("webhook"), QStringLiteral("status"), true);
+        verifyLog(capture.messages, QStringLiteral("webhook"), command, true);
 
         capture.messages.clear();
         auto large = update;
@@ -214,7 +252,7 @@ private slots:
         large.insert("message", message);
         QCOMPARE(post("fixture_verifier", large), 200);
         QCOMPARE(commands.size(), 2);
-        verifyLog(capture.messages, QStringLiteral("webhook"), QStringLiteral("status"), true);
+        verifyLog(capture.messages, QStringLiteral("webhook"), command, true);
     }
 };
 QTEST_GUILESS_MAIN(TelegramDebugLoggingTest)

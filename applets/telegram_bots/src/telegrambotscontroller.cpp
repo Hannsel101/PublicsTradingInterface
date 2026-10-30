@@ -265,6 +265,18 @@ TelegramBotRuntime *TelegramBotsController::runtimeFor(const QString &id)
         [this, id](QString requestId, QString side, QStringList symbols) {
             if (!m_destroying && !m_stoppingAll) emit tradeRequested(id, requestId, side, symbols);
         });
+    connect(runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived, this,
+        [this, id](QString requestId, QString side, QStringList symbols) {
+            if (!m_destroying && !m_stoppingAll) emit robinhoodTradeRequested(id, requestId, side, symbols);
+        });
+    connect(runtime, &TelegramBotRuntime::combinedTradeCommandReceived, this,
+        [this, id](QString requestId, QString side, QStringList symbols) {
+            if (!m_destroying && !m_stoppingAll) emit combinedTradeRequested(id, requestId, side, symbols);
+        });
+    connect(runtime, &TelegramBotRuntime::tradeReportFinished, this,
+        [this, id](QString requestId) {
+            if (!m_destroying) emit tradeReportFinished(id, requestId);
+        });
     connect(runtime, &TelegramBotRuntime::stateChanged, this, [this] {
         if (m_destroying || m_stoppingAll) return;
         const QPointer<TelegramBotsController> guard(this);
@@ -394,6 +406,12 @@ void TelegramBotsController::completeTradeCommand(QString botId, QString request
 {
     if (const auto runtime = m_runtimes.value(botId))
         runtime->completeTradeCommand(std::move(requestId), std::move(htmlMessages));
+}
+bool TelegramBotsController::reportTradeCommand(QString botId, QString requestId, QStringList htmlMessages)
+{
+    if (const auto runtime = m_runtimes.value(botId))
+        return runtime->reportTradeCommand(std::move(requestId), std::move(htmlMessages));
+    return false;
 }
 
 bool TelegramBotsController::stopBot()

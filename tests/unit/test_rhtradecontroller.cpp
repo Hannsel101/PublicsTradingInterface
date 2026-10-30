@@ -19,6 +19,7 @@ struct Fixture : QObject {
     QList<int> delays;
     QList<std::function<void()>> timers;
     QList<QVariantMap> orders;
+    QPointer<QTcpSocket> orderSocket;
     QStringList requests;
     int releases = 0, acquisitions = 0;
     bool isCurrent = true;
@@ -26,7 +27,11 @@ struct Fixture : QObject {
     std::function<QPair<int, QJsonObject>(QVariantMap)> overrideOrder;
     QString origin;
     int orderReadStatus = 200;
+    QString failedReadPath;
+    int failedReadStatus = 200;
     QByteArray orderReadBytes; // Null means serialize the provider-shaped object.
+    QByteArray orderPostBytes;
+    bool disconnectOrderRead = false;
     bool streamRead = false, streamOrder = false;
     QString streamPath, streamSymbol;
     int progressChunks = 0;
@@ -58,13 +63,21 @@ struct Fixture : QObject {
                     if (line.first() == "POST") {
                         QUrlQuery form(QString::fromUtf8(buffer->mid(headerEnd + 4, length)));
                         QVariantMap order; for (const auto &p : form.queryItems(QUrl::FullyDecoded)) order.insert(p.first, p.second);
-                        orders.append(order);
+                        orders.append(order); orderSocket = socket;
                         if (overrideOrder) { const auto r = overrideOrder(order); status = r.first; response = r.second; }
                         else response = receipt(order, QString("order-%1").arg(orders.size()));
                     } else response = read(url);
                     const bool orderRead = line.first() == "GET" && url.path().startsWith("/orders/");
                     if (orderRead) status = orderReadStatus;
-                    const QByteArray body = orderRead && !orderReadBytes.isNull() ? orderReadBytes : QJsonDocument(response).toJson(QJsonDocument::Compact);
+                    if (line.first() == "GET" && url.path() == failedReadPath) {
+                        status = failedReadStatus; response = {{"detail", "PROVIDER-SECRET-DO-NOT-REPORT"}};
+                    }
+                    if (orderRead && disconnectOrderRead) {
+                        socket->write("HTTP/1.1 200 Fixture\r\nContent-Length: 10000\r\nConnection: close\r\n\r\n{");
+                        socket->disconnectFromHost(); buffer->clear(); return;
+                    }
+                    const QByteArray body = line.first() == "POST" && !orderPostBytes.isNull() ? orderPostBytes
+                        : orderRead && !orderReadBytes.isNull() ? orderReadBytes : QJsonDocument(response).toJson(QJsonDocument::Compact);
                     const bool selectedRead = !streamPath.isEmpty() && url.path() == streamPath
                         && (streamSymbol.isEmpty() || QUrlQuery(url).queryItemValue("symbols") == streamSymbol);
                     if ((line.first() == "POST" && streamOrder) || (line.first() == "GET" && (streamRead || selectedRead))) {
@@ -118,7 +131,230 @@ struct Fixture : QObject {
 }
 class RHTradeControllerTest : public QObject {
     Q_OBJECT
+private:
+    static void comparePostEvidence(const QVariantMap &row, bool attempted, bool ok, int http, int error) {
+        const QVariantMap expected{{"orderPostAttempted", attempted}, {"orderPostTransportOk", ok},
+            {"orderPostHttpStatus", http}, {"orderPostNetworkError", error}};
+        QVariantMap evidence;
+        for (auto it = expected.cbegin(); it != expected.cend(); ++it) {
+            QVERIFY2(row.contains(it.key()), qPrintable(it.key()));
+            QCOMPARE(row.value(it.key()).metaType(), it.value().metaType());
+            QCOMPARE(row.value(it.key()), it.value());
+            evidence.insert(it.key(), row.value(it.key()));
+        }
+        const auto serialized = QJsonDocument::fromVariant(evidence).toJson();
+        for (const auto &secret : {"secret-fixture", "private@example.test", "account-private", "Bearer", "http://"})
+            QVERIFY(!serialized.contains(secret));
+    }
 private slots:
+    void readAuthenticationEvidenceIsIndependentOfPost_data() {
+        QTest::addColumn<QString>("path"); QTest::addColumn<int>("http");
+        for (const auto &path : {"/accounts/", "/instruments/", "/quotes/", "/positions/", "/orders/broker-id/"})
+            for (int http : {401, 403}) QTest::newRow(qPrintable(QString(path) + QString::number(http))) << QString(path) << http;
+    }
+    void readAuthenticationEvidenceIsIndependentOfPost() {
+        QFETCH(QString, path); QFETCH(int, http); Fixture f;
+        f.failedReadPath = path; f.failedReadStatus = http;
+        const bool confirmation = path.startsWith("/orders/");
+        if (confirmation) f.overrideOrder = [](QVariantMap) { return qMakePair(202, QJsonObject{{"id", "broker-id"}}); };
+        RHTradeController c(f.network, f.deps());
+        bool observed = false;
+        connect(&c, &RHTradeController::tradeResultsChanged, this, [&] {
+            if (c.authenticationRequired()) observed = true;
+        });
+        QVERIFY(c.submit("AAPL,MSFT", path == "/positions/" ? "sell" : "buy"));
+        QTRY_COMPARE(f.timers.size(), 1);
+        QVERIFY(c.authenticationRequired()); QVERIFY(observed);
+        const auto row = c.tradeResults().first().toMap();
+        QCOMPARE(row.value("authenticationRequired").metaType(), QMetaType::fromType<bool>());
+        QVERIFY(row.value("authenticationRequired").toBool());
+        comparePostEvidence(row, confirmation, confirmation, confirmation ? 202 : 0, 0);
+        f.tick(); QTRY_VERIFY(c.tradeResultsComplete());
+        QVERIFY(c.authenticationRequired()); QCOMPARE(f.releases, 1); QCOMPARE(f.orders.size(), confirmation ? 1 : 0);
+        for (int i = 1; i < c.tradeResults().size(); ++i) comparePostEvidence(c.tradeResults()[i].toMap(), false, false, 0, 0);
+        QVERIFY(!QJsonDocument::fromVariant(c.tradeResults()).toJson().contains("PROVIDER-SECRET"));
+        // A new job must not inherit authorization evidence from the old one.
+        f.failedReadPath.clear(); f.overrideOrder = {};
+        QVERIFY(c.submit("AAPL", "buy")); QVERIFY(!c.authenticationRequired());
+        c.cancel(); QTRY_VERIFY(c.tradeResultsComplete()); QCOMPARE(f.releases, 2);
+    }
+    void queuedReceiptPublishesTypedInitialPostEvidence() {
+        Fixture f; RHTradeController c(f.network, f.deps());
+        QVERIFY(c.submit("AAPL", "buy"));
+        for (int i = 0; i < 3; ++i) {
+            QTRY_COMPARE(f.timers.size(), 1);
+            QCOMPARE(f.orders.size(), i + 1);
+            const auto row = c.tradeResults().at(i).toMap();
+            QCOMPARE(row.value("status").toString(), "submitted");
+            QVERIFY(row.value("success").toBool());
+            comparePostEvidence(row, true, true, 200, QNetworkReply::NoError);
+            for (int j = i + 1; j < 3; ++j)
+                comparePostEvidence(c.tradeResults().at(j).toMap(), false, false, 0, 0);
+            f.tick();
+        }
+        QTRY_VERIFY(c.tradeResultsComplete());
+        QCOMPARE(f.requests.count("POST /orders/"), 3);
+        QCOMPARE(f.requests.size(), 6);
+        for (const auto &raw : c.tradeResults()) comparePostEvidence(raw.toMap(), true, true, 200, 0);
+    }
+    void initialPostEvidenceDoesNotPromoteUnverifiedReceipts_data() {
+        QTest::addColumn<QString>("fault");
+        for (const auto &fault : {"missing", "invalid-json", "incomplete-lookup-http", "incomplete-lookup-network", "lookup-success", "broker-rejected"})
+            QTest::newRow(fault) << QString(fault);
+    }
+    void initialPostEvidenceDoesNotPromoteUnverifiedReceipts() {
+        QFETCH(QString, fault); Fixture f; f.session.accounts = {f.session.accounts.first()};
+        f.overrideOrder = [&](QVariantMap request) {
+            if (fault == "broker-rejected") return qMakePair(202, Fixture::receipt(request, "broker-id", "rejected"));
+            return qMakePair(202, fault == "missing" ? QJsonObject{} : QJsonObject{{"id", "broker-id"}});
+        };
+        if (fault == "invalid-json") f.orderPostBytes = "not json secret-fixture private@example.test";
+        if (fault == "incomplete-lookup-http") f.orderReadStatus = 500;
+        if (fault == "incomplete-lookup-network") f.disconnectOrderRead = true;
+        if (fault == "lookup-success") f.overrideRead = [&](QUrl url) -> QJsonObject {
+            return url.path().startsWith("/orders/") ? Fixture::receipt(f.orders.first(), "broker-id") : QJsonObject{};
+        };
+        RHTradeController c(f.network, f.deps()); QVERIFY(c.submit("AAPL", "buy"));
+        QTRY_COMPARE(f.timers.size(), 1);
+        const auto row = c.tradeResults().first().toMap();
+        comparePostEvidence(row, true, true, 202, 0);
+        const bool verified = fault == "lookup-success";
+        QCOMPARE(row.value("status").toString(), verified ? "submitted" : fault == "broker-rejected" ? "failed" : "unknown");
+        QCOMPARE(row.value("success").toBool(), verified);
+        const bool lookup = fault.startsWith("incomplete-") || verified;
+        QCOMPARE(f.requests.count("GET /orders/broker-id/"), lookup ? 1 : 0);
+        QCOMPARE(f.requests.size(), lookup ? 5 : 4);
+        f.tick(); QTRY_VERIFY(c.tradeResultsComplete());
+        comparePostEvidence(c.tradeResults().first().toMap(), true, true, 202, 0);
+        QCOMPARE(f.orders.size(), 1); QCOMPARE(f.requests.count("POST /orders/"), 1); QCOMPARE(f.releases, 1);
+    }
+    void initialPostHttpFailuresRetainNativeOutcome_data() {
+        QTest::addColumn<int>("http"); QTest::addColumn<int>("networkError");
+        QTest::newRow("400") << 400 << int(QNetworkReply::ProtocolInvalidOperationError);
+        QTest::newRow("401") << 401 << int(QNetworkReply::AuthenticationRequiredError);
+        QTest::newRow("500") << 500 << int(QNetworkReply::InternalServerError);
+    }
+    void initialPostHttpFailuresRetainNativeOutcome() {
+        QFETCH(int, http); QFETCH(int, networkError); Fixture f; f.session.accounts = {f.session.accounts.first()};
+        f.overrideOrder = [http](QVariantMap) { return qMakePair(http, QJsonObject{{"detail", "Broker rejected secret-fixture"}}); };
+        RHTradeController c(f.network, f.deps()); QVERIFY(c.submit("AAPL", "buy")); QTRY_COMPARE(f.timers.size(), 1);
+        comparePostEvidence(c.tradeResults().first().toMap(), true, false, http, networkError);
+        QCOMPARE(c.tradeResults().first().toMap().value("status").toString(), http == 500 ? "unknown" : "failed");
+        QVERIFY(!c.tradeResults().first().toMap().value("success").toBool());
+        f.tick(); QTRY_VERIFY(c.tradeResultsComplete());
+        comparePostEvidence(c.tradeResults().first().toMap(), true, false, http, networkError);
+        QCOMPARE(f.requests.size(), 4); QCOMPARE(f.orders.size(), 1); QCOMPARE(f.requests.count("POST /orders/"), 1);
+        QVERIFY(!QJsonDocument::fromVariant(c.tradeResults()).toJson().contains(f.session.token));
+    }
+    void unfinishedPostNeverInventsTransportSuccess_data() {
+        QTest::addColumn<QString>("action");
+        for (const auto &action : {"cancel", "destroy", "timeout", "abort"}) QTest::newRow(action) << QString(action);
+    }
+    void unfinishedPostNeverInventsTransportSuccess() {
+        QFETCH(QString, action); Fixture f(action == "timeout" ? 300 : 16000); f.streamOrder = true;
+        f.session.accounts = {f.session.accounts.first()};
+        auto d = f.deps(); RHTradeController *c = nullptr; QVariantMap atRelease;
+        d.release = [&] { ++f.releases; atRelease = c->tradeResults().first().toMap(); };
+        c = new RHTradeController(f.network, d); QVERIFY(c->submit("AAPL", "buy"));
+        QTRY_COMPARE(f.orders.size(), 1);
+        comparePostEvidence(c->tradeResults().first().toMap(), true, false, 0, 0);
+        if (action == "destroy") { delete c; c = nullptr; }
+        else if (action == "cancel") c->cancel();
+        else {
+            if (action == "abort") {
+                QVERIFY(f.orderSocket); f.orderSocket->abort();
+            }
+            QTRY_COMPARE(f.timers.size(), 1);
+            const auto row = c->tradeResults().first().toMap();
+            QVERIFY(row.value("orderPostNetworkError").toInt() != 0);
+            comparePostEvidence(row, true, false, row.value("orderPostHttpStatus").toInt(), row.value("orderPostNetworkError").toInt());
+            f.tick(); QTRY_VERIFY(c->tradeResultsComplete());
+        }
+        QCOMPARE(f.releases, 1); QCOMPARE(atRelease.value("status").toString(), "unknown");
+        QVERIFY(!atRelease.value("orderPostTransportOk").toBool());
+        if (action == "cancel" || action == "destroy") comparePostEvidence(atRelease, true, false, 0, 0);
+        if (c) { delete c; c = nullptr; }
+        QTest::qWait(50); QCOMPARE(f.orders.size(), 1);
+        QCOMPARE(f.requests.count("POST /orders/"), 1);
+        // A complete receipt prefix can supply an untrusted lookup candidate
+        // even when the connection aborts; native reconciliation remains intact.
+        QCOMPARE(f.requests.size(), action == "abort" ? 5 : 4);
+        QCOMPARE(f.requests.count("GET /orders/order-1/"), action == "abort" ? 1 : 0);
+    }
+    void noDispatchRowsKeepTypedDefaults_data() {
+        QTest::addColumn<QString>("mode");
+        for (const auto &mode : {"preview", "preflight-failed", "skipped", "cancelled"}) QTest::newRow(mode) << QString(mode);
+    }
+    void noDispatchRowsKeepTypedDefaults() {
+        QFETCH(QString, mode); Fixture f; auto d = f.deps();
+        d.loopbackLiveOrdersForTests = false;
+        if (mode == "preview" && f.network.stockLiveOrdersEnabled(false))
+            QSKIP("Release enables live orders; preview-only evidence is exercised in Debug/ASan.");
+        if (mode == "preflight-failed") f.overrideRead = [](QUrl url) -> QJsonObject {
+            return url.path() == "/quotes/" ? QJsonObject{{"results", QJsonArray{}}, {"next", QJsonValue::Null}} : QJsonObject{};
+        };
+        if (mode == "cancelled") f.streamPath = "/accounts/";
+        RHTradeController c(f.network, d); QVERIFY(c.submit("AAPL", mode == "skipped" ? "sell" : "buy"));
+        if (mode == "cancelled") { QTRY_COMPARE(f.requests.size(), 1); c.cancel(); }
+        else {
+            const int rows = mode == "preflight-failed" ? 1 : 3;
+            for (int i = 0; i < rows; ++i) { QTRY_COMPARE(f.timers.size(), 1); f.tick(); }
+        }
+        QTRY_VERIFY(c.tradeResultsComplete()); QCOMPARE(c.tradeResults().size(), 3);
+        for (const auto &raw : c.tradeResults()) comparePostEvidence(raw.toMap(), false, false, 0, 0);
+        QVERIFY(f.orders.isEmpty()); QCOMPARE(f.requests.count("POST /orders/"), 0);
+        QCOMPARE(c.tradeResults().first().toMap().value("status").toString(),
+            mode == "preview" ? "preview" : mode == "preflight-failed" ? "failed" : mode == "skipped" ? "skipped" : "cancelled");
+    }
+    void networkRejectsBeforePostKeepsTypedDefaults() {
+        Fixture f; auto d = f.deps(); RHTradeController *c = nullptr; bool disabled = false;
+        d.current = [&](const auto &) {
+            if (c && !c->tradeResults().isEmpty() && !c->tradeResults().first().toMap().value("refId").toString().isEmpty() && !disabled) {
+                disabled = true;
+                QFile file(f.dir.filePath("disabled.json"));
+                if (!file.open(QIODevice::WriteOnly)) return false;
+                const QJsonObject ep{{"URL", f.origin + "/accounts/"}, {"Method", "GET"}, {"Enabled", false}, {"BodyEncoding", "none"}, {"HeaderSets", QJsonArray{}}};
+                file.write(QJsonDocument(QJsonObject{{"Headers", QJsonObject{}}, {"Endpoints", QJsonObject{{"Accounts", ep}}}}).toJson()); file.close();
+                return f.network.loadConfiguration(file.fileName());
+            }
+            return true;
+        };
+        RHTradeController controller(f.network, d); c = &controller;
+        QVERIFY(c->submit("AAPL", "buy")); QTRY_COMPARE(f.timers.size(), 1); QVERIFY(disabled);
+        QCOMPARE(c->tradeResults().first().toMap().value("message").toString(), "Order rejected before dispatch.");
+        for (const auto &raw : c->tradeResults()) comparePostEvidence(raw.toMap(), false, false, 0, 0);
+        f.tick(); QTRY_VERIFY(c->tradeResultsComplete());
+        QVERIFY(f.orders.isEmpty()); QCOMPARE(f.requests.size(), 3); QCOMPARE(f.requests.count("POST /orders/"), 0);
+    }
+    void postEvidencePrecedesReentrantOwnershipCallbacks_data() {
+        QTest::addColumn<bool>("destroy");
+        QTest::newRow("cancel") << false; QTest::newRow("destroy") << true;
+    }
+    void postEvidencePrecedesReentrantOwnershipCallbacks() {
+        QFETCH(bool, destroy); Fixture f; f.session.accounts = {f.session.accounts.first()};
+        auto d = f.deps(); RHTradeController *c = nullptr; QPointer<RHTradeController> guard;
+        QVariantMap atCallback, atRelease;
+        d.current = [&](const auto &) {
+            if (guard && !guard->tradeResults().isEmpty()) {
+                const auto row = guard->tradeResults().first().toMap();
+                if (row.value("orderPostHttpStatus").toInt() != 0) {
+                    atCallback = row;
+                    if (destroy) delete guard.data(); else guard->cancel();
+                    return false;
+                }
+            }
+            return true;
+        };
+        d.release = [&] { ++f.releases; atRelease = c->tradeResults().first().toMap(); };
+        c = new RHTradeController(f.network, d); guard = c;
+        QVERIFY(c->submit("AAPL", "buy")); QTRY_COMPARE(f.releases, 1);
+        comparePostEvidence(atCallback, true, true, 200, 0);
+        comparePostEvidence(atRelease, true, true, 200, 0);
+        QCOMPARE(atRelease.value("status").toString(), "unknown");
+        QCOMPARE(f.orders.size(), 1); QCOMPARE(f.requests.size(), 4);
+        if (guard) delete guard.data();
+        QCoreApplication::processEvents(); QCOMPARE(f.releases, 1);
+    }
     void lateLookupAndCooldownCannotUnlockReplacementBatch_data() {
         QTest::addColumn<bool>("finishLookup");
         QTest::newRow("cancel-pending-get") << false;
@@ -217,6 +453,7 @@ private slots:
         RHTradeController *c = nullptr;
         d.release = [&] {
             ++f.releases; const auto row = c->tradeResults().first().toMap(); statusAtRelease = row.value("status").toString();
+            comparePostEvidence(row, true, true, 201, 0);
             QVERIFY(row.value("message").toString().contains("post[http=201,qt=0,"));
             QVERIFY(row.value("message").toString().contains("lookup["));
         };

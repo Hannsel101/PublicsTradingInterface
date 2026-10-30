@@ -156,14 +156,6 @@ Item {
                 font.pixelSize: 16
                 wrapMode: Text.WordWrap
             }
-            Label {
-                objectName: "telegramVaultNotice"
-                Layout.fillWidth: true
-                text: qsTr("This password vault is separate from Robinhood. Older bots from a shared credential vault are not imported or erased; recreate them here using their BotFather credentials.")
-                textFormat: Text.PlainText
-                color: Theme.secondaryText
-                wrapMode: Text.WordWrap
-            }
         }
     }
     Loader {

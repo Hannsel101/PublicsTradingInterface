@@ -45,6 +45,7 @@ public:
     Q_INVOKABLE bool saveBotWithAllowedChats(QString nickname, QString token, QString allowedChatIdsText);
     void setTradingBusy(bool busy);
     void completeTradeCommand(QString botId, QString requestId, QStringList htmlMessages);
+    bool reportTradeCommand(QString botId, QString requestId, QStringList htmlMessages);
     Q_INVOKABLE bool startBot();
     Q_INVOKABLE bool stopBot();
     Q_INVOKABLE bool stopAll();
@@ -62,6 +63,9 @@ signals:
     void activationFinished(QString botId, bool success);
     void settingsUnlockFinished(QString botId, bool success);
     void tradeRequested(QString botId, QString requestId, QString side, QStringList symbols);
+    void robinhoodTradeRequested(QString botId, QString requestId, QString side, QStringList symbols);
+    void combinedTradeRequested(QString botId, QString requestId, QString side, QStringList symbols);
+    void tradeReportFinished(QString botId, QString requestId);
 private:
     QPointer<TelegramBotStore> m_store;
     TelegramBotStore::Entries m_entries;

@@ -65,12 +65,14 @@ struct TelegramAgent::State
     quint64 generation = 0;
     QSet<QNetworkReply *> pending;
     QTimer pollTimer;
+    enum class Broker { Publics, Robinhood, Combined };
     struct PendingReply {
         qint64 updateId;
         qint64 chatId;
         bool statusRequested;
         QString side;
         QStringList symbols;
+        Broker broker = Broker::Publics;
     };
     QQueue<PendingReply> acknowledgements;
     QSet<qint64> allowedChatIds;
@@ -78,12 +80,47 @@ struct TelegramAgent::State
     bool ledgerPathInjected = false;
     QString tradeTicket;
     qint64 tradeChat = 0;
-    QQueue<QString> tradeReports;
+    struct TradeReport { QString text; QString finishedRequest; };
+    QQueue<TradeReport> tradeReports;
+    bool reportSending = false;
+    void settleReport(QString requestId)
+    {
+        // Never run stage-continuation observers inside a reply/abort stack.
+        QTimer::singleShot(0, q, [owner = QPointer<TelegramAgent>(q), requestId = std::move(requestId)] {
+            if (owner) emit owner->tradeReportFinished(requestId);
+        });
+    }
+    void discardReports(bool waitForInFlight = false)
+    {
+        QQueue<TradeReport> markers;
+        while (!tradeReports.isEmpty()) {
+            const auto report = tradeReports.dequeue();
+            if (!report.finishedRequest.isEmpty()) {
+                if (waitForInFlight && reportSending) markers.enqueue(report);
+                else settleReport(report.finishedRequest);
+            }
+        }
+        tradeReports = std::move(markers);
+    }
+    void appendReports(const QStringList &messages)
+    {
+        for (const auto &message : messages)
+            for (const auto &chunk : chunks(message)) tradeReports.enqueue({chunk, {}});
+    }
     void sendTradeReport()
     {
-        if (!active || tradeReports.isEmpty()) return;
-        const auto text = tradeReports.dequeue();
-        sendText(tradeChat, text, true);
+        if (!active || reportSending) return;
+        while (!tradeReports.isEmpty()) {
+            const auto report = tradeReports.dequeue();
+            if (!report.finishedRequest.isEmpty()) { settleReport(report.finishedRequest); continue; }
+            reportSending = true;
+            sendText(tradeChat, report.text, true);
+            return;
+        }
+        if (!tradeTicket.isEmpty()) return; // Intermediate reports do not retire the job.
+        tradeChat = 0;
+        dispatchBusy = false;
+        QTimer::singleShot(0, q, [this] { sendNext(); });
     }
     // Small, auditable HTML subset. Unknown markup is data, not executable HTML.
     static QStringList chunks(const QString &input)
@@ -314,8 +351,12 @@ struct TelegramAgent::State
             text == QStringLiteral("status") || text == QStringLiteral("/status"), {}, {}};
         // ASCII only: never case-fold arbitrary Unicode into a valid ticker.
         static const QRegularExpression command(QStringLiteral(
-            "\\A/?publics_auto_(buy|sell)[ \t]+([A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?(?:[ \t]*,[ \t]*[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?)*)\\z"));
-        if (message.value("text").toString().size() <= 1024 && allowedChatIds.contains(item.chatId)
+            "\\A/?(publics|robinhood)_auto_(buy|sell)[ \t]+([A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?(?:[ \t]*,[ \t]*[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?)*)\\z"));
+        // Composite jobs use the brokers' intersection: never let Publics strip
+        // punctuation/digits and silently trade a different symbol.
+        static const QRegularExpression combinedCommand(QStringLiteral(
+            "\\A/?auto_(buy|sell)[ \t]+([A-Za-z]{1,10}(?:[ \t]*,[ \t]*[A-Za-z]{1,10})*)\\z"));
+        if (message.value("text").toString().size() <= 4096 && allowedChatIds.contains(item.chatId)
             && !message.contains("forward_origin") && !message.contains("via_bot")
             && !message.contains("is_automatic_forward") && !message.contains("is_from_offline")
             && !message.contains("guest_bot_caller_user") && !message.contains("guest_bot_caller_chat")
@@ -323,11 +364,23 @@ struct TelegramAgent::State
             && !message.contains("direct_messages_topic") && !message.contains("edit_date")) {
             const auto match = command.match(text);
             if (match.hasMatch()) {
-                auto symbols = match.captured(2).split(QLatin1Char(','));
+                const bool robinhood = match.captured(1) == QStringLiteral("robinhood");
+                auto symbols = match.captured(3).split(QLatin1Char(','));
                 for (auto &symbol : symbols) symbol = symbol.trimmed().toUpper();
-                if (symbols.size() <= 50) {
+                if (robinhood || (message.value("text").toString().size() <= 1024 && symbols.size() <= 50)) {
                     symbols.removeDuplicates();
-                    item.side = match.captured(1);
+                    item.broker = robinhood ? Broker::Robinhood : Broker::Publics;
+                    item.side = match.captured(2);
+                    item.symbols = std::move(symbols);
+                }
+            } else {
+                const auto combined = combinedCommand.match(text);
+                if (combined.hasMatch()) {
+                    auto symbols = combined.captured(2).split(QLatin1Char(','));
+                    for (auto &symbol : symbols) symbol = symbol.trimmed().toUpper();
+                    symbols.removeDuplicates();
+                    item.broker = Broker::Combined;
+                    item.side = combined.captured(1);
                     item.symbols = std::move(symbols);
                 }
             }
@@ -419,7 +472,12 @@ struct TelegramAgent::State
                 .arg(chat).arg(generation).arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
             // Busy + immutable notification context and durable claim precede the
             // direct signal. A synchronous receiver may complete, stop or delete us.
-            emit q->tradeCommandReceived(tradeTicket, acknowledgement.side, acknowledgement.symbols);
+            if (acknowledgement.broker == Broker::Combined)
+                emit q->combinedTradeCommandReceived(tradeTicket, acknowledgement.side, acknowledgement.symbols);
+            else if (acknowledgement.broker == Broker::Robinhood)
+                emit q->robinhoodTradeCommandReceived(tradeTicket, acknowledgement.side, acknowledgement.symbols);
+            else
+                emit q->tradeCommandReceived(tradeTicket, acknowledgement.side, acknowledgement.symbols);
             return; // Never touch State after emitting a domain command.
         }
         if (acknowledgement.statusRequested) {
@@ -504,8 +562,7 @@ struct TelegramAgent::State
                     fail(QStringLiteral("Telegram acknowledgement delivery is uncertain; invalid receipt. Not retried."));
                     return;
                 }
-                if (html && !tradeReports.isEmpty()) { sendTradeReport(); return; }
-                if (html) tradeChat = 0;
+                if (html) { reportSending = false; sendTradeReport(); return; }
                 dispatchBusy = false;
                 sendNext();
             });
@@ -576,7 +633,7 @@ struct TelegramAgent::State
         dispatchBusy = false;
         pollTimer.stop();
         acknowledgements.clear();
-        tradeTicket.clear(); tradeChat = 0; tradeReports.clear();
+        tradeTicket.clear(); tradeChat = 0; reportSending = false; discardReports();
         admitted.clear(); admissionOrder.clear();
         offset = 0;
         botId = 0;
@@ -787,7 +844,7 @@ void TelegramAgent::setAllowedChatIds(QStringList ids)
         for (const auto id : d->allowedChatIds) effective.append(QString::number(id));
         d->manager->setAllowedChatIds(effective);
     }
-    if (d->tradeChat && !d->allowedChatIds.contains(d->tradeChat)) d->tradeReports.clear();
+    if (d->tradeChat && !d->allowedChatIds.contains(d->tradeChat)) d->discardReports(true);
 }
 void TelegramAgent::setCommandLedgerPathForTests(QString path)
 {
@@ -800,14 +857,17 @@ void TelegramAgent::completeTradeCommand(QString requestId, QStringList htmlMess
 {
     if (!d->active || requestId.isEmpty() || requestId != d->tradeTicket) return;
     d->tradeTicket.clear(); // Consume before any synchronous callbacks.
-    if (d->allowedChatIds.contains(d->tradeChat)) {
-        for (const auto &message : htmlMessages)
-            for (const auto &chunk : State::chunks(message)) d->tradeReports.enqueue(chunk);
-    }
-    if (!d->tradeReports.isEmpty()) { d->sendTradeReport(); return; }
-    d->tradeChat = 0;
-    d->dispatchBusy = false;
-    QTimer::singleShot(0, this, [this] { d->sendNext(); });
+    if (d->allowedChatIds.contains(d->tradeChat)) d->appendReports(htmlMessages);
+    d->sendTradeReport();
+}
+bool TelegramAgent::reportTradeCommand(QString requestId, QStringList htmlMessages)
+{
+    if (!d->active || requestId.isEmpty() || requestId != d->tradeTicket
+        || !d->allowedChatIds.contains(d->tradeChat)) return false;
+    d->appendReports(htmlMessages);
+    d->tradeReports.enqueue({{}, requestId});
+    d->sendTradeReport();
+    return true;
 }
 void TelegramAgent::start(QString token)
 {

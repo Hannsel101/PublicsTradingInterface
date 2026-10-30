@@ -18,6 +18,7 @@ public:
     QStringList requestedMethods;
     int healthStatus = 200;
     bool holdHealth = false;
+    bool loseFirstMessageAcknowledgement = false;
     bool holdIdentity = false;
     bool holdWebhookDeletion = false;
     QUrl registeredWebhook;
@@ -74,6 +75,10 @@ public:
                     } else if (path.endsWith("/sendMessage")) {
                         const auto payload = QJsonDocument::fromJson(bytes->mid(end + 4, length)).object();
                         messages.append(payload);
+                        if (loseFirstMessageAcknowledgement && messages.size() == 1) {
+                            socket->abort();
+                            return;
+                        }
                         const QByteArray body = QJsonDocument(QJsonObject{{"ok", true}, {"result", QJsonObject{
                             {"message_id", messages.size()}, {"date", 1700000001},
                             {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}}}}).toJson(QJsonDocument::Compact);

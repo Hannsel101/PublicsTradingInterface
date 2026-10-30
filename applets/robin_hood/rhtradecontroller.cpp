@@ -126,6 +126,7 @@ bool RHTradeController::submit(QString input, QString side) {
     refreshAvailability();
     if (!guard || guard->m_epoch != before || !available()) return false;
     const auto epoch = ++m_epoch;
+    m_authenticationRequired = false;
     m_buyPlans.clear(); m_preflighting = false;
     m_symbols = symbols; m_side = side; m_row = 0; m_results.clear(); m_error.clear(); m_title.clear();
     m_busy = true; m_complete = false; m_visible = true; m_cancelled = false; m_acquiring = true;
@@ -231,7 +232,10 @@ void RHTradeController::begin(Session session) {
             const auto a = raw.toMap();
             m_results.append(QVariantMap{{"accountNumber", a.value("accountNumber")}, {"accountLabel", safeLabel(a.value("displayName").toString())},
                 {"symbol", symbol}, {"quantity", m_side == "buy" ? "1" : ""}, {"side", m_side}, {"status", "pending"},
-                {"success", false}, {"message", "Waiting"}, {"orderId", ""}, {"refId", ""}});
+                {"success", false}, {"message", "Waiting"}, {"orderId", ""}, {"refId", ""},
+                {"authenticationRequired", false},
+                {"orderPostAttempted", false}, {"orderPostTransportOk", false},
+                {"orderPostHttpStatus", 0}, {"orderPostNetworkError", 0}});
         }
     };
     populateResults();
@@ -286,6 +290,14 @@ void RHTradeController::preflightBuy() {
     if (m_buyPlans.size() == m_symbols.size()) { m_preflighting = false; nextRow(); return; }
     pages(Read::Instruments, m_symbols.at(m_buyPlans.size()), [this](QJsonArray a) { resolveInstrument(a); });
 }
+void RHTradeController::recordAuthenticationFailure(int httpStatus) {
+    if (httpStatus != 401 && httpStatus != 403) return;
+    m_authenticationRequired = true;
+    if (m_row < m_results.size()) {
+        auto row = m_results[m_row].toMap();
+        row.insert("authenticationRequired", true); m_results[m_row] = row;
+    }
+}
 void RHTradeController::pages(Read read, QString scope, PageDone done, QUrl page, QJsonArray accumulated, QSet<QString> visited) {
     QPointer<RHTradeController> guard(this); const auto epoch = m_epoch;
     if (!valid()) { if (guard && guard->m_epoch == epoch) finish("Trading session expired or changed."); return; }
@@ -298,6 +310,7 @@ void RHTradeController::pages(Read read, QString scope, PageDone done, QUrl page
         reply->deleteLater();
         if (!guard || guard->m_epoch != epoch || !m_busy || m_reply != reply) return;
         m_reply.clear();
+        recordAuthenticationFailure(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt());
         if (!valid()) { if (guard && guard->m_epoch == epoch) finish("Trading session expired or changed."); return; }
         const QByteArray bytes = reply->isReadable() ? reply->readAll() : QByteArray{}; QJsonParseError error;
         const auto document = QJsonDocument::fromJson(bytes, &error);
@@ -414,6 +427,7 @@ void RHTradeController::dispatch(QJsonObject instrument, QString quantity, QStri
     order.quantity = quantity; order.side = m_side; order.buyKind = kind; order.price = price; order.quoteTimestamp = capturedAt; order.askPrice = ask; order.bidPrice = bid; order.refId = row.value("refId").toString();
     auto *reply = m_network.sendStockOrder(order, m_session.token, m_session.authKind, nullptr, m_deps.loopbackLiveOrdersForTests);
     if (!reply) { result("failed", "Order rejected before dispatch.", false, {}, true); return; }
+    row.insert("orderPostAttempted", true); m_results[m_row] = row;
     m_reply = reply; m_posting = true;
     m_attemptDiagnostic = "post[http=0,qt=0,pending] lookup[not_dispatched]";
     connect(reply, &QNetworkReply::finished, this, [this, guard, epoch, reply, order] {
@@ -430,6 +444,17 @@ void RHTradeController::orderReceipt(QNetworkReply *reply, const RHNetworkEngine
     const auto doc = QJsonDocument::fromJson(bytes, &parse); const auto object = doc.object();
     const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const int networkError = int(reply->error());
+    recordAuthenticationFailure(status);
+    if (!lookup) {
+        // Initial POST transport evidence is independent of receipt verification.
+        // Store before valid()/ownership callbacks can cancel or destroy us, and
+        // never replace it with the reconciliation GET's transport outcome.
+        auto row = m_results[m_row].toMap();
+        row.insert("orderPostTransportOk", networkError == QNetworkReply::NoError && status >= 200 && status < 300);
+        row.insert("orderPostHttpStatus", status);
+        row.insert("orderPostNetworkError", networkError);
+        m_results[m_row] = row;
+    }
     const bool boundedObject = bytes.size() <= 1024 * 1024 && parse.error == QJsonParseError::NoError && doc.isObject();
     if (!lookup && boundedObject && reply->error() != QNetworkReply::OperationCanceledError
         && reply->error() != QNetworkReply::TimeoutError && status >= 400 && status < 500 && status != 408) {
@@ -532,8 +557,9 @@ void RHTradeController::orderReceipt(QNetworkReply *reply, const RHNetworkEngine
                     orderReceipt(pending, order, true, id, diagnostic, true);
                 });
             };
-            connect(read, &QNetworkReply::finished, this, [state, check, stopUnknown, pending] {
-                if (!pending) return;
+            connect(read, &QNetworkReply::finished, this, [this, guard, epoch, state, check, stopUnknown, pending] {
+                if (!guard || guard->m_epoch != epoch || !pending || m_reply != pending) return;
+                recordAuthenticationFailure(pending->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt());
                 if (pending->error() != QNetworkReply::NoError) { stopUnknown("transport"); return; }
                 state->responseReady = true; check();
             });

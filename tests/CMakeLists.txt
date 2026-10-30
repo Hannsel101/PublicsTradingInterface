@@ -23,6 +23,11 @@ if(TARGET telegram_bots_ui)
         telegram_bots_trading publics_trading)
     target_compile_definitions(test_telegrampublicstrades PRIVATE
         "PUBLICS_TELEGRAM_EXPECT_LIVE=$<OR:$<CONFIG:Release>,$<BOOL:${RELEASE_BUILD}>>")
+    publics_add_test(test_telegramcombinedtradeservice unit/test_telegramcombinedtradeservice.cpp
+        telegram_bots_trading)
+    publics_add_test(test_telegramrobinhoodtrades integration/test_telegramrobinhoodtrades.cpp
+        telegram_bots_trading rh_trading)
+    set_tests_properties(test_telegramrobinhoodtrades PROPERTIES TIMEOUT 240)
     publics_add_test(test_telegramtradebridge integration/test_telegramtradebridge.cpp
         telegram_bots_applet telegram_bots_backend telegram_bots_trading publics_auth publics_api publics_trading)
     set_tests_properties(test_telegramtradebridge PROPERTIES TIMEOUT 120)
@@ -32,6 +37,8 @@ if(TARGET telegram_bots_ui)
     publics_add_test(test_telegramwebhookmanager unit/test_telegramwebhookmanager.cpp telegram_bots_runtime)
     publics_add_test(test_telegramwebhookagent unit/test_telegramwebhookagent.cpp telegram_bots_runtime)
     set_tests_properties(test_telegrambotruntime test_telegramwebhookhost test_telegramwebhookagent PROPERTIES TIMEOUT 240)
+    # The expanded three-route grammar/auth/replay matrix includes bounded network deadlines.
+    set_tests_properties(test_telegrambotruntime PROPERTIES TIMEOUT 480)
     publics_add_test(test_telegrampasswordbridge integration/test_telegrampasswordbridge.cpp
         telegram_bots_backend Qt6::Network)
     add_dependencies(test_telegrampasswordbridge test_telegramwebhookagent)

@@ -4,6 +4,7 @@
 #include <QQmlContext>
 #include <QQmlExtensionPlugin>
 #include <QQuickItem>
+#include <QTemporaryDir>
 #include <memory>
 
 #include "launchercontroller.h"
@@ -29,10 +30,82 @@ public:
     }
 };
 
+class TelegramRobinhoodTradeService;
+
 class TelegramBotsAppletTest final : public QObject
 {
     Q_OBJECT
 private slots:
+    void combinedCommandsSendSeparateBrokerReportsInOrder_data()
+    {
+        QTest::addColumn<QString>("command");
+        QTest::newRow("buy") << QStringLiteral("auto_buy AAPL, MSFT");
+        QTest::newRow("sell") << QStringLiteral("auto_sell AAPL, MSFT");
+    }
+
+    void combinedCommandsSendSeparateBrokerReportsInOrder()
+    {
+        QFETCH(QString, command);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        ControllerBotServer server;
+        AppletMemoryBotStore store;
+        TelegramBotsController controller(&store, [&server, &directory](QObject *owner) {
+            auto *runtime = new TelegramBotRuntime(server.root(), owner);
+            runtime->setCommandLedgerPathForTests(directory.filePath(QStringLiteral("ledger")));
+            return runtime;
+        });
+        TelegramBotsApplet telegram(&controller, nullptr,
+            static_cast<TelegramRobinhoodTradeService *>(nullptr), nullptr);
+        controller.load();
+        QVERIFY(controller.startBotWithPassword(QStringLiteral("one"), QStringLiteral("fixture password 123")));
+        QTRY_COMPARE(server.polls.size(), 1);
+        const auto socket = server.polls.takeFirst();
+        QVERIFY(socket);
+        ControllerBotServer::answer(socket, QJsonArray{QJsonObject{
+            {"update_id", 1}, {"message", QJsonObject{
+                {"message_id", 1}, {"date", 1700000000}, {"text", command},
+                {"from", QJsonObject{{"id", 42}, {"is_bot", false}}},
+                {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}}}}});
+        QTRY_COMPARE(server.messages.size(), 2);
+        QVERIFY(server.messages.first().value("text").toString().contains(QStringLiteral("Publics")));
+        QVERIFY(server.messages.last().value("text").toString().contains(QStringLiteral("Robinhood")));
+        for (const auto &message : server.messages)
+            QCOMPARE(message.value("chat_id").toInteger(), qint64(42));
+        QVERIFY(!controller.busy());
+        QVERIFY(controller.stopAll());
+    }
+
+    void unavailableRobinhoodRouteReturnsBrokerSpecificFailure()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        ControllerBotServer server;
+        AppletMemoryBotStore store;
+        TelegramBotsController controller(&store, [&server, &directory](QObject *owner) {
+            auto *runtime = new TelegramBotRuntime(server.root(), owner);
+            runtime->setCommandLedgerPathForTests(directory.filePath(QStringLiteral("ledger")));
+            return runtime;
+        });
+        TelegramBotsApplet telegram(&controller, nullptr,
+            static_cast<TelegramRobinhoodTradeService *>(nullptr), nullptr);
+        controller.load();
+        QVERIFY(controller.startBotWithPassword(QStringLiteral("one"), QStringLiteral("fixture password 123")));
+        QTRY_COMPARE(server.polls.size(), 1);
+        const auto socket = server.polls.takeFirst();
+        QVERIFY(socket);
+        ControllerBotServer::answer(socket, QJsonArray{QJsonObject{
+            {"update_id", 1}, {"message", QJsonObject{
+                {"message_id", 1}, {"date", 1700000000}, {"text", "robinhood_auto_buy AAPL"},
+                {"from", QJsonObject{{"id", 42}, {"is_bot", false}}},
+                {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}}}}});
+        QTRY_COMPARE(server.messages.size(), 1);
+        QCOMPARE(server.messages.first().value("text").toString(),
+            QStringLiteral("🔴 Robinhood trading is unavailable. No order was submitted."));
+        QVERIFY(!controller.busy());
+        QVERIFY(controller.stopAll());
+    }
+
     void healthFailureShowsNotActiveAndRecoveryRestoresBadge()
     {
         QQmlApplicationEngine engine;

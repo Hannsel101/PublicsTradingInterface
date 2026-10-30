@@ -545,6 +545,23 @@ TestCase {
         compare(error.textFormat, Text.PlainText)
     }
 
+    function test_passwordVaultNoticeRemoved_data() {
+        return test_actionsFollowManageContainer_data()
+    }
+    function test_passwordVaultNoticeRemoved(data) {
+        const view = openConsole(data.width, data.height)
+        compare(findChild(view, "telegramVaultNotice"), null)
+        verify(findChild(view, "startBot") !== null)
+        const stop = findChild(view, "stopBot")
+        const error = findChild(view, "telegramRuntimeError")
+        const page = findChild(view, "telegramPageScroller")
+        verify(stop !== null && error !== null && page !== null)
+        compare(error.textFormat, Text.PlainText)
+        verify(waitForPolish(appWindow))
+        tryVerify(() => Math.abs(page.contentHeight
+            - stop.mapToItem(page.contentItem, 0, stop.height).y - view.pageMargin) <= 1)
+    }
+
     function test_actionsFollowManageContainer_data() {
         return [{tag: "desktop", width: 1000, height: 700},
                 {tag: "compact", width: 360, height: 620}]
