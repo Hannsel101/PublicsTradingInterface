@@ -1,5 +1,10 @@
 # Progress
 
+## Ignore empty trade commands; uppercase symbols
+- Added exact optional-slash no-argument check for all six trading commands after existing envelope authorization, before queue capacity/admission/durable trade claim. Whitespace-only argument tails ignored; ordinary unknown messages retain existing replies and intake continues. Debug sanitized diagnostics remain unchanged.
+- Observed RED: empty-command polling test emitted sendMessage instead of the next getUpdates. After fix, polling and authenticated managed-webhook tests cover24 bare/slash/whitespace variants with zero domain calls, replies or watermark writes. Six-route lowercase/mixed-case tests confirm existing ASCII normalization produces ordered deduplicated AAPL/MSFT/NVDA before domain dispatch. Actual Robinhood/combined loopback trade fixtures now include lower/mixed-case inputs.
+- Rebuilt actual Qt6.12 Debug/Release apps;5/5 focused targets passed in each (runtime, webhook agent, controller, diagnostics, actual trade bridge). Focused ASan polling9checks, webhook3checks and real bridge CTest1/1 passed; leaks disabled. Only synthetic providers/stores; no real brokerage orders.
+
 ## Telegram console footer removal
 - Removed only telegramVaultNotice explanatory label from CoreView; no replacement prose or reserved layout row. Password vault, brokerage isolation, commands, live status/errors and actions unchanged.
 - New desktop/360px composed-console regression observed both RED rows before deletion; now asserts label absence, preserved runtime-error/action controls and no leftover bottom gap. Actual Qt6.12 Debug/Release application rebuilds succeeded; full QML and Telegram applet CTest targets passed2/2 in each configuration.

@@ -94,6 +94,69 @@ class TestTelegramBotRuntime final : public QObject
             {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}});
     }
 private slots:
+    void emptyTradeCommandsAreSilentAndDoNotClaimTrades()
+    {
+        QTemporaryDir ledger;
+        BotServer server;
+        TelegramBotRuntime runtime(server.root());
+        runtime.setAllowedChatIds({"42"});
+        runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy publics(&runtime, &TelegramBotRuntime::tradeCommandReceived);
+        QSignalSpy robinhood(&runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived);
+        QSignalSpy combined(&runtime, &TelegramBotRuntime::combinedTradeCommandReceived);
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1);
+        BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        QJsonArray incoming;
+        qint64 id = 1;
+        for (const auto &command : QStringList{"publics_auto_buy", "publics_auto_sell",
+                "robinhood_auto_buy", "robinhood_auto_sell", "auto_buy", "auto_sell"}) {
+            for (const auto &text : QStringList{command, "/" + command,
+                    " \t" + command + " \t\r\n", "/" + command + " \t"})
+                incoming.append(tradeUpdate(id++, text));
+        }
+        BotServer::answer(server.requests[1], incoming);
+        QTRY_COMPARE(server.requests.size(), 3);
+        QVERIFY(server.requests[2].path.endsWith("/getUpdates"));
+        QCOMPARE(publics.size(), 0); QCOMPARE(robinhood.size(), 0); QCOMPARE(combined.size(), 0);
+        QVERIFY(!QFile::exists(ledger.filePath("123456.watermark")));
+        // Ignoring empty commands must not strand intake or alter unrelated replies.
+        BotServer::answer(server.requests[2], QJsonArray{tradeUpdate(id, "unrelated message")});
+        QTRY_COMPARE(server.requests.size(), 4);
+        QVERIFY(server.requests[3].path.endsWith("/sendMessage"));
+        QCOMPARE(server.requests[3].body["text"].toString(), QStringLiteral("Message received."));
+        runtime.stop();
+    }
+
+    void lowercaseTickersAreNormalizedBeforeDomainDispatch_data()
+    {
+        QTest::addColumn<QString>("command");
+        for (const auto &command : QStringList{"publics_auto_buy", "publics_auto_sell",
+                "robinhood_auto_buy", "robinhood_auto_sell", "auto_buy", "auto_sell"})
+            QTest::newRow(qPrintable(command)) << command;
+    }
+    void lowercaseTickersAreNormalizedBeforeDomainDispatch()
+    {
+        QFETCH(QString, command);
+        QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
+        runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy publics(&runtime, &TelegramBotRuntime::tradeCommandReceived);
+        QSignalSpy robinhood(&runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived);
+        QSignalSpy combined(&runtime, &TelegramBotRuntime::combinedTradeCommandReceived);
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, command + " aapl, mSfT, nvda, AaPl")});
+        const auto &commands = command.startsWith("publics_") ? publics
+            : command.startsWith("robinhood_") ? robinhood : combined;
+        QTRY_COMPARE(commands.size(), 1);
+        QCOMPARE(publics.size() + robinhood.size() + combined.size(), 1);
+        QCOMPARE(commands[0][1].toString(), command.endsWith("sell") ? QString("sell") : QString("buy"));
+        QCOMPARE(commands[0][2].toStringList(), (QStringList{"AAPL", "MSFT", "NVDA"}));
+        runtime.stop();
+    }
+
     void authorizedTradeHasDurableAdmissionBeforeSignal()
     {
         QTemporaryDir ledger;

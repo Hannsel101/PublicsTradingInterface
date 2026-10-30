@@ -40,5 +40,7 @@ Add safe bot deletion, mandatory private Chat ID before Start, per-bot password-
 
 15. Remove Telegram vault footer copy — complete. Deleted the legacy-vault explanatory label and its layout slot from CoreView, preserving runtime errors/actions and vault behavior. Desktop/compact absence-and-bottom-spacing regression observed RED then GREEN. Rebuilt actual Debug/Release apps; QML and Telegram applet targets passed2/2 in each configuration.
 
+16. Empty trading commands and uppercase tickers — complete. All six exact commands (including optional slash/whitespace-only arguments) now return from shared admission before acknowledgement queue/trade claim; no Telegram reply or broker dispatch. Existing ASCII-validated uppercase normalization confirmed for buy/sell on all three routes; mixed/lowercase actual-composition rows retained. RED observed for unwanted no-argument acknowledgement, then GREEN. Actual Debug/Release app builds and5/5 focused CTest targets each passed; focused ASan polling/webhook/real bridge passed (leaks disabled).
+
 ## Verification scope
 Only injected keychain backends, synthetic passwords/tokens/IDs, loopback Telegram/brokerage servers and fake managed tunnel processes. No production keychain access, public tunnels, live Telegram mutation or orders. Preserve prior work; no commits unless requested. Each worker has a distinct build directory; parent owns final architecture-qt612-release and CMake.

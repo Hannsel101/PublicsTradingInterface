@@ -181,6 +181,34 @@ class TestTelegramWebhookAgent : public QObject
 {
     Q_OBJECT
 private slots:
+    void emptyTradeCommandsAreSilentOnWebhook()
+    {
+        QTemporaryDir ledger;
+        WebhookFixture f;
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
+        agent.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy publics(&agent, &TelegramAgent::tradeCommandReceived);
+        QSignalSpy robinhood(&agent, &TelegramAgent::robinhoodTradeCommandReceived);
+        QSignalSpy combined(&agent, &TelegramAgent::combinedTradeCommandReceived);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        qint64 id = 1;
+        for (const auto &command : QStringList{"publics_auto_buy", "publics_auto_sell",
+                "robinhood_auto_buy", "robinhood_auto_sell", "auto_buy", "auto_sell"}) {
+            for (const auto &text : QStringList{command, "/" + command,
+                    " \t" + command + " \t\r\n", "/" + command + " \t"})
+                QCOMPARE(f.post(f.update(id++, text)), 200);
+        }
+        QTest::qWait(100);
+        QCOMPARE(f.provider.count("sendMessage"), 0);
+        QCOMPARE(publics.size(), 0); QCOMPARE(robinhood.size(), 0); QCOMPARE(combined.size(), 0);
+        QVERIFY(!QFile::exists(ledger.filePath("123456.watermark")));
+        QCOMPARE(f.post(f.update(id, "unrelated message")), 200);
+        QTRY_COMPARE(f.provider.count("sendMessage"), 1);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
     void statusAndUnknownAreDeniedWithoutAllowlist()
     {
         WebhookFixture f;

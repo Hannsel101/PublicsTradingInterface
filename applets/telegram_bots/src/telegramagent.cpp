@@ -347,6 +347,10 @@ struct TelegramAgent::State
             || !positiveId(from.value("id")) || !positiveId(chat.value("id"))
             || from.value("id").toInteger() != chat.value("id").toInteger()) return true;
         const auto text = message.value("text").toString().trimmed();
+        static const QRegularExpression emptyTradeCommand(QStringLiteral(
+            "\\A/?(?:(?:publics|robinhood)_)?auto_(?:buy|sell)\\z"));
+        // No arguments: no reply, queued work or durable trade claim.
+        if (emptyTradeCommand.match(text).hasMatch()) return true;
         PendingReply item{id, chat.value("id").toInteger(),
             text == QStringLiteral("status") || text == QStringLiteral("/status"), {}, {}};
         // ASCII only: never case-fold arbitrary Unicode into a valid ticker.

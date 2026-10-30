@@ -135,10 +135,10 @@ private slots:
         QTest::addColumn<bool>("combined");
         QTest::addColumn<bool>("sell");
         QTest::addColumn<bool>("loseAck");
-        QTest::newRow("robinhood-buy") << QStringLiteral("robinhood_auto_buy AAPL") << false << false << false;
-        QTest::newRow("robinhood-sell") << QStringLiteral("robinhood_auto_sell AAPL") << false << true << false;
-        QTest::newRow("combined-buy") << QStringLiteral("auto_buy AAPL") << true << false << false;
-        QTest::newRow("combined-sell") << QStringLiteral("auto_sell AAPL") << true << true << false;
+        QTest::newRow("robinhood-buy") << QStringLiteral("robinhood_auto_buy aapl") << false << false << false;
+        QTest::newRow("robinhood-sell") << QStringLiteral("robinhood_auto_sell aApL") << false << true << false;
+        QTest::newRow("combined-buy") << QStringLiteral("auto_buy aapl") << true << false << false;
+        QTest::newRow("combined-sell") << QStringLiteral("auto_sell AaPl") << true << true << false;
         QTest::newRow("combined-lost-publics-report-ack") << QStringLiteral("auto_buy AAPL") << true << false << true;
     }
 
