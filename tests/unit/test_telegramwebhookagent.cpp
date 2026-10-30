@@ -7,6 +7,8 @@
 #include <QNetworkRequest>
 #include <QPointer>
 #include <QSignalSpy>
+#include <QTemporaryDir>
+#include <QFile>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QUrlQuery>
@@ -90,6 +92,7 @@ static quint16 freePort()
 
 struct WebhookFixture
 {
+    QTemporaryDir ownership;
     WebhookTestServer provider;
     WebhookTestServer health;
     TelegramAgent::WebhookOptions options;
@@ -104,6 +107,8 @@ struct WebhookFixture
     int healthStatus = 200;
     WebhookFixture()
     {
+        if (!ownership.isValid()) qFatal("Offline ownership directory unavailable");
+        options.tunnel.ownershipDirectory = ownership.filePath(QStringLiteral("tunnel-ownership"));
         options.tunnel.port = freePort();
         const auto inspector = freePort();
         options.tunnel.executable = QCoreApplication::applicationFilePath();
@@ -123,8 +128,8 @@ struct WebhookFixture
             } else if (method == "setWebhook") {
                 if (holdRegistration) return;
                 if (rejectRegistration) { WebhookTestServer::answer(r, false); return; }
-                urls[bot] = query.queryItemValue("url", QUrl::FullyDecoded);
-                secrets[bot] = query.queryItemValue("secret_token", QUrl::FullyDecoded);
+                urls[bot] = r.body.value("url").toString();
+                secrets[bot] = r.body.value("secret_token").toString();
                 WebhookTestServer::answer(r, true);
             } else if (method == "getWebhookInfo") {
                 if (holdInfo) return;
@@ -176,31 +181,130 @@ class TestTelegramWebhookAgent : public QObject
 {
     Q_OBJECT
 private slots:
+    void statusAndUnknownAreDeniedWithoutAllowlist()
+    {
+        WebhookFixture f;
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        QCOMPARE(f.post(f.update(1, "status")), 200);
+        QCOMPARE(f.post(f.update(2, "unknown")), 200);
+        QTest::qWait(100);
+        QCOMPARE(f.health.requests.size(), 0);
+        QCOMPARE(f.provider.count("sendMessage"), 0);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+    void saturatedCommandQueueIsRetryableNotAcknowledged()
+    {
+        QTemporaryDir ledger;
+        WebhookFixture f;
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
+        agent.setCommandLedgerPathForTests(ledger.path());
+        agent.setAllowedChatIds({"42"});
+        QSignalSpy commands(&agent, &TelegramAgent::tradeCommandReceived);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200);
+        QTRY_COMPARE(commands.size(), 1);
+        for (int i = 2; i <= 101; ++i)
+            QCOMPARE(f.post(f.update(i, "publics_auto_buy MSFT")), 200);
+        QCOMPARE(f.post(f.update(102, "publics_auto_buy NVDA")), 503);
+        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200); // duplicate, no work
+        QCOMPARE(commands.size(), 1);
+        QFile watermark(ledger.filePath("123456.watermark"));
+        QVERIFY(watermark.open(QIODevice::ReadOnly));
+        QCOMPARE(watermark.readAll(), QByteArray("PTI-TRADE-1\n123456\n101\n"));
+        connect(&agent, &TelegramAgent::tradeCommandReceived, &agent,
+            [&agent](const QString &id, const auto &, const auto &) { agent.completeTradeCommand(id, {}); });
+        agent.completeTradeCommand(commands[0][0].toString(), {});
+        QTRY_COMPARE(commands.size(), 101);
+        QCOMPARE(f.post(f.update(102, "publics_auto_buy NVDA")), 200);
+        QTRY_COMPARE(commands.size(), 102);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+    void durableAdmissionFailureReturnsRetryable503()
+    {
+        QTemporaryDir ledger;
+        QFile corrupt(ledger.filePath("123456.watermark"));
+        QVERIFY(corrupt.open(QIODevice::WriteOnly));
+        corrupt.write("not a valid ledger"); corrupt.close();
+        WebhookFixture f;
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
+        agent.setCommandLedgerPathForTests(ledger.path());
+        agent.setAllowedChatIds({"42"});
+        QSignalSpy commands(&agent, &TelegramAgent::tradeCommandReceived);
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 503);
+        QCOMPARE(commands.size(), 0);
+        QVERIFY(agent.active()); // transient ledger failure does not disable the retry route
+        QVERIFY(corrupt.remove());
+        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200);
+        QTRY_COMPARE(commands.size(), 1);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+    void webhookCommandsShareAuthorizationAndDurableBotScopedAdmission()
+    {
+        QTemporaryDir ledger;
+        WebhookFixture f;
+        TelegramAgent first(f.provider.root(), f.healthUrl(), f.options);
+        first.setAllowedChatIds({"42"});
+        TelegramAgent second(f.provider.root(), f.healthUrl(), f.options);
+        second.setAllowedChatIds({"42"});
+        for (auto *agent : {&first, &second}) {
+            agent->setCommandLedgerPathForTests(ledger.path()); agent->setAllowedChatIds({"42"});
+        }
+        QSignalSpy one(&first, &TelegramAgent::tradeCommandReceived), two(&second, &TelegramAgent::tradeCommandReceived);
+        first.start("123456:synthetic", "persisted_secret_123456"); second.start("654321:synthetic", "persisted_secret_654321");
+        QTRY_VERIFY_WITH_TIMEOUT(first.active() && second.active(), 5000);
+        QVERIFY(f.post(f.update(100, "publics_auto_buy AAPL"), "bot123456:synthetic", "wrong") >= 400);
+        auto denied = f.update(100, "publics_auto_buy AAPL"); auto message = denied["message"].toObject();
+        auto chat = message["chat"].toObject(); chat["id"] = 84; message["chat"] = chat; denied["message"] = message;
+        QCOMPARE(f.post(denied), 200); QCOMPARE(one.size(), 0);
+        QCOMPARE(f.post(f.update(100, "publics_auto_buy aapl, msft,aapl")), 200);
+        QTRY_COMPARE(one.size(), 1);
+        QCOMPARE(one[0][2].toStringList(), (QStringList{"AAPL", "MSFT"}));
+        QCOMPARE(f.post(f.update(100, "publics_auto_buy AAPL")), 200);
+        QCOMPARE(f.post(f.update(99, "publics_auto_buy NVDA")), 200); // monotonic old-ID rejection
+        QCOMPARE(f.post(f.update(100, "publics_auto_sell AAPL"), "bot654321:synthetic"), 200);
+        QTRY_COMPARE(two.size(), 1); QCOMPARE(two[0][1].toString(), QString("sell"));
+        QCOMPARE(one.size(), 1);
+        const auto stale = one[0][0].toString();
+        first.stop(); QTRY_VERIFY(!first.stopping());
+        first.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(first.active(), 5000);
+        first.completeTradeCommand(stale, {"STALE"});
+        QCOMPARE(f.post(f.update(100, "publics_auto_buy AAPL")), 200);
+        QTest::qWait(100); QCOMPARE(one.size(), 1); QCOMPARE(f.provider.count("sendMessage"), 0);
+        first.stop(); second.stop(); QTRY_VERIFY(!first.stopping() && !second.stopping());
+    }
     void explicitWebhookModeIsInitiallyIdle()
     {
         TelegramAgent::WebhookOptions options;
         TelegramAgent agent(QUrl("http://127.0.0.1:1"), QUrl("http://127.0.0.1:2/health"), options);
+        agent.setAllowedChatIds({"42"});
         QVERIFY(!agent.active()); QVERIFY(!agent.starting()); QVERIFY(!agent.stopping());
     }
     void registrationReadbackAndOwnedCleanup()
     {
         WebhookFixture f;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic");
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456");
         QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         QVERIFY(agent.healthy());
         const auto registration = f.provider.last("setWebhook");
-        QCOMPARE(registration.method, QByteArray("GET"));
-        const QUrlQuery query(registration.url);
-        QCOMPARE(query.queryItemValue("allowed_updates", QUrl::FullyDecoded), QString("[\"message\"]"));
-        QCOMPARE(query.queryItemValue("max_connections"), QString("1"));
-        QCOMPARE(query.queryItemValue("drop_pending_updates"), QString("false"));
-        QVERIFY(!query.queryItemValue("secret_token").isEmpty());
+        QCOMPARE(registration.method, QByteArray("POST"));
+        QVERIFY(!registration.url.hasQuery());
+        QCOMPARE(registration.body.value("allowed_updates").toArray(), QJsonArray{"message"});
+        QCOMPARE(registration.body.value("max_connections").toInt(), 1);
+        QCOMPARE(registration.body.value("drop_pending_updates"), QJsonValue(false));
+        QCOMPARE(registration.body.value("secret_token").toString(), QString("persisted_secret_123456"));
         QCOMPARE(f.provider.count("getWebhookInfo"), 1);
         QCOMPARE(f.provider.count("getUpdates"), 0);
         agent.stop();
         QVERIFY(agent.stopping()); QVERIFY(!agent.active()); QVERIFY(!agent.healthy()); QVERIFY(!agent.starting());
-        agent.start("654321:synthetic");
+        agent.start("654321:synthetic", "persisted_secret_654321");
         agent.stop();
         QTRY_VERIFY_WITH_TIMEOUT(!agent.stopping(), 5000);
         QCOMPARE(f.provider.count("getMe"), 1);
@@ -215,14 +319,21 @@ private slots:
     }
     void updatesDuringRegistrationWaitForVerifiedActivation()
     {
+        QTemporaryDir ledger;
         WebhookFixture f;
         f.holdInfo = true;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic");
+        agent.setAllowedChatIds({"42"});
+        agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy commands(&agent, &TelegramAgent::tradeCommandReceived);
+        agent.start("123456:synthetic", "persisted_secret_123456");
         QTRY_COMPARE_WITH_TIMEOUT(f.provider.count("getWebhookInfo"), 1, 5000);
         QVERIFY(agent.starting());
         QVERIFY(!agent.active());
         QCOMPARE(f.post(f.update(1, "/status")), 200);
+        QCOMPARE(f.post(f.update(2, "publics_auto_buy AAPL")), 200);
+        QCOMPARE(commands.size(), 0);
+        QVERIFY(QFile::exists(ledger.filePath("123456.watermark")));
         QCOMPARE(f.provider.count("sendMessage"), 0);
         QCOMPARE(f.health.requests.size(), 0);
         f.holdInfo = false;
@@ -230,7 +341,8 @@ private slots:
             {"url", f.urls.value("bot123456:synthetic")}, {"has_custom_certificate", false}, {"pending_update_count", 0}});
         QTRY_VERIFY(agent.active());
         QTRY_COMPARE_WITH_TIMEOUT(f.provider.count("sendMessage"), 1, 1500);
-        QCOMPARE(f.provider.last("sendMessage").body.value("text").toString(), QStringLiteral("Active"));
+        QCOMPARE(f.provider.last("sendMessage").body.value("text").toString(), QStringLiteral("🟢 Active"));
+        QTRY_COMPARE(commands.size(), 1);
         agent.stop();
         QTRY_VERIFY(!agent.stopping());
     }
@@ -239,14 +351,15 @@ private slots:
         WebhookFixture f;
         f.holdRegistration = true;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic");
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456");
         QTRY_COMPARE_WITH_TIMEOUT(f.provider.count("setWebhook"), 1, 5000);
         const auto registration = f.provider.last("setWebhook");
         agent.stop();
         QTest::qWait(250);
         QVERIFY(agent.stopping());
         const QUrlQuery query(registration.url);
-        f.urls["bot123456:synthetic"] = query.queryItemValue("url", QUrl::FullyDecoded);
+        f.urls["bot123456:synthetic"] = registration.body.value("url").toString();
         WebhookTestServer::answer(registration, true);
         QTRY_VERIFY_WITH_TIMEOUT(!agent.stopping(), 5000);
         QVERIFY(f.urls.value("bot123456:synthetic").isEmpty());
@@ -258,7 +371,8 @@ private slots:
         f.health.handler = {};
         f.holdSend = true;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic");
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456");
         QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         QCOMPARE(f.post(f.update(200, "/status")), 200);
         QTRY_COMPARE(f.health.requests.size(), 1);
@@ -269,7 +383,7 @@ private slots:
         QVERIFY(!f.health.requests.first().headers.contains("x-pti-health-secret"));
         WebhookTestServer::raw(f.health.requests.first(), "ok", 200);
         QTRY_COMPARE(f.provider.count("sendMessage"), 1);
-        QCOMPARE(f.provider.last("sendMessage").body.value("text").toString(), QString("Active"));
+        QCOMPARE(f.provider.last("sendMessage").body.value("text").toString(), QString("🟢 Active"));
         QCOMPARE(f.post(f.update(199)), 200);
         QCOMPARE(f.provider.count("sendMessage"), 1);
         f.acknowledge(f.provider.last("sendMessage"));
@@ -284,7 +398,8 @@ private slots:
         WebhookFixture f;
         f.healthStatus = 503;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         QCOMPARE(f.post(f.update(1, "status")), 200);
         QTRY_COMPARE(f.provider.count("sendMessage"), 1);
         QCOMPARE(f.provider.last("sendMessage").body.value("text").toString(), QString("Inactive"));
@@ -292,7 +407,7 @@ private slots:
         f.healthStatus = 200;
         QCOMPARE(f.post(f.update(2, "/status")), 200);
         QTRY_COMPARE(f.provider.count("sendMessage"), 2);
-        QCOMPARE(f.provider.last("sendMessage").body.value("text").toString(), QString("Active"));
+        QCOMPARE(f.provider.last("sendMessage").body.value("text").toString(), QString("🟢 Active"));
         QVERIFY(agent.healthy());
         agent.stop(); QTRY_VERIFY(!agent.stopping());
     }
@@ -300,8 +415,10 @@ private slots:
     {
         WebhookFixture f;
         TelegramAgent first(f.provider.root(), f.healthUrl(), f.options);
+        first.setAllowedChatIds({"42"});
         TelegramAgent second(f.provider.root(), f.healthUrl(), f.options);
-        first.start("123456:synthetic"); second.start("654321:synthetic");
+        second.setAllowedChatIds({"42"});
+        first.start("123456:synthetic", "persisted_secret_123456"); second.start("654321:synthetic", "persisted_secret_654321");
         QTRY_VERIFY_WITH_TIMEOUT(first.active() && second.active(), 5000);
         QVERIFY(f.urls.value("bot123456:synthetic") != f.urls.value("bot654321:synthetic"));
         QVERIFY(f.post(f.update(1), "bot123456:synthetic", "wrong") >= 400);
@@ -325,7 +442,8 @@ private slots:
     {
         WebhookFixture f;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         f.urls["bot123456:synthetic"] = "https://someone-else.invalid/new";
         agent.stop(); QTRY_VERIFY(!agent.stopping());
         QCOMPARE(f.provider.count("deleteWebhook"), 0);
@@ -336,8 +454,9 @@ private slots:
         WebhookFixture f; f.rejectRegistration = true;
         QTest::ignoreMessage(QtDebugMsg, "Telegram agent error: Telegram webhook registration was not confirmed.");
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
         QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
-        agent.start("123456:synthetic");
+        agent.start("123456:synthetic", "persisted_secret_123456");
         QTRY_VERIFY_WITH_TIMEOUT(!errors.isEmpty(), 5000);
         QTRY_VERIFY(!agent.stopping());
         QVERIFY(!agent.active()); QVERIFY(!agent.starting()); QVERIFY(!agent.healthy());
@@ -356,8 +475,9 @@ private slots:
             } else standard(r);
         };
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
         QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
-        agent.start("123456:synthetic");
+        agent.start("123456:synthetic", "persisted_secret_123456");
         QTRY_VERIFY_WITH_TIMEOUT(!errors.isEmpty(), 5000);
         QTRY_VERIFY(!agent.stopping());
         QVERIFY(!agent.active());
@@ -368,25 +488,27 @@ private slots:
     {
         WebhookFixture f;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         f.holdInfo = true;
         agent.stop();
         QTRY_COMPARE(f.provider.count("getWebhookInfo"), 2);
         QVERIFY(agent.stopping());
-        agent.start("654321:synthetic");
+        agent.start("654321:synthetic", "persisted_secret_654321");
         QCOMPARE(f.provider.count("getMe"), 1);
         f.holdInfo = false;
         WebhookTestServer::answer(f.provider.last("getWebhookInfo"), QJsonObject{
             {"url", f.urls.value("bot123456:synthetic")}, {"has_custom_certificate", false}, {"pending_update_count", 0}});
         QTRY_VERIFY(!agent.stopping());
-        agent.start("654321:synthetic"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        agent.start("654321:synthetic", "persisted_secret_654321"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         agent.stop(); QTRY_VERIFY(!agent.stopping());
     }
     void cleanupMalformedReadbackReportsUnknownWithoutDeletion()
     {
         WebhookFixture f;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
         f.malformedInfo = true;
         agent.stop(); QTRY_VERIFY(!agent.stopping());
@@ -399,14 +521,15 @@ private slots:
         WebhookFixture f;
         const auto health = QUrl(QStringLiteral("http://127.0.0.1:%1/health").arg(f.options.tunnel.port));
         TelegramAgent agent(f.provider.root(), health, f.options);
-        agent.start("123456:synthetic"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         QNetworkAccessManager network;
         auto *unauthorized = network.get(QNetworkRequest(health));
         QTRY_VERIFY(unauthorized->isFinished());
         QVERIFY(unauthorized->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() >= 400);
         QCOMPARE(f.post(f.update(1, "status")), 200);
         QTRY_COMPARE(f.provider.count("sendMessage"), 1);
-        QCOMPARE(f.provider.last("sendMessage").body.value("text").toString(), QString("Active"));
+        QCOMPARE(f.provider.last("sendMessage").body.value("text").toString(), QString("🟢 Active"));
         QVERIFY(agent.healthy());
         QCOMPARE(f.health.requests.size(), 0);
         agent.stop(); QTRY_VERIFY(!agent.stopping());
@@ -415,7 +538,8 @@ private slots:
     {
         WebhookFixture f;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
         QNetworkAccessManager network;
         auto exit = f.options.tunnel.inspectorUrl; exit.setPath("/exit");
@@ -430,8 +554,9 @@ private slots:
     {
         WebhookFixture f;
         auto *agent = new TelegramAgent(f.provider.root(), f.healthUrl(), f.options);
+        agent->setAllowedChatIds({"42"});
         QPointer<TelegramAgent> guard(agent);
-        agent->start("123456:synthetic"); QTRY_VERIFY_WITH_TIMEOUT(agent->active(), 5000);
+        agent->start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent->active(), 5000);
         f.malformedInfo = true;
         connect(agent, &TelegramAgent::errorOccurred, agent, [agent] { delete agent; });
         agent->stop();
@@ -444,18 +569,19 @@ private slots:
         WebhookFixture f;
         f.options.tunnel.inspectorUrl = QUrl("https://unsafe.invalid/api/tunnels");
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
         bool restarted = false;
         bool staleError = false;
         connect(&agent, &TelegramAgent::stateChanged, &agent, [&] {
             if (!restarted && !agent.active() && !agent.starting() && !agent.stopping()) {
                 restarted = true;
-                agent.start("654321:synthetic");
+                agent.start("654321:synthetic", "persisted_secret_654321");
             }
         });
         connect(&agent, &TelegramAgent::errorOccurred, &agent, [&](const auto &) {
             if (restarted && agent.starting()) staleError = true;
         });
-        agent.start("123456:synthetic");
+        agent.start("123456:synthetic", "persisted_secret_123456");
         QTRY_COMPARE(f.provider.count("getMe"), 2);
         QTRY_VERIFY(!agent.starting() && !agent.stopping());
         QVERIFY(!staleError);
@@ -464,7 +590,8 @@ private slots:
     {
         WebhookFixture f;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
         f.holdInfo = f.holdDelete = true;
         QElapsedTimer elapsed; elapsed.start();
@@ -487,12 +614,13 @@ private slots:
     {
         WebhookFixture f;
         TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
-        agent.start("123456:synthetic"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
         bool restarted = false;
         connect(&agent, &TelegramAgent::stateChanged, &agent, [&] {
             if (!restarted && !agent.active() && !agent.starting() && !agent.stopping()) {
                 restarted = true;
-                agent.start("654321:synthetic");
+                agent.start("654321:synthetic", "persisted_secret_654321");
             }
         });
         agent.stop();

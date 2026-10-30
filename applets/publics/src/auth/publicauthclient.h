@@ -33,6 +33,10 @@ class PublicAuthClient : public QObject {
 public:
     using CredentialCallback = std::function<void(const QString &secret, const QString &error)>;
     using CredentialLoader = std::function<void(const QString &label, const CredentialCallback &done)>;
+    using KeyIndexCallback = std::function<void(QKeychain::Error error, const QString &serializedLabels)>;
+    using KeyIndexReader = std::function<void(const KeyIndexCallback &done)>;
+    enum class KeyIndexState { NotStarted, Loading, Ready, Failed };
+    Q_ENUM(KeyIndexState)
 
     // session active is set to true when tokens are returned by the authorization request
     Q_PROPERTY(bool sessionActive READ sessionActive WRITE setSessionActive NOTIFY sessionActiveChanged FINAL)
@@ -43,6 +47,7 @@ public:
     Q_PROPERTY(bool apiKeyReady READ apiKeyReady NOTIFY apiKeyReadyChanged FINAL)
     Q_PROPERTY(bool apiKeyLoading READ apiKeyLoading NOTIFY apiKeyLoadingChanged FINAL)
     Q_PROPERTY(bool apiKeyIndexLoading READ apiKeyIndexLoading NOTIFY apiKeyIndexLoadingChanged FINAL)
+    Q_PROPERTY(KeyIndexState apiKeyIndexState READ apiKeyIndexState NOTIFY apiKeyIndexStateChanged FINAL)
     Q_PROPERTY(QString apiKeyError READ apiKeyError NOTIFY apiKeyErrorChanged FINAL)
 
     /*
@@ -58,6 +63,13 @@ public:
                      const QString &settingsGroupName,
                      const QUrl &authBaseUrl,
                      CredentialLoader credentialLoader,
+                     QObject *parent = nullptr);
+    PublicAuthClient(const QString &secretKey,
+                     const QString &keychainServiceName,
+                     const QString &settingsGroupName,
+                     const QUrl &authBaseUrl,
+                     CredentialLoader credentialLoader,
+                     KeyIndexReader keyIndexReader,
                      QObject *parent = nullptr);
 
     /*
@@ -77,6 +89,7 @@ public:
     Q_INVOKABLE bool removeStoredApiKey(const QString &label);
     Q_INVOKABLE bool setApiKeyNickname(const QString &label, const QString &nickname);
     Q_INVOKABLE QString apiKeyDisplayName(const QString &label) const;
+    bool refreshApiKeyNicknames();
 
     static QStringList normalizedStoredApiKeyLabels(const QStringList &labels);
     static QString nextApiKeyLabel(const QStringList &labels);
@@ -105,6 +118,7 @@ public:
     bool apiKeyReady() const;
     bool apiKeyLoading() const;
     bool apiKeyIndexLoading() const;
+    KeyIndexState apiKeyIndexState() const { return m_apiKeyIndexState; }
     QString apiKeyError() const;
 
 private slots:
@@ -148,6 +162,7 @@ signals:
     void apiKeyReadyChanged();
     void apiKeyLoadingChanged();
     void apiKeyIndexLoadingChanged();
+    void apiKeyIndexStateChanged();
     void apiKeyErrorChanged();
     void apiKeyRemovalFinished(const QString &label, bool succeeded, const QString &message);
     void authorizationFailed(const QString &reason);
@@ -168,6 +183,8 @@ private:
     bool m_apiKeyReady = false;
     bool m_apiKeyLoading = false;
     bool m_apiKeyIndexLoading = false;
+    KeyIndexState m_apiKeyIndexState = KeyIndexState::NotStarted;
+    quint64 m_keyIndexGeneration = 0;
     quint64 m_apiKeyReadGeneration = 0;
     quint64 m_tokenRequestGeneration = 0;
     QString m_apiKeyError;
@@ -175,11 +192,15 @@ private:
     QString m_settingsGroup;
     QUrl m_authBaseUrl;
     CredentialLoader m_credentialLoader;
+    KeyIndexReader m_keyIndexReader;
 
     QString keychainKeyForLabel(const QString &label) const;
     static QString serializeApiKeyLabels(const QStringList &labels);
     static bool deserializeApiKeyLabels(const QString &serializedLabels, QStringList *labels);
     void readApiKeyLabelIndex(const QStringList &localLabels);
+    void applyApiKeyLabelIndex(QKeychain::Error error, const QString &serializedLabels,
+                              const QStringList &localLabels);
+    void finishApiKeyDiscovery(bool succeeded, const QString &error = {});
     void writeApiKeyLabelIndex(const QStringList &labels,
                                const std::function<void(bool)> &completion = {});
     void deleteApiKeyFromKeychain(

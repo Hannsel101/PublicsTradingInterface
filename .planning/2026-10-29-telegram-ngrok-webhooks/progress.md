@@ -1,5 +1,13 @@
 # Progress
 
+## New request: Telegram Publics Auto Buy/Sell — authorization decision pending
+- User reports the tunnel and status command now work; prior ngrok account-setup blocker is no longer current according to that live report.
+- Requested commands: publicsAutoBuy/publicsAutoSell with comma-separated tickers, all saved Publics API keys/accounts, existing AutoMode BUY-one/share and SELL-all paths, and final grouped Telegram notifications with bold titles and key nickname/account success/failure lines.
+- Formatting addition: prefix every nonempty Successful Trades line with the green-circle emoji 🟢 and every nonempty Failed Trades line with the red-circle emoji 🔴. Apply to both Buy and Sell reports; retain omission of empty result categories.
+- Refreshed CodeGraph, read root guidance and existing AutoTradeController submission/completion/result aggregation. Reuse that native order pipeline; do not implement a separate Telegram brokerage HTTP client.
+- A clarification asked whether allowlisted private chats execute immediately or require local confirmation per batch. It timed out without a decision. Numeric sender/chat authorization must be configured locally per bot; possession of a bot token or the first status sender is not authorization.
+- No application source changes, credential reads, live orders or Telegram writes performed for this request. Implementation is awaiting the authorization/confirmation decision, not complete.
+
 ## Latest scoped task: managed ngrok process exit — setup blocker identified
 - Follow-up: explained one-time private Terminal entry via ngrok config add-authtoken, persistent macOS YAML configuration storage and restrictive file permissions. User execution/account validation remain pending; no token was requested, read or stored by the agent.
 - Traced the exact error to QProcess::finished in TelegramWebhookHost; the current implementation discards stdout/stderr and reports a fixed generic exit message. The subsequent webhook stop-complete line is normal cleanup, not evidence of successful startup.

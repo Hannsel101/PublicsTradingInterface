@@ -6,7 +6,7 @@ qt_add_qml_module(telegram_bots_ui
     QML_FILES Theme.qml CoreView.qml BotManagementPanel.qml BotActionButton.qml
         BotEditor.qml BotCredentialField.qml
         BotListRow.qml BotActivityBadge.qml
-        BotExitConfirmation.qml
+        BotExitConfirmation.qml BotSecurityDialog.qml BotInspectorConflictDialog.qml
     RESOURCES assets/robot-head.svg
 )
 target_link_libraries(telegram_bots_ui PRIVATE Qt6::Quick)

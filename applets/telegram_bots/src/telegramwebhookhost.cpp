@@ -1,4 +1,6 @@
 #include "telegramwebhookhost.h"
+#include "telegramwebhookmanager.h"
+#include "telegraminspectorprocess.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -60,14 +62,15 @@ bool compatible(const TelegramWebhookHost::Options &a, const TelegramWebhookHost
 {
     return a.executable == b.executable && a.argumentPrefix == b.argumentPrefix
         && a.port == b.port && a.inspectorUrl == b.inspectorUrl
+        && a.ownershipDirectory == b.ownershipDirectory
         && a.discoveryDelayMs == b.discoveryDelayMs && a.startupTimeoutMs == b.startupTimeoutMs;
 }
 }
 
 struct TelegramWebhookHost::State
 {
-    enum Phase { Idle, Preflight, Starting, Discovering, Operational, Stopping } phase = Idle;
-    struct Client { QString path; QString secret; };
+    enum Phase { Idle, Preflight, AwaitingInspectorDecision, RestartingInspector, Starting, Discovering, Operational, Stopping } phase = Idle;
+    struct Client { QString path; QString secret; AdmissionHandler admit; RequestHandler receive; };
     TelegramWebhookHost *q;
     Options options;
     QMap<QString, Client> clients;
@@ -75,6 +78,7 @@ struct TelegramWebhookHost::State
     QString health;
     QUrl publicUrl;
     QPointer<QProcess> process;
+    QByteArray ownedReceipt;
     QPointer<QHttpServer> server;
     QPointer<QTcpServer> listener;
     QPointer<QTcpSocket> probe;
@@ -84,6 +88,10 @@ struct TelegramWebhookHost::State
     QTimer discovery;
     QTimer killDeadline;
     QElapsedTimer elapsed;
+    QTimer restartPoll;
+    QElapsedTimer restartElapsed;
+    std::unique_ptr<TelegramInspectorProcess> orphan;
+    bool escalated = false;
     quint64 generation = 0;
 
     explicit State(TelegramWebhookHost *owner) : q(owner)
@@ -94,6 +102,8 @@ struct TelegramWebhookHost::State
         discovery.setSingleShot(true);
         discovery.setTimerType(Qt::PreciseTimer);
         killDeadline.setSingleShot(true);
+        restartPoll.setInterval(25);
+        QObject::connect(&restartPoll, &QTimer::timeout, q, [this] { pollRestart(); });
         QObject::connect(&deadline, &QTimer::timeout, q, [this] {
             fail(QStringLiteral("Tunnel startup timed out."));
         });
@@ -110,6 +120,8 @@ struct TelegramWebhookHost::State
     {
         deadline.stop();
         discovery.stop();
+        restartPoll.stop();
+        orphan.reset();
         if (probe) {
             auto *socket = probe.data(); probe = nullptr;
             socket->disconnect(q); socket->abort(); socket->deleteLater();
@@ -204,9 +216,21 @@ struct TelegramWebhookHost::State
         for (auto it = clients.cbegin(); it != clients.cend(); ++it) {
             if (it.value().path == path) { id = it.key(); break; }
         }
-        if (id.isEmpty() || request.method() != QHttpServerRequest::Method::Post
-            || !authentic("X-Telegram-Bot-Api-Secret-Token", clients.value(id).secret.toLatin1())) {
+        if (id.isEmpty()) {
             responder.write(Status::NotFound); return;
+        }
+        if (request.method() != QHttpServerRequest::Method::Post) {
+            responder.write(Status::MethodNotAllowed); return;
+        }
+        if (!authentic("X-Telegram-Bot-Api-Secret-Token", clients.value(id).secret.toLatin1())) {
+            responder.write(Status::Forbidden); return;
+        }
+        const auto receiveHandler = clients.value(id).receive;
+        if (receiveHandler) {
+            const QPointer<TelegramWebhookHost> guard(q);
+            const auto status = receiveHandler(request);
+            if (guard) responder.write(static_cast<Status>(status));
+            return;
         }
         const auto body = request.body();
         if (body.size() > 256 * 1024) { responder.write(Status::PayloadTooLarge); return; }
@@ -220,6 +244,11 @@ struct TelegramWebhookHost::State
         // The receiver only validates the transport envelope. The agent owns admission,
         // domain authorization and deduplication. Notify before acknowledging delivery.
         const QPointer<TelegramWebhookHost> guard(q);
+        // Copy the callback: it may release the client or destroy this host.
+        const auto admission = clients.value(id).admit;
+        const bool accepted = !admission || admission(document.object());
+        if (!guard) return;
+        if (!accepted) { responder.write(Status::ServiceUnavailable); return; }
         emit q->updateReceived(id, document.object());
         if (guard) responder.write(Status::Ok);
     }
@@ -254,6 +283,18 @@ struct TelegramWebhookHost::State
         QObject::connect(child, &QProcess::readyReadStandardError, q, [child] { child->readAllStandardError(); });
         QObject::connect(child, &QProcess::started, q, [this, child] {
             if (process != child || phase != Starting) return;
+            const auto port = quint16(options.inspectorUrl.port());
+            const auto root = options.ownershipDirectory;
+            const auto receipt = TelegramInspectorProcess::recordStarted(*child, port, root);
+            if (receipt.isEmpty()) {
+                child->kill(); // Never leave an untracked managed child active.
+                fail(QStringLiteral("Cannot persist private tunnel ownership; the tunnel was stopped."));
+                return;
+            }
+            ownedReceipt = receipt;
+            QObject::connect(child, &QProcess::finished, child, [port, root, receipt] {
+                TelegramInspectorProcess::forgetReceipt(port, root, receipt);
+            });
             phase = Discovering;
             discovery.start(options.discoveryDelayMs);
         });
@@ -263,6 +304,8 @@ struct TelegramWebhookHost::State
         });
         QObject::connect(child, &QProcess::finished, q, [this, child](int, QProcess::ExitStatus) {
             if (process != child) return;
+            TelegramInspectorProcess::forgetReceipt(quint16(options.inspectorUrl.port()),
+                options.ownershipDirectory, std::exchange(ownedReceipt, {}));
             process = nullptr;
             child->deleteLater();
             if (phase == Stopping) finishStop();
@@ -272,13 +315,76 @@ struct TelegramWebhookHost::State
         arguments << QStringLiteral("http") << QStringLiteral("http://127.0.0.1:%1").arg(options.port);
         child->start(options.executable, arguments);
     }
+    void restartInspector()
+    {
+        QStringList arguments = options.argumentPrefix;
+        arguments << QStringLiteral("http") << QStringLiteral("http://127.0.0.1:%1").arg(options.port);
+        orphan = TelegramInspectorProcess::findOrphan(options.executable, arguments,
+            quint16(options.inspectorUrl.port()), options.ownershipDirectory);
+        if (!orphan || !orphan->terminate()) {
+            fail(QStringLiteral("Cannot safely close the inspector: no verified orphan ngrok owns this port."));
+            return;
+        }
+        phase = RestartingInspector;
+        restartElapsed.start();
+        escalated = false;
+        restartPoll.start();
+    }
+    void pollRestart()
+    {
+        if (phase != RestartingInspector || !orphan) return;
+        if (!orphan->alive()) {
+            restartPoll.stop();
+            orphan->forgetExitedReceipt();
+            orphan.reset();
+            // Verify closure asynchronously. A replacement listener never inherits
+            // the user's consent to terminate the original process instance.
+            auto *socket = new QTcpSocket(q);
+            probe = socket;
+            const auto run = generation;
+            QObject::connect(socket, &QTcpSocket::connected, q, [this, socket, run] {
+                if (probe != socket || generation != run || phase != RestartingInspector) return;
+                fail(QStringLiteral("The inspector port is still occupied after closing the orphan."));
+            });
+            QObject::connect(socket, &QTcpSocket::errorOccurred, q, [this, socket, run](QAbstractSocket::SocketError error) {
+                if (probe != socket || generation != run || phase != RestartingInspector) return;
+                probe = nullptr; socket->deleteLater();
+                if (error != QAbstractSocket::ConnectionRefusedError) {
+                    fail(QStringLiteral("Cannot verify that the inspector port closed.")); return;
+                }
+                phase = Preflight;
+                launch();
+            });
+            socket->connectToHost(QStringLiteral("127.0.0.1"), quint16(options.inspectorUrl.port()));
+            return;
+        }
+        if (restartElapsed.elapsed() >= 2500) {
+            fail(QStringLiteral("The verified orphan inspector did not close in time.")); return;
+        }
+        if (!escalated && restartElapsed.elapsed() >= 1000) {
+            escalated = true;
+            if (!orphan->terminate(true)) {
+                fail(QStringLiteral("The orphan inspector identity changed; forced close was refused."));
+            }
+        }
+    }
     void preflight()
     {
         auto *socket = new QTcpSocket(q);
         probe = socket;
         QObject::connect(socket, &QTcpSocket::connected, q, [this, socket] {
             if (probe != socket || phase != Preflight) return;
-            fail(QStringLiteral("The ngrok inspector port is already in use; no process was started."));
+            probe = nullptr;
+            socket->disconnect(q); socket->abort(); socket->deleteLater();
+            deadline.stop();
+            phase = AwaitingInspectorDecision;
+            const auto ids = clients.keys();
+            const auto run = generation;
+            const QPointer<TelegramWebhookHost> guard(q);
+            for (const auto &id : ids) {
+                if (clients.contains(id)) emit q->inspectorConflict(id);
+                if (!guard || generation != run || phase != AwaitingInspectorDecision) return;
+            }
         });
         QObject::connect(socket, &QTcpSocket::errorOccurred, q, [this, socket](QAbstractSocket::SocketError error) {
             if (probe != socket || phase != Preflight) return;
@@ -414,7 +520,8 @@ TelegramWebhookHost *TelegramWebhookHost::instance()
     if (!host) host = new TelegramWebhookHost(QCoreApplication::instance());
     return host;
 }
-void TelegramWebhookHost::acquire(const QString &id, const Options &options)
+void TelegramWebhookHost::acquire(const QString &id, const Options &options, AdmissionHandler admit,
+    QString secretToken, RequestHandler receive)
 {
     Q_ASSERT(thread() == QThread::currentThread());
     if (d->phase == State::Stopping) { emit failed(id, QStringLiteral("Tunnel is stopping; retry later.")); return; }
@@ -425,8 +532,14 @@ void TelegramWebhookHost::acquire(const QString &id, const Options &options)
     if (d->phase != State::Idle && !compatible(d->options, options)) {
         emit failed(id, QStringLiteral("An incompatible managed tunnel is already active.")); return;
     }
+    if ((!secretToken.isEmpty() && !TelegramWebhookManager::validSecret(secretToken))
+        || (receive && secretToken.isEmpty())) {
+        emit failed(id, QStringLiteral("Invalid private webhook secret.")); return;
+    }
     if (!d->clients.contains(id))
-        d->clients.insert(id, {QStringLiteral("/telegram/") + randomSecret(), randomSecret()});
+        d->clients.insert(id, {QStringLiteral("/telegram/") + randomSecret(),
+            secretToken.isEmpty() ? randomSecret() : std::move(secretToken), std::move(admit), std::move(receive)});
+    if (d->phase == State::AwaitingInspectorDecision) { emit inspectorConflict(id); return; }
     if (d->phase != State::Idle) { d->notifyReady(id); return; }
     d->options = options;
     ++d->generation;
@@ -434,6 +547,23 @@ void TelegramWebhookHost::acquire(const QString &id, const Options &options)
     d->elapsed.start();
     d->deadline.start(options.startupTimeoutMs);
     d->preflight();
+}
+void TelegramWebhookHost::resolveInspectorConflict(const QString &id, InspectorConflictAction action)
+{
+    Q_ASSERT(thread() == QThread::currentThread());
+    if (d->phase != State::AwaitingInspectorDecision || !d->clients.contains(id)) return;
+    if (action == InspectorConflictAction::Cancel) {
+        d->clients.remove(id);
+        const QPointer<TelegramWebhookHost> guard(this);
+        if (d->clients.isEmpty()) d->stop();
+        if (guard) emit failed(id, QStringLiteral("Tunnel startup cancelled."));
+        return;
+    }
+    if (action == InspectorConflictAction::Restart) {
+        d->elapsed.restart();
+        d->deadline.start(d->options.startupTimeoutMs);
+        d->restartInspector();
+    }
 }
 void TelegramWebhookHost::release(const QString &id)
 {

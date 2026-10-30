@@ -8,7 +8,37 @@ Item {
     objectName: "telegramBotConsole"
     property QtObject controller: typeof TelegramBots === "undefined" ? null : TelegramBots
     property bool editing: false
+    property var editRecord: null
     readonly property bool canRequestLeave: controller !== null && !controller.busy
+    property string dialogMode: ""
+    property string dialogBotId: ""
+    property string inspectorBotId: ""
+    property var inspectorQueue: []
+    function showNextInspectorConflict() {
+        if (inspectorLoader.active || !root.controller) return
+        while (root.inspectorQueue.length > 0) {
+            const id = root.inspectorQueue[0]
+            root.inspectorQueue = root.inspectorQueue.slice(1)
+            const record = root.controller.bots.find(row => row.id === id)
+            if (!record || !record.starting || record.stopping) continue
+            root.inspectorBotId = id
+            inspectorLoader.active = true
+            return
+        }
+    }
+    function openSecurity(mode, id) {
+        securityLoader.active = false
+        root.dialogMode = mode
+        root.dialogBotId = id
+        securityLoader.active = true
+    }
+    function editBot(id) {
+        const record = root.controller.bots.find(row => row.id === id)
+        if (!record) return
+        root.controller.clearError()
+        root.editRecord = record
+        root.editing = true
+    }
     signal leaveConfirmed()
     function requestLeave() {
         if (!root.canRequestLeave) return
@@ -79,6 +109,8 @@ Item {
                 controller: root.controller
                 Layout.fillWidth: true
                 compactLayout: root.compactLayout
+                onEditRequested: record => root.editBot(record.id)
+                onDeleteRequested: id => root.openSecurity("delete", id)
             }
             BotActionButton {
                 objectName: "addNewBot"
@@ -88,6 +120,7 @@ Item {
                 enabled: root.controller !== null && !root.controller.busy
                 onClicked: {
                     root.controller.clearError()
+                    root.editRecord = null
                     root.editing = true
                 }
             }
@@ -123,6 +156,14 @@ Item {
                 font.pixelSize: 16
                 wrapMode: Text.WordWrap
             }
+            Label {
+                objectName: "telegramVaultNotice"
+                Layout.fillWidth: true
+                text: qsTr("This password vault is separate from Robinhood. Older bots from a shared credential vault are not imported or erased; recreate them here using their BotFather credentials.")
+                textFormat: Text.PlainText
+                color: Theme.secondaryText
+                wrapMode: Text.WordWrap
+            }
         }
     }
     Loader {
@@ -133,13 +174,54 @@ Item {
             BotEditor {
                 controller: root.controller
                 pageMargin: root.pageMargin
-                onCancelled: root.editing = false
+                editRecord: root.editRecord
+                onCancelled: { root.editing = false; root.editRecord = null }
             }
         }
     }
     Connections {
         target: root.controller
-        function onBotSaved() { root.editing = false }
+        function onBotSaved() { root.editing = false; root.editRecord = null }
+        function onMissingChatIds(id) { Qt.callLater(() => root.openSecurity("missing", id)) }
+        function onPasswordRequested(id) { root.openSecurity("password", id) }
+        function onPasswordSetupRequired(id) { root.editBot(id) }
+        function onInspectorPortConflict(id) {
+            if ((inspectorLoader.active && root.inspectorBotId === id) || root.inspectorQueue.indexOf(id) >= 0) return
+            root.inspectorQueue = root.inspectorQueue.concat([id])
+            root.showNextInspectorConflict()
+        }
+    }
+    Loader {
+        id: inspectorLoader
+        active: false
+        sourceComponent: Component {
+            BotInspectorConflictDialog {
+                parent: root
+                controller: root.controller
+                botId: root.inspectorBotId
+                Component.onCompleted: open()
+                onClosed: {
+                    inspectorLoader.active = false
+                    root.inspectorBotId = ""
+                    Qt.callLater(root.showNextInspectorConflict)
+                }
+            }
+        }
+    }
+    Loader {
+        id: securityLoader
+        active: false
+        sourceComponent: Component {
+            BotSecurityDialog {
+                parent: root
+                controller: root.controller
+                botId: root.dialogBotId
+                mode: root.dialogMode
+                Component.onCompleted: open()
+                onClosed: securityLoader.active = false
+                onEditSettings: id => root.editBot(id)
+            }
+        }
     }
     Loader {
         id: exitLoader

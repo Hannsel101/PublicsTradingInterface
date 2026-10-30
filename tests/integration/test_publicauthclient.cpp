@@ -3,14 +3,23 @@
 #include <QTimer>
 #include <QUuid>
 #include <QScopeGuard>
+#include <QTemporaryDir>
 
 #include "auth/publicauthclient.h"
 
 class PublicAuthClientTest : public QObject
 {
     Q_OBJECT
+    QTemporaryDir settingsDir;
 
 private slots:
+    void initTestCase()
+    {
+        QVERIFY(settingsDir.isValid());
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
+    }
+
     void migratesLegacyNicknamesToWritableSettings()
     {
         const QString previousOrganization = QCoreApplication::organizationName();
@@ -149,6 +158,56 @@ private slots:
         settings.beginGroup(group);
         settings.remove(QString());
         settings.endGroup();
+    }
+
+    void keyIndexDiscoveryDistinguishesFailureFromConfirmedMissing_data()
+    {
+        QTest::addColumn<int>("error");
+        QTest::addColumn<QString>("payload");
+        QTest::addColumn<bool>("ready");
+        QTest::newRow("unavailable") << int(QKeychain::AccessDenied) << QString("RAW-SECRET") << false;
+        QTest::newRow("malformed") << int(QKeychain::NoError) << QString("not-json-RAW-SECRET") << false;
+        QTest::newRow("confirmed-missing") << int(QKeychain::EntryNotFound) << QString() << true;
+        QTest::newRow("authoritative") << int(QKeychain::NoError)
+            << QString("[\"PublicsApiKey0\",\"PublicsApiKey1\"]") << true;
+    }
+
+    void keyIndexDiscoveryDistinguishesFailureFromConfirmedMissing()
+    {
+        QFETCH(int, error);
+        QFETCH(QString, payload);
+        QFETCH(bool, ready);
+        PublicAuthClient::KeyIndexCallback finish;
+        int reads = 0;
+        PublicAuthClient client({}, "TestService", QUuid::createUuid().toString(),
+            QUrl("http://127.0.0.1:1/"), {},
+            [&](const PublicAuthClient::KeyIndexCallback &done) { ++reads; finish = done; });
+        using State = PublicAuthClient::KeyIndexState;
+        QCOMPARE(client.apiKeyIndexState(), State::NotStarted);
+        QCOMPARE(reads, 0);
+        bool settledBeforeIdle = false;
+        connect(&client, &PublicAuthClient::apiKeyIndexLoadingChanged, &client, [&] {
+            if (client.apiKeyIndexLoading()) {
+                QCOMPARE(client.apiKeyIndexState(), State::Loading);
+                client.listStoredApiKeys(); // Reentry must not start another discovery.
+            } else {
+                settledBeforeIdle = true;
+                QCOMPARE(client.apiKeyIndexState(), ready ? State::Ready : State::Failed);
+                QCOMPARE(client.apiKeyError().isEmpty(), ready);
+            }
+        });
+        client.listStoredApiKeys();
+        QCOMPARE(reads, 1);
+        QCOMPARE(client.apiKeyIndexState(), State::Loading);
+        QVERIFY(client.apiKeyIndexLoading());
+        finish(QKeychain::Error(error), payload);
+        QVERIFY(settledBeforeIdle);
+        QVERIFY(!client.apiKeyIndexLoading());
+        QCOMPARE(client.apiKeyIndexState(), ready ? State::Ready : State::Failed);
+        QVERIFY(!client.apiKeyError().contains("RAW-SECRET"));
+        if (error == QKeychain::NoError && ready)
+            QCOMPARE(client.secretKeys(), QStringList({"PublicsApiKey0", "PublicsApiKey1"}));
+        else QVERIFY(client.secretKeys().isEmpty());
     }
 
     void rejectsMalformedKeychainLabelIndex()

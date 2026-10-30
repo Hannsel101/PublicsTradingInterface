@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 #include <memory>
 #include "telegramwebhookhost.h"
@@ -12,7 +13,9 @@
 // Failed health leaves transport available for recovery. The default constructor owns
 // an automatic ngrok webhook lease; injected URL-only constructors retain polling.
 // Webhook stop retires local work immediately; stopping() gates bounded remote cleanup
-// and last-lease process teardown. No durable exactly-once delivery is claimed.
+// and last-lease process teardown. Trade admission is durable at-most-once, not
+// guaranteed execution: a crash after admission can suppress an unexecuted command.
+// Older out-of-order trade IDs fail closed; admission watermarks never expire.
 // No brokerage integration, persistent credentials or QML-visible token state.
 class TelegramAgent final : public QObject
 {
@@ -34,10 +37,26 @@ public:
     bool healthy() const;
     bool starting() const;
     bool stopping() const;
+    // One-argument compatibility is restricted to explicitly injected literal-
+    // loopback polling fixtures. Production/webhook Start requires the persisted,
+    // password-decrypted session secret on every activation; no secret is generated.
     void start(QString token);
+    void start(QString token, QString sessionSecret);
     void stop();
+    void resolveInspectorConflict(const QString &action);
+    // Policy is RAM-only here. While running, changes may only revoke existing IDs.
+    // Malformed IDs fail closed; callers persist policy separately in protected storage.
+    void setAllowedChatIds(QStringList ids);
+    // Pre-start only, literal loopback API roots only; path is a dedicated directory.
+    void setCommandLedgerPathForTests(QString path);
+    // Reports accept escaped text plus balanced <b> markup only; all other markup
+    // is escaped. Chunks preserve entities/scalars/bold and are sent serially.
+    // Stop/revocation cancels notification context, not previously admitted orders.
+    void completeTradeCommand(QString requestId, QStringList htmlMessages);
 
 signals:
+    void inspectorPortConflict();
+    void tradeCommandReceived(QString requestId, QString side, QStringList symbols);
     void stateChanged();
     void errorOccurred(const QString &message);
 

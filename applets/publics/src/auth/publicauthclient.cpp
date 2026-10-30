@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QRegularExpression>
 #include <QSet>
+#include <QPointer>
 
 namespace {
 class ApiKeySettings : public QSettings
@@ -40,12 +41,25 @@ PublicAuthClient::PublicAuthClient(const QString &secretKey,
                                    const QUrl &authBaseUrl,
                                    CredentialLoader credentialLoader,
                                    QObject *parent)
+    : PublicAuthClient(secretKey, keychainServiceName, settingsGroupName, authBaseUrl,
+                       std::move(credentialLoader), {}, parent)
+{
+}
+
+PublicAuthClient::PublicAuthClient(const QString &secretKey,
+                                   const QString &keychainServiceName,
+                                   const QString &settingsGroupName,
+                                   const QUrl &authBaseUrl,
+                                   CredentialLoader credentialLoader,
+                                   KeyIndexReader keyIndexReader,
+                                   QObject *parent)
     : QObject(parent),
       m_secretKey(secretKey),
       m_keychainService(keychainServiceName),
       m_settingsGroup(settingsGroupName),
       m_authBaseUrl(authBaseUrl),
-      m_credentialLoader(std::move(credentialLoader))
+      m_credentialLoader(std::move(credentialLoader)),
+      m_keyIndexReader(std::move(keyIndexReader))
 {
     m_manager = new QNetworkAccessManager(this);
     setApiKeyReady(!m_secretKey.trimmed().isEmpty());
@@ -188,10 +202,22 @@ QStringList PublicAuthClient::listStoredApiKeys()
     settings.setValue("labels", labels);
     settings.endGroup();
 
+    // Reserve discovery before publishing even the local fallback model. Direct
+    // observers must never mistake that model for a completed all-key scope.
+    m_apiKeyIndexLoading = true;
+    m_apiKeyIndexState = KeyIndexState::Loading;
+    ++m_keyIndexGeneration;
+    const QPointer<PublicAuthClient> guard(this);
+    emit apiKeyIndexStateChanged();
+    if (!guard) return {};
+    emit apiKeyIndexLoadingChanged();
+    if (!guard) return {};
+    setApiKeyError({});
+    if (!guard) return {};
     setSecretKeys(labels);
-    setApiKeyIndexLoading(true);
+    if (!guard) return {};
     readApiKeyLabelIndex(labels);
-    return secretKeys();
+    return guard ? secretKeys() : QStringList{};
 }
 
 QString PublicAuthClient::keychainKeyForLabel(const QString &label) const
@@ -240,55 +266,76 @@ bool PublicAuthClient::deserializeApiKeyLabels(
 
 void PublicAuthClient::readApiKeyLabelIndex(const QStringList &localLabels)
 {
+    const QPointer<PublicAuthClient> guard(this);
+    const quint64 generation = m_keyIndexGeneration;
+    const KeyIndexCallback done = [guard, generation, localLabels](QKeychain::Error error, const QString &data) {
+        if (!guard || guard->m_keyIndexGeneration != generation
+            || guard->m_apiKeyIndexState != KeyIndexState::Loading) return;
+        guard->applyApiKeyLabelIndex(error, data, localLabels);
+    };
+    if (m_keyIndexReader) {
+        const auto reader = m_keyIndexReader;
+        reader(done);
+        return;
+    }
     auto *job = new QKeychain::ReadPasswordJob(m_keychainService, this);
     job->setAutoDelete(false);
     job->setInsecureFallback(false);
     job->setKey(QString::fromLatin1(keychainLabelIndexKey));
-
-    connect(job, &QKeychain::ReadPasswordJob::finished, this, [this, job, localLabels]() {
-        if (job->error() == QKeychain::NoError) {
-            QStringList storedLabels;
-            if (!deserializeApiKeyLabels(job->textData(), &storedLabels)) {
-                qWarning() << "The API key label index is malformed.";
-                setApiKeyError(QStringLiteral("Saved API key labels could not be read safely."));
-                setApiKeyIndexLoading(false);
-                job->deleteLater();
-                return;
-            }
-
-            QStringList labels = storedLabels;
-            labels.append(localLabels);
-            labels = normalizedStoredApiKeyLabels(labels);
-
-            ApiKeySettings settings;
-            settings.beginGroup(m_settingsGroup);
-            settings.setValue("labels", labels);
-            settings.endGroup();
-            setSecretKeys(labels);
-
-            if (labels != storedLabels) {
-                writeApiKeyLabelIndex(labels, [this](bool) {
-                    setApiKeyIndexLoading(false);
-                });
-            } else {
-                setApiKeyIndexLoading(false);
-            }
-        } else if (job->error() == QKeychain::EntryNotFound) {
-            if (!localLabels.isEmpty()) {
-                writeApiKeyLabelIndex(localLabels, [this](bool) {
-                    setApiKeyIndexLoading(false);
-                });
-            } else {
-                setApiKeyIndexLoading(false);
-            }
-        } else {
-            qWarning() << "Failed to load the API key label index:" << job->errorString();
-            setApiKeyError(QStringLiteral("Could not load saved API key labels from the system keychain."));
-            setApiKeyIndexLoading(false);
-        }
+    connect(job, &QKeychain::ReadPasswordJob::finished, this, [job, done]() {
+        const auto error = job->error();
+        const QString data = job->textData();
         job->deleteLater();
+        done(error, data);
     });
     job->start();
+}
+
+void PublicAuthClient::applyApiKeyLabelIndex(QKeychain::Error error, const QString &serializedLabels,
+                                            const QStringList &localLabels)
+{
+    QStringList storedLabels;
+    if (error == QKeychain::NoError) {
+        if (!deserializeApiKeyLabels(serializedLabels, &storedLabels)) {
+            finishApiKeyDiscovery(false, QStringLiteral("Saved API key labels could not be read safely."));
+            return;
+        }
+    } else if (error != QKeychain::EntryNotFound) {
+        finishApiKeyDiscovery(false, QStringLiteral("Could not load saved API key labels from the system keychain."));
+        return;
+    }
+
+    // Only confirmed absence permits the legacy local-metadata fallback.
+    QStringList labels = storedLabels;
+    labels.append(localLabels);
+    labels = normalizedStoredApiKeyLabels(labels);
+    ApiKeySettings settings;
+    settings.beginGroup(m_settingsGroup);
+    settings.setValue("labels", labels);
+    settings.endGroup();
+    const QPointer<PublicAuthClient> guard(this);
+    setSecretKeys(labels);
+    if (!guard) return;
+    if (labels != storedLabels) {
+        writeApiKeyLabelIndex(labels, [guard](bool succeeded) {
+            if (guard) guard->finishApiKeyDiscovery(succeeded,
+                succeeded ? QString() : QStringLiteral("Could not preserve the API key list in the system keychain."));
+        });
+    } else {
+        finishApiKeyDiscovery(true);
+    }
+}
+
+void PublicAuthClient::finishApiKeyDiscovery(bool succeeded, const QString &error)
+{
+    // Publish the terminal state and sanitized error before idle can admit work.
+    m_apiKeyIndexState = succeeded ? KeyIndexState::Ready : KeyIndexState::Failed;
+    const QPointer<PublicAuthClient> guard(this);
+    setApiKeyError(error);
+    if (!guard) return;
+    emit apiKeyIndexStateChanged();
+    if (!guard) return;
+    setApiKeyIndexLoading(false); // Last action: observers may start a replacement.
 }
 
 void PublicAuthClient::writeApiKeyLabelIndex(
@@ -667,6 +714,25 @@ QVariantMap PublicAuthClient::apiKeyNicknames() const
 QString PublicAuthClient::apiKeyDisplayName(const QString &label) const
 {
     return m_apiKeyNicknames.value(label, label).toString();
+}
+
+bool PublicAuthClient::refreshApiKeyNicknames()
+{
+    ApiKeySettings settings;
+    settings.sync();
+    if (settings.status() != QSettings::NoError) return false;
+    settings.beginGroup(m_settingsGroup);
+    settings.beginGroup(QStringLiteral("nicknames"));
+    QVariantMap nicknames;
+    for (const auto &label : settings.childKeys()) {
+        const QString nickname = settings.value(label).toString().trimmed();
+        if (!nickname.isEmpty()) nicknames.insert(label, nickname);
+    }
+    if (m_apiKeyNicknames != nicknames) {
+        m_apiKeyNicknames = nicknames;
+        emit apiKeyNicknamesChanged();
+    }
+    return true;
 }
 
 bool PublicAuthClient::setApiKeyNickname(const QString &label, const QString &nickname)

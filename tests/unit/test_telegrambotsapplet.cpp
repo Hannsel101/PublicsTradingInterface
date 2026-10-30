@@ -16,9 +16,17 @@ Q_IMPORT_QML_PLUGIN(TelegramBotsInterfacePlugin)
 class AppletMemoryBotStore final : public TelegramBotStore
 {
 public:
-    void load(LoadCompletion done) override { done(true, {{QStringLiteral("one"), QStringLiteral("Fixture")}}, {}); }
+    AppletMemoryBotStore() : TelegramBotStore(QString{}, BinaryBackend{}) {}
+    void load(LoadCompletion done) override { done(true, {{QStringLiteral("one"), QStringLiteral("Fixture"), {"42"}, true, true}}, {}); }
     void add(QString, QString, AddCompletion done) override { done(false, {}, QStringLiteral("Fixture read-only")); }
     void readToken(QString, TokenCompletion done) override { done(true, QStringLiteral("123456:synthetic"), {}); }
+    void saveProtectedBot(QString, QString, QString, QStringList, QString, QString, AddCompletion done) override {
+        done(false, {}, QStringLiteral("Fixture read-only"));
+    }
+    void remove(QString, AddCompletion done) override { done(false, {}, QStringLiteral("Fixture read-only")); }
+    void readActivationSnapshot(QString, QString, ActivationCompletion done) override {
+        done(true, {QStringLiteral("123456:synthetic"), {"42"}, QString(64, QLatin1Char('a'))}, {});
+    }
 };
 
 class TelegramBotsAppletTest final : public QObject
@@ -51,7 +59,7 @@ private slots:
         QVERIFY(label && badge);
         QCOMPARE(label->property("text").toString(), QStringLiteral("Not Active"));
         controller.selectBot(QStringLiteral("one"));
-        QVERIFY(controller.startBot());
+        QVERIFY(controller.startBotWithPassword(controller.selectedId(), "test password 123"));
         QTRY_COMPARE(label->property("text").toString(), QStringLiteral("Active"));
         const auto runningColor = badge->property("color");
         QTRY_COMPARE(server.polls.size(), 1);
@@ -133,7 +141,7 @@ private slots:
         QVERIFY(!stop->property("enabled").toBool());
         controller.selectBot(QStringLiteral("one"));
         QTRY_VERIFY(start->property("enabled").toBool());
-        QVERIFY(QMetaObject::invokeMethod(start, "clicked"));
+        QVERIFY(controller.startBotWithPassword(controller.selectedId(), "test password 123"));
         QTRY_VERIFY_WITH_TIMEOUT(controller.bots().first().toMap().value(QStringLiteral("active")).toBool(), 1500);
         QTRY_VERIFY(stop->property("enabled").toBool());
         QVERIFY(!start->property("enabled").toBool());
@@ -155,7 +163,7 @@ private slots:
         LauncherController launcher(engine, {&telegram});
         QVERIFY(launcher.activate(telegram.id()));
         controller.selectBot(QStringLiteral("one"));
-        QVERIFY(controller.startBot());
+        QVERIFY(controller.startBotWithPassword(controller.selectedId(), "test password 123"));
         QTRY_VERIFY_WITH_TIMEOUT(controller.bots().first().toMap().value(QStringLiteral("active")).toBool(), 1500);
         QVERIFY(!launcher.canReturnHome());
         QVERIFY(!launcher.returnHome());

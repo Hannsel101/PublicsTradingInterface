@@ -7,6 +7,7 @@
 #include <QPointer>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QStringList>
 #include <memory>
 
 class ControllerBotServer final : public QTcpServer
@@ -14,6 +15,7 @@ class ControllerBotServer final : public QTcpServer
 public:
     QList<QPointer<QTcpSocket>> polls;
     QList<QJsonObject> messages;
+    QStringList requestedMethods;
     int healthStatus = 200;
     bool holdHealth = false;
     bool holdIdentity = false;
@@ -39,6 +41,7 @@ public:
                     socket->setProperty("handled", true);
                     const auto target = QUrl::fromEncoded(bytes->split(' ').value(1));
                     const auto path = target.path().toUtf8();
+                    requestedMethods.append(target.path().section(QLatin1Char('/'), -1));
                     if (path.endsWith("/getMe") && !holdIdentity) {
                         // Independent provider-shaped identities for two synthetic test bots.
                         const int id = path.startsWith("/bot987654:") ? 987654 : 123456;
@@ -49,8 +52,12 @@ public:
                         socket->disconnectFromHost();
                     } else if (path.endsWith("/setWebhook")) {
                         const QUrlQuery query(target);
-                        registeredWebhook = QUrl(query.queryItemValue(QStringLiteral("url"), QUrl::FullyDecoded));
-                        webhookSecret = query.queryItemValue(QStringLiteral("secret_token"));
+                        const auto payload = QJsonDocument::fromJson(bytes->mid(end + 4, length)).object();
+                        const bool post = bytes->startsWith("POST ");
+                        registeredWebhook = QUrl(post ? payload.value("url").toString()
+                            : query.queryItemValue(QStringLiteral("url"), QUrl::FullyDecoded));
+                        webhookSecret = post ? payload.value("secret_token").toString()
+                            : query.queryItemValue(QStringLiteral("secret_token"), QUrl::FullyDecoded);
                         answer(socket, true);
                     } else if (path.endsWith("/getWebhookInfo")) {
                         answer(socket, QJsonObject{{"url", registeredWebhook.toString()},

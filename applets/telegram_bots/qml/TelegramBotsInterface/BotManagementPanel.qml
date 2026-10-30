@@ -6,6 +6,9 @@ import TelegramBotsInterface
 Pane {
     id: panel
     property bool compactLayout: false
+    signal editRequested(var record)
+    signal deleteRequested(string botId)
+    readonly property var selectedRecord: controller !== null ? controller.bots.find(row => row.id === controller.selectedId) : null
     required property QtObject controller
     readonly property int botCount: controller !== null ? controller.bots.length : 0
     padding: compactLayout ? 18 : 24
@@ -16,14 +19,32 @@ Pane {
     }
     contentItem: ColumnLayout {
         spacing: 18
-        Label {
-            objectName: "telegramManageTitle"
-            text: qsTr("Manage Telegram Bots")
-            color: Theme.primaryText
-            font.pixelSize: panel.compactLayout ? 22 : 26
-            font.weight: Font.DemiBold
-            wrapMode: Text.WordWrap
+        GridLayout {
             Layout.fillWidth: true
+            columns: panel.compactLayout ? 2 : 3
+            Label {
+                objectName: "telegramManageTitle"
+                text: qsTr("Manage Telegram Bots")
+                color: Theme.primaryText
+                font.pixelSize: panel.compactLayout ? 22 : 26
+                font.weight: Font.DemiBold
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+                Layout.columnSpan: panel.compactLayout ? 2 : 1
+            }
+            Button {
+                objectName: "deleteBot"
+                text: qsTr("Delete Bot")
+                enabled: panel.controller !== null && panel.controller.canDelete
+                onClicked: panel.deleteRequested(panel.selectedRecord.id)
+            }
+            Button {
+                objectName: "editBotPolicy"
+                text: qsTr("Edit Chat IDs")
+                enabled: panel.controller !== null && !panel.controller.busy && !!panel.selectedRecord
+                         && !panel.selectedRecord.active && !panel.selectedRecord.starting && !panel.selectedRecord.stopping
+                onClicked: panel.editRequested(panel.selectedRecord)
+            }
         }
         Rectangle {
             Layout.fillWidth: true

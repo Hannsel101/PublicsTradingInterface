@@ -139,6 +139,7 @@ public slots:
             property string error: ""
             property bool holdSave: false
             property string pendingNickname: ""
+            property var pendingPolicy: []
             property int saveCalls: 0
             property int startCalls: 0
             property int stopAllCalls: 0
@@ -147,9 +148,25 @@ public slots:
             readonly property bool canStart: !busy && !!selected && !selected.active && !selected.starting && !selected.stopping
             readonly property bool canStop: !busy && !!selected && !selected.stopping && (selected.active || selected.starting)
             signal botSaved(string id)
+            signal botDeleted(string id)
+            signal missingChatIds(string id)
+            signal passwordRequested(string id)
+            signal passwordSetupRequired(string id)
+            signal settingsUnlocked(string id, var ids)
+            signal settingsUnlockFinished(string id, bool success)
+            signal activationFinished(string id, bool success)
+            signal inspectorPortConflict(string botId)
+            property string lastStartId: ""
+            property bool passwordMatched: false
+            property bool failPassword: false
+            property bool holdDelete: false
+            property string pendingDeleteId: ""
+            property int deleteCalls: 0
+            readonly property bool canDelete: canStart
             function reset() {
                 bots = []; selectedId = ""; busy = false; error = ""; holdSave = false
                 pendingNickname = ""; saveCalls = 0; startCalls = 0; stopAllCalls = 0
+                lastStartId = ""; passwordMatched = false; failPassword = false; holdDelete = false; pendingDeleteId = ""; deleteCalls = 0
             }
             function clearError() { error = "" }
             function selectBot(id) { selectedId = bots.some(row => row.id === id) ? id : "" }
@@ -159,31 +176,80 @@ public slots:
                 if (!holdSave) finishSave(true)
                 return true
             }
+            readonly property string maximumAllowedChatId: "4503599627370495"
+            function lockBotSettings() {}
+            function unlockBotSettings(id, password) {
+                if (busy) return false
+                if (failPassword) { error = "Unable to unlock bot. Check your password and try again."; settingsUnlockFinished(id, false); return true }
+                settingsUnlocked(id, ["42", "123"]); settingsUnlockFinished(id, true); return true
+            }
+            function saveProtectedBot(id, nickname, token, text, password, confirmation) {
+                if (password !== confirmation) { error = "Passwords do not match."; return false }
+                if (password.length < 12) return false
+                passwordMatched = password === "  test password 123  "
+                return saveBotWithAllowedChats(nickname, token, text)
+            }
+            function deleteBot(id) {
+                if (busy || !bots.some(row => row.id === id && !row.active && !row.starting && !row.stopping)) return false
+                deleteCalls++; pendingDeleteId = id; busy = true
+                if (!holdDelete) finishDelete(true)
+                return true
+            }
+            function finishDelete(ok) {
+                if (!pendingDeleteId) return
+                const id = pendingDeleteId; pendingDeleteId = ""; busy = false
+                if (!ok) { error = "Could not delete the encrypted bot. Please retry."; return }
+                bots = bots.filter(row => row.id !== id)
+                if (selectedId === id) selectedId = ""
+                botDeleted(id)
+            }
+            function saveBotWithAllowedChats(nickname, token, text) {
+                if (busy || !nickname.trim()) return false
+                const policy = text.split(/[,\r\n]/).map(id => id.trim()).filter(id => id.length > 0)
+                if (text.length > 32768 || ((/(^|,)\s*(,|$)/.test(text)) && text.trim().length > 0)
+                    || policy.length > 1024 || !policy.every(id => /^[1-9][0-9]{0,15}$/.test(id)
+                        && (id.length < maximumAllowedChatId.length || (id.length === maximumAllowedChatId.length && id <= maximumAllowedChatId)))) {
+                    error = "Private Chat IDs must be 1..4503599627370495."; return false
+                }
+                pendingPolicy = [...new Set(policy)]
+                saveCalls++; pendingNickname = nickname; busy = true
+                if (!holdSave) finishSave(true)
+                return true
+            }
             function finishSave(ok) {
                 if (!busy) return
                 busy = false
                 if (!ok) { error = "Secure storage failed."; return }
-                const id = "bot-" + saveCalls
-                bots = bots.concat([{id: id, nickname: pendingNickname, active: false, starting: false}])
+                const existing = bots.find(row => row.nickname === pendingNickname)
+                const id = existing ? existing.id : "bot-" + saveCalls
+                const row = {id: id, nickname: pendingNickname, active: false, starting: false, stopping: false, allowedChatIds: [], passwordProtected: true, hasAllowedChatIds: pendingPolicy.length > 0}
+                bots = existing ? bots.map(old => old.id === id ? row : old) : bots.concat([row])
                 pendingNickname = ""; botSaved(id)
             }
             function startBot() {
                 if (!canStart) return false
-                startCalls++
-                bots = bots.map(row => ({id: row.id, nickname: row.nickname,
-                    active: row.id === selectedId ? true : row.active, starting: false}))
-                return true
+                if (!selected.hasAllowedChatIds && !(selected.allowedChatIds && selected.allowedChatIds.length)) { missingChatIds(selectedId); return false }
+                if (!selected.passwordProtected) { passwordSetupRequired(selectedId); return false }
+                passwordRequested(selectedId); return true
+            }
+            function startBotWithPassword(id, password) {
+                if (busy) return false
+                startCalls++; lastStartId = id
+                passwordMatched = password === "  test password 123  "
+                if (failPassword) { error = "Unable to unlock bot. Check your password and try again."; activationFinished(id, false); return true }
+                error = ""
+                bots = bots.map(row => Object.assign({}, row, {active: row.id === id ? true : row.active, starting: false}))
+                activationFinished(id, true); return true
             }
             function stopBot() {
                 if (!canStop) return false
-                bots = bots.map(row => ({id: row.id, nickname: row.nickname,
-                    active: row.id === selectedId ? false : row.active, starting: false}))
+                bots = bots.map(row => Object.assign({}, row, {active: row.id === selectedId ? false : row.active, starting: false}))
                 return true
             }
             function stopAll() {
                 if (busy) return false
                 stopAllCalls++
-                bots = bots.map(row => ({id: row.id, nickname: row.nickname, active: false, starting: false}))
+                bots = bots.map(row => Object.assign({}, row, {active: false, starting: false}))
                 return true
             }
         )"));
