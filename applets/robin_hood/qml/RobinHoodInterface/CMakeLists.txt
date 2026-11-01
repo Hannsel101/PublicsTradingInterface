@@ -4,6 +4,8 @@ qt_add_qml_module(rh_ui
     CLASS_NAME RobinHoodInterfacePlugin
     QML_FILES
         CoreView.qml
+        AutoModeView.qml
+        AutoModeResults.qml
         NativeLoginForm.qml
         AccountCard.qml
         AccountInfoDialog.qml

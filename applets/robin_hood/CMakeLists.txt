@@ -56,7 +56,9 @@ qt_add_library(rh_sessions STATIC
 target_include_directories(rh_sessions PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(rh_sessions PUBLIC rh_network_engine rh_browser_auth rh_native_auth rh_secure_credentials PRIVATE Qt6::Concurrent)
 
-qt_add_library(rh_trading STATIC rhtradecontroller.cpp rhtradecontroller.h rhtradingcontext.cpp rhtradingcontext.h)
+qt_add_library(rh_trading STATIC
+    rhtradecontroller.cpp rhtradecontroller.h rhtradingcontext.cpp rhtradingcontext.h
+    rhautotradecontroller.cpp rhautotradecontroller.h)
 target_include_directories(rh_trading PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(rh_trading PUBLIC rh_network_engine rh_sessions)
 

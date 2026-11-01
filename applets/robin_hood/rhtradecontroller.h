@@ -44,6 +44,9 @@ public:
         // C++ only, honored only with explicit network loopback override in Debug.
         bool loopbackLiveOrdersForTests = false;
         int ownershipDeadlineMsForTests = 16000;
+        // Nonempty selects one supported authoritative account and exact 2500 ms
+        // result cooldown, including the final row. Empty preserves legacy policy.
+        QString autoModeAccountNumber;
     };
     RHTradeController(RHNetworkEngine &network, Dependencies dependencies, QObject *parent = nullptr);
     ~RHTradeController() override;
@@ -84,6 +87,8 @@ private:
     Dependencies m_deps;
     std::function<void()> m_releaseLease;
     Session m_session;
+    // Execution scope is distinct from the full authorization snapshot.
+    QVariantList m_accounts;
     struct BuyPlan {
         QJsonObject instrument, quote;
         QString price;

@@ -187,7 +187,7 @@ void RHTradeController::finish(QString error) {
             row.insert("status", "cancelled"); row.insert("message", "Not sent; batch stopped."); v = row;
         }
     }
-    m_session.token.fill('\0'); m_session = {};
+    m_session.token.fill('\0'); m_session = {}; m_accounts.clear();
     m_error = error; m_complete = true; m_busy = false; m_title.clear();
     const bool release = std::exchange(m_locked, false);
     QPointer<RHTradeController> guard(this); const auto epoch = m_epoch;
@@ -216,7 +216,9 @@ void RHTradeController::begin(Session session) {
     m_session = std::move(session);
     QPointer<RHTradeController> guard(this); const auto epoch = m_epoch;
     if (!valid()) { if (guard && guard->m_epoch == epoch) finish("Primary trading authorization expired or changed."); return; }
-    if (m_session.accounts.isEmpty() || m_session.accounts.size() > 20 || m_session.accounts.size() * m_symbols.size() > 100) {
+    const bool autoMode = !m_deps.autoModeAccountNumber.isEmpty();
+    if (m_session.accounts.isEmpty() || m_session.accounts.size() > 20
+        || (!autoMode && m_session.accounts.size() * m_symbols.size() > 100)) {
         finish("Invalid or excessive active account scope."); return;
     }
     QSet<QString> numbers, urls;
@@ -226,9 +228,17 @@ void RHTradeController::begin(Session session) {
             || !m_network.stockUrl(QUrl(u, QUrl::StrictMode), "accounts")) { finish("Invalid or duplicate active brokerage account."); return; }
         numbers.insert(n); urls.insert(u);
     }
+    if (autoMode && (!matches(m_deps.autoModeAccountNumber, "[A-Za-z0-9_-]{1,128}")
+                     || !numbers.contains(m_deps.autoModeAccountNumber))) {
+        finish("Invalid Auto Mode account selection; no orders were sent."); return;
+    }
+    m_accounts.clear();
+    for (const auto &raw : m_session.accounts)
+        if (!autoMode || raw.toMap().value("accountNumber").toString() == m_deps.autoModeAccountNumber)
+            m_accounts.append(raw);
     const auto populateResults = [this] {
         m_results.clear();
-        for (const auto &symbol : m_symbols) for (const auto &raw : m_session.accounts) {
+        for (const auto &symbol : m_symbols) for (const auto &raw : m_accounts) {
             const auto a = raw.toMap();
             m_results.append(QVariantMap{{"accountNumber", a.value("accountNumber")}, {"accountLabel", safeLabel(a.value("displayName").toString())},
                 {"symbol", symbol}, {"quantity", m_side == "buy" ? "1" : ""}, {"side", m_side}, {"status", "pending"},
@@ -244,7 +254,7 @@ void RHTradeController::begin(Session session) {
     // carry identity, not trading state. Keep the displayed order after filtering.
     pages(Read::Accounts, {}, [this, populateResults](QJsonArray accounts) {
         QSet<QString> found, freshUrls;
-        QSet<QString> active;
+        QSet<QString> active, supported;
         for (const auto &raw : accounts) {
             const auto a = raw.toObject();
             const auto n = a.value("account_number").toString();
@@ -266,6 +276,8 @@ void RHTradeController::begin(Session session) {
             if (state == "active") {
                 if (!match) { finish("Fresh active account scope changed; no orders were sent."); return; }
                 active.insert(n);
+                const auto type = a.value("brokerage_account_type").toString();
+                if (type == "individual" || type == "ira_traditional" || type == "ira_roth") supported.insert(n);
             }
             found.insert(n); freshUrls.insert(u);
         }
@@ -273,13 +285,16 @@ void RHTradeController::begin(Session session) {
         for (const auto &frozen : m_session.accounts) {
             const auto n = frozen.toMap().value("accountNumber").toString();
             if (!found.contains(n)) { finish("A displayed account is missing from the fresh scope; no orders were sent."); return; }
-            if (active.contains(n)) eligible.append(frozen);
+            if (active.contains(n) && (m_deps.autoModeAccountNumber.isEmpty()
+                || (n == m_deps.autoModeAccountNumber && supported.contains(n)))) eligible.append(frozen);
         }
         if (eligible.isEmpty()) {
             m_results.clear();
             finish("No active brokerage accounts remain; no orders were sent."); return;
         }
-        m_session.accounts = std::move(eligible);
+        m_accounts = std::move(eligible);
+        // Preserve legacy callback semantics; Auto Mode retains full ownership scope.
+        if (m_deps.autoModeAccountNumber.isEmpty()) m_session.accounts = m_accounts;
         populateResults();
         if (!notify()) return;
         if (m_side == "buy") preflightBuy(); else nextRow();
@@ -337,7 +352,7 @@ void RHTradeController::nextRow() {
     m_title = row.value("side").toString() + " " + row.value("symbol").toString() + " — " + row.value("accountLabel").toString();
     if (!notify()) return;
     if (m_side == "buy") {
-        const auto &plan = m_buyPlans.at(m_row / m_session.accounts.size());
+        const auto &plan = m_buyPlans.at(m_row / m_accounts.size());
         dispatch(plan.instrument, "1", plan.quote.value("ask_price").toString(), plan.quote.value("bid_price").toString(),
                  plan.kind, plan.price, plan.capturedAt);
     } else pages(Read::Instruments, row.value("symbol").toString(), [this](QJsonArray a) { resolveInstrument(a); });
@@ -382,7 +397,7 @@ void RHTradeController::resolveQuote(QJsonArray quotes, QJsonObject instrument, 
     dispatch(instrument, quantity, q.value("ask_price").toString(), q.value("bid_price").toString());
 }
 void RHTradeController::resolvePosition(QJsonArray positions, QJsonObject instrument) {
-    const auto account = m_session.accounts.at(m_row % m_session.accounts.size()).toMap();
+    const auto account = m_accounts.at(m_row % m_accounts.size()).toMap();
     QJsonObject position;
     for (const auto &raw : positions) {
         const auto p = raw.toObject();
@@ -420,7 +435,7 @@ void RHTradeController::dispatch(QJsonObject instrument, QString quantity, QStri
     if (!notify()) return;
     if (!valid()) { if (guard && guard->m_epoch == epoch) finish("Trading session expired or changed."); return; }
     if (!liveOrdersEnabled()) { result("preview", "Debug preview only; no stock order was sent.", true); return; }
-    const auto account = m_session.accounts.at(m_row % m_session.accounts.size()).toMap();
+    const auto account = m_accounts.at(m_row % m_accounts.size()).toMap();
     RHNetworkEngine::StockOrder order;
     order.accountNumber = row.value("accountNumber").toString(); order.account = QUrl(account.value("_url").toString());
     order.instrument = QUrl(instrument.value("url").toString()); order.symbol = row.value("symbol").toString();
@@ -585,7 +600,7 @@ void RHTradeController::result(QString status, QString message, bool success, QS
     if (halt) m_error = message;
     const auto epoch = m_epoch; QPointer<RHTradeController> guard(this);
     if (!notify()) return;
-    const int delay = QRandomGenerator::global()->bounded(2000, 3001);
+    const int delay = m_deps.autoModeAccountNumber.isEmpty() ? QRandomGenerator::global()->bounded(2000, 3001) : 2500;
     auto callback = [guard, epoch, halt, message] {
         if (!guard || guard->m_epoch != epoch) return;
         QTimer::singleShot(0, guard, [guard, epoch, halt, message] {
@@ -595,5 +610,7 @@ void RHTradeController::result(QString status, QString message, bool success, QS
         });
     };
     auto schedule = m_deps.schedule;
-    if (schedule) schedule(delay, callback); else QTimer::singleShot(delay, this, callback);
+    if (schedule) schedule(delay, callback);
+    else if (!m_deps.autoModeAccountNumber.isEmpty()) QTimer::singleShot(delay, Qt::PreciseTimer, this, callback);
+    else QTimer::singleShot(delay, this, callback);
 }

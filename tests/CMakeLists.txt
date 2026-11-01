@@ -66,6 +66,11 @@ publics_enable_live_trading(test_rhnetworkengine)
 publics_add_test(test_rhtradecontroller unit/test_rhtradecontroller.cpp rh_trading)
 # Data-driven deadline/reconciliation suite needs headroom under parallel kits.
 set_tests_properties(test_rhtradecontroller PROPERTIES TIMEOUT 240)
+publics_add_test(test_rhautomode integration/test_rhautomode.cpp rh_trading)
+set_tests_properties(test_rhautomode PROPERTIES TIMEOUT 240)
+publics_add_test(test_rhautomodeapplet integration/test_rhautomodeapplet.cpp
+    rh_trading rh_ui rh_uiplugin Qt6::Quick)
+set_tests_properties(test_rhautomodeapplet PROPERTIES TIMEOUT 120)
 publics_add_test(test_rhtradingcontext integration/test_rhtradingcontext.cpp rh_trading)
 publics_add_test(test_rhbrowserlogin unit/test_rhbrowserlogin.cpp rh_browser_auth)
 get_target_property(rh_test_browser_backend rh_browser_auth PUBLICS_RH_BROWSER_BACKEND)

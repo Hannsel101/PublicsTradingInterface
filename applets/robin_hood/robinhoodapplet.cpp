@@ -3,6 +3,7 @@
 #include "rhsessionmanager.h"
 #include "rhnativeauthclient.h"
 #include "rhtradingcontext.h"
+#include "rhautotradecontroller.h"
 
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -10,7 +11,7 @@
 
 struct RobinHoodApplet::State
 {
-    State() : sessions(network), trades(network, makeRHTradingDependencies(sessions))
+    State() : sessions(network), autoTrades(network, sessions), trades(network, manualDependencies())
     {
         Q_INIT_RESOURCE(rh_config);
         QString error;
@@ -26,13 +27,28 @@ struct RobinHoodApplet::State
                          &trades, &RHTradeController::refreshAvailability);
         QObject::connect(&sessions, &QAbstractItemModel::dataChanged,
                          &trades, &RHTradeController::refreshAvailability);
+        QObject::connect(&autoTrades, &RHAutoTradeController::stateChanged,
+                         &trades, &RHTradeController::refreshAvailability);
+        QObject::connect(&trades, &RHTradeController::tradeResultsBusyChanged,
+                         &autoTrades, [this] { autoTrades.setExternalBusy(trades.tradeResultsBusy()); });
         trades.refreshAvailability();
+    }
+
+    RHTradeController::Dependencies manualDependencies()
+    {
+        auto dependencies = makeRHTradingDependencies(sessions);
+        const auto availability = dependencies.availabilityReason;
+        dependencies.availabilityReason = [this, availability] {
+            return autoTrades.busy() ? QStringLiteral("Robinhood Auto Mode is running.") : availability();
+        };
+        return dependencies;
     }
 
     RHNetworkEngine network;
     RHNativeAuthClient native;
     RHSessionManager sessions;
-    // Destroy the controller first: pending callbacks and its lease belong to this state.
+    // Session owner outlives both orchestration and its native children.
+    RHAutoTradeController autoTrades;
     RHTradeController trades;
 };
 
@@ -42,6 +58,8 @@ RobinHoodApplet::RobinHoodApplet(QObject *parent)
     connect(&m_state->sessions, &RHSessionManager::busyChanged,
             this, &AppletInterface::navigationAvailabilityChanged);
     connect(&m_state->sessions, &RHSessionManager::nativeLoginChanged,
+            this, &AppletInterface::navigationAvailabilityChanged);
+    connect(&m_state->autoTrades, &RHAutoTradeController::stateChanged,
             this, &AppletInterface::navigationAvailabilityChanged);
 }
 
@@ -66,6 +84,7 @@ void RobinHoodApplet::initialize(QQmlApplicationEngine &engine)
 {
     engine.rootContext()->setContextProperty(QStringLiteral("RobinSessions"), &m_state->sessions);
     engine.rootContext()->setContextProperty(QStringLiteral("RobinTrades"), &m_state->trades);
+    engine.rootContext()->setContextProperty(QStringLiteral("RobinAutoTrades"), &m_state->autoTrades);
 }
 
 void RobinHoodApplet::start()
@@ -75,11 +94,13 @@ void RobinHoodApplet::start()
 
 bool RobinHoodApplet::canStop() const
 {
-    return !m_state->sessions.busy() || m_state->sessions.nativeLoginCancellable();
+    return !m_state->autoTrades.busy()
+        && (!m_state->sessions.busy() || m_state->sessions.nativeLoginCancellable());
 }
 
 void RobinHoodApplet::stop()
 {
+    if (m_state->autoTrades.busy()) return;
     m_state->sessions.cancelSignIn();
     m_state->sessions.clearActiveSession();
 }

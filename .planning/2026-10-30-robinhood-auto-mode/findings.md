@@ -1,0 +1,8 @@
+# Findings
+- CoreView has disabled robinAutoMode action on sessions page; manual account overview and native results currently separate loaders. Auto Mode must remain visible while orchestration changes active session.
+- RobinHoodApplet owns sessions/network/manual trades; default stop clears active session and canStop currently observes only manager busy/native-login cancellation. New auto global busy must gate navigation across session boundaries and prevent manual overlap.
+- RHTradeController currently runs ticker-major, random2000..3000ms per-result/final cooldown, max20tickers and100 account-symbol rows, full fresh scope identity validation and native submitted/auth evidence. Add opt-in target-account mode only; preserve defaults.
+- Existing account classification recognizes authoritative brokerage_account_type individual,ira_roth,ira_traditional, while legacy display fallback also uses cash/margin. Auto Mode permission filtering must use authoritative field, not display fallback.
+- Parent/native interface: Dependencies.autoModeAccountNumber selects one supported fresh active account after validating entire original scope and uses2500ms delay. Coordinator loops target accounts then ticker chunks, avoiding account-order drift from naive full-account chunks.
+- Coordinator API RHAutoTradeController QObject with available,busy,liveOrdersEnabled,tradeResults,currentTransactionTitle,error,tradeResultsComplete; stateChanged; submit(input,side),cancel(),clearResults(),setExternalBusy(bool). Context RobinAutoTrades.
+- Separate UI mock tests and actual native composition are both required; no mock component alone proves native session/order wiring.

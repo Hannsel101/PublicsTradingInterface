@@ -41,6 +41,24 @@ private slots:
         QVERIFY(!trades->property("available").toBool());
         QVERIFY(!trades->property("unavailableReason").toString().isEmpty());
         QCOMPARE(trades->property("liveOrdersEnabled").toBool(), bool(PUBLICS_RH_EXPECT_LIVE));
+        auto *autoTrades = engine.rootContext()->contextProperty(QStringLiteral("RobinAutoTrades")).value<QObject *>();
+        QVERIFY(autoTrades);
+        for (const auto *property : {"available", "busy", "tradeResults", "currentTransactionTitle",
+                                   "error", "tradeResultsComplete", "liveOrdersEnabled"})
+            QVERIFY(autoTrades->metaObject()->indexOfProperty(property) >= 0);
+        for (const auto *method : {"submit(QString,QString)", "cancel()", "clearResults()"})
+            QVERIFY(autoTrades->metaObject()->indexOfMethod(method) >= 0);
+        QVERIFY(autoTrades->metaObject()->indexOfProperty("token") < 0);
+        QVERIFY(autoTrades->metaObject()->indexOfProperty("password") < 0);
+        QVERIFY(!autoTrades->property("available").toBool());
+        QVERIFY(!autoTrades->property("busy").toBool());
+        QVERIFY(autoTrades->property("tradeResults").toList().isEmpty());
+        QCOMPARE(autoTrades->property("liveOrdersEnabled").toBool(), bool(PUBLICS_RH_EXPECT_LIVE));
+        bool accepted = true;
+        QVERIFY(QMetaObject::invokeMethod(autoTrades, "submit", Qt::DirectConnection,
+            Q_RETURN_ARG(bool, accepted), Q_ARG(QString, QString()), Q_ARG(QString, QStringLiteral("buy"))));
+        QVERIFY(!accepted);
+        QVERIFY(!autoTrades->property("busy").toBool());
         QVERIFY(!sessions->browserLoginPending());
         applet.start();
         QVERIFY(applet.canStop());

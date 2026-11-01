@@ -130,6 +130,33 @@ public slots:
         auto *trades = new MockRobinTrades(engine);
         trades->reset();
         context->setContextProperty("RobinTrades", trades);
+        context->setContextProperty("RobinAutoTrades", mock(engine, R"(
+            property bool available: true
+            property bool busy: false
+            property bool liveOrdersEnabled: false
+            property var tradeResults: []
+            property string currentTransactionTitle: ""
+            property string error: ""
+            property bool tradeResultsComplete: true
+            property string lastInput: ""
+            property string lastSide: ""
+            property int submitCalls: 0
+            property int cancelCalls: 0
+            signal stateChanged()
+            function reset() {
+                available = true; busy = false; liveOrdersEnabled = false
+                tradeResults = []; currentTransactionTitle = ""; error = ""
+                tradeResultsComplete = true; lastInput = ""; lastSide = ""
+                submitCalls = 0; cancelCalls = 0
+            }
+            function submit(text, side) {
+                if (!available || busy) return false
+                lastInput = text; lastSide = side; submitCalls++
+                busy = true; tradeResultsComplete = false; return true
+            }
+            function cancel() { cancelCalls++; busy = false; tradeResultsComplete = true }
+            function clearResults() { if (!busy) { tradeResults = []; error = "" } }
+        )"));
         context->setContextProperty("isDebugMode", true);
         context->setContextProperty("qmlTestArtifactDirectory", qEnvironmentVariable("QML_TEST_ARTIFACT_DIR"));
         context->setContextProperty("TelegramBots", mock(engine, R"(

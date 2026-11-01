@@ -34,6 +34,9 @@ Item {
             onClosed: root.informationAccount = null
         }
     }
+    readonly property var autoTrades: typeof RobinAutoTrades !== "undefined" ? RobinAutoTrades : null
+    readonly property bool autoBusy: autoTrades !== null && autoTrades.busy
+    readonly property bool autoModeOpen: page === 4 || autoBusy
     property int page: 0
     property int selectedIndex: -1
     property bool selectedExpired: false
@@ -48,7 +51,7 @@ Item {
     }
     property string selectedAccountName: ""
     property string selectedAccountId: ""
-    readonly property int view: RobinSessions.nativeLoginPending ? 3
+    readonly property int view: root.autoModeOpen ? 4 : RobinSessions.nativeLoginPending ? 3
                                 : RobinSessions.sessionActive ? 2 : 0
 
     Connections {
@@ -66,7 +69,7 @@ Item {
             root.selectedExpiresAt = ""
             root.selectedAccountName = ""
             root.selectedAccountId = ""
-            root.page = 0
+            if (!root.autoModeOpen) root.page = 0
         }
         function onSessionDeleted(index) {
             // Discard private presentation state on any profile deletion.
@@ -96,7 +99,8 @@ Item {
     Flickable {
         id: scroller
         objectName: "robinSessionScroller"
-        visible: root.view !== 3 && !RobinTrades.tradeResultsVisible
+        visible: !root.autoModeOpen && root.view !== 3 && !RobinTrades.tradeResultsVisible
+        enabled: !root.autoBusy
         anchors.fill: parent
         clip: true
         contentWidth: width
@@ -289,7 +293,7 @@ Item {
                     Layout.preferredHeight: 52
                     text: RobinSessions.busy ? qsTr("Working…")
                           : root.selectedExpired && root.selectedCanRefresh ? qsTr("Renew Session") : qsTr("Start Session")
-                    enabled: root.selectedIndex >= 0 && (!root.selectedExpired || root.selectedCanRefresh) && !RobinSessions.busy
+                    enabled: root.selectedIndex >= 0 && (!root.selectedExpired || root.selectedCanRefresh) && !RobinSessions.busy && !root.autoBusy
                     onClicked: RobinSessions.startSession(root.selectedIndex)
                     contentItem: Label {
                         text: startButton.text
@@ -311,7 +315,7 @@ Item {
                     visible: root.selectedNeedsReauthentication
                     font.pixelSize: 18
                     font.bold: true
-                    enabled: !RobinSessions.busy
+                    enabled: !RobinSessions.busy && !root.autoBusy
                     text: qsTr("Reauthenticate")
                     onClicked: {
                         root.page = 0
@@ -327,7 +331,7 @@ Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 48
                     text: qsTr("Delete Saved Account")
-                    enabled: root.selectedIndex >= 0 && !RobinSessions.busy
+                    enabled: root.selectedIndex >= 0 && !RobinSessions.busy && !root.autoBusy
                     onClicked: {
                         if (deleteDialogLoader.status !== Loader.Ready)
                             return
@@ -355,7 +359,7 @@ Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 48
                     text: qsTr("+ Add Another Account")
-                    enabled: !RobinSessions.busy
+                    enabled: !RobinSessions.busy && !root.autoBusy
                     onClicked: RobinSessions.beginNativeLogin()
                 }
 
@@ -395,14 +399,14 @@ Item {
                 }
                 Loader {
                     Layout.fillWidth: true
-                    active: root.view === 2
+                    active: root.view === 2 && !root.autoModeOpen
                     visible: active
                     sourceComponent: StockTrade {}
                 }
                 Button {
                     objectName: "switchRobinAccount"
                     text: qsTr("Switch account")
-                    enabled: RobinSessions.sessionActive && !RobinTrades.tradeResultsBusy
+                    enabled: RobinSessions.sessionActive && !RobinTrades.tradeResultsBusy && !root.autoBusy
                     onClicked: {
                         RobinSessions.clearActiveSession()
                         root.page = 0
@@ -415,7 +419,7 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 68
                 radius: 14
-                color: "#29352f"
+                color: root.surface
                 border.color: "#4c5b52"
                 RowLayout {
                     anchors.fill: parent
@@ -424,15 +428,16 @@ Item {
                         Layout.fillWidth: true
                         text: qsTr("Auto Mode")
                         font.pixelSize: 18
-                        color: "#9da9a0"
+                        color: root.accent
                         font.bold: true
                     }
                     Button {
                         objectName: "robinAutoMode"
                         font.pixelSize: 18
                         font.bold: true
-                        text: qsTr("Unavailable")
-                        enabled: false
+                        text: qsTr("Open")
+                        enabled: root.autoTrades !== null && !RobinSessions.busy && !root.autoBusy && !RobinTrades.tradeResultsBusy
+                        onClicked: { root.page = 4; root.informationAccount = null }
                         Layout.preferredWidth: Math.max(120, implicitWidth)
                     }
                 }
@@ -441,20 +446,35 @@ Item {
     }
     Loader {
         anchors.fill: parent
-        active: root.view === 3
+        active: root.view === 3 && !root.autoModeOpen
         visible: active
         sourceComponent: NativeLoginForm {}
     }
     Loader {
         objectName: "robinResultsLoader"
         anchors.fill: parent
-        active: RobinTrades.tradeResultsVisible
+        active: RobinTrades.tradeResultsVisible && !root.autoModeOpen
         visible: active
         sourceComponent: TradeResultScreen {}
     }
     Loader {
+        objectName: "robinAutoModeLoader"
+        anchors.fill: parent
+        active: root.autoModeOpen
+        visible: active
+        sourceComponent: AutoModeView {
+            trades: root.autoTrades
+            onBackRequested: {
+                if (root.autoBusy) return
+                RobinSessions.clearActiveSession()
+                root.page = 0
+                scroller.contentY = 0
+            }
+        }
+    }
+    Loader {
         id: deleteDialogLoader
-        active: root.selectedIndex >= 0
+        active: root.selectedIndex >= 0 && !root.autoModeOpen
         sourceComponent: Component {
             Dialog {
                 id: deleteDialog

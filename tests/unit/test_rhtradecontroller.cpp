@@ -147,6 +147,251 @@ private:
             QVERIFY(!serialized.contains(secret));
     }
 private slots:
+    void autoModeSelectsOneAuthoritativeAccountWithFinalCooldown() {
+        Fixture f; auto d = f.deps(); d.autoModeAccountNumber = "2";
+        d.current = [&](const auto &s) { return s.accounts == f.session.accounts; };
+        f.overrideRead = [&](QUrl url) -> QJsonObject {
+            if (url.path() != "/accounts/") return {};
+            QJsonArray rows;
+            for (int i = 1; i <= 3; ++i) rows.append(QJsonObject{{"account_number", QString::number(i)},
+                {"url", f.origin + QString("/accounts/a%1/").arg(i)}, {"state", "active"},
+                {"brokerage_account_type", "individual"}});
+            return {{"results", rows}, {"next", QJsonValue::Null}};
+        };
+        // Synthetic provider-shaped receipt, not a request echo. Only ref_id is
+        // dynamic correlation evidence; all transaction identity is independent.
+        f.overrideOrder = [&](QVariantMap order) {
+            return qMakePair(201, QJsonObject{{"id", "auto-order"}, {"state", "queued"},
+                {"account", f.origin + "/accounts/a2/"}, {"instrument", f.origin + "/instruments/AAPL/"},
+                {"side", "buy"}, {"quantity", "1.00000000"}, {"ref_id", order.value("ref_id").toString()}});
+        };
+        RHTradeController c(f.network, d);
+        connect(&c, &RHTradeController::tradeResultsChanged, this, [&] {
+            for (const auto &raw : c.tradeResults()) QCOMPARE(raw.toMap().value("accountNumber").toString(), "2");
+        });
+        QVERIFY(c.submit("AAPL", "buy")); QTRY_COMPARE(f.timers.size(), 1);
+        QCOMPARE(c.tradeResults().size(), 1); QCOMPARE(f.orders.size(), 1);
+        QCOMPARE(c.tradeResults().first().toMap().value("status").toString(), "submitted");
+        QCOMPARE(f.delays, QList<int>{2500}); QVERIFY(c.tradeResultsBusy());
+        QVERIFY(!c.tradeResultsComplete()); QCOMPARE(f.releases, 0);
+        f.tick(); QTRY_VERIFY(c.tradeResultsComplete()); QCOMPARE(f.releases, 1);
+        QCOMPARE(f.orders.size(), 1); QCOMPARE(f.delays.size(), 1);
+    }
+    void autoModeRealFinalCooldownNeverReleasesEarly() {
+        Fixture f; auto d = f.deps(); d.autoModeAccountNumber = "2";
+        d.schedule = {}; d.loopbackLiveOrdersForTests = false;
+        f.overrideRead = [&](QUrl url) -> QJsonObject {
+            if (url.path() != "/accounts/") return {};
+            QJsonArray rows;
+            for (int i = 1; i <= 3; ++i) rows.append(QJsonObject{{"account_number", QString::number(i)},
+                {"url", f.origin + QString("/accounts/a%1/").arg(i)}, {"state", "active"},
+                {"brokerage_account_type", "individual"}});
+            return {{"results", rows}, {"next", QJsonValue::Null}};
+        };
+        f.overrideOrder = [&](QVariantMap order) {
+            return qMakePair(201, QJsonObject{{"id", "real-cooldown"}, {"state", "queued"},
+                {"account", f.origin + "/accounts/a2/"}, {"instrument", f.origin + "/instruments/AAPL/"},
+                {"side", "buy"}, {"quantity", "1"}, {"ref_id", order.value("ref_id").toString()}});
+        };
+        RHTradeController c(f.network, d); QElapsedTimer cooldown; qint64 elapsedNs = -1;
+        connect(&c, &RHTradeController::tradeResultsChanged, this, [&] {
+            const auto rows = c.tradeResults();
+            if (!cooldown.isValid() && !rows.isEmpty()
+                && QStringList{"preview", "submitted"}.contains(rows.first().toMap().value("status").toString()))
+                cooldown.start();
+        });
+        connect(&c, &RHTradeController::tradeResultsBusyChanged, this, [&] {
+            if (!c.tradeResultsBusy() && cooldown.isValid()) elapsedNs = cooldown.nsecsElapsed();
+        });
+        QVERIFY(c.submit("AAPL", "buy"));
+        QTRY_VERIFY_WITH_TIMEOUT(c.tradeResultsComplete(), 5000);
+        QVERIFY2(elapsedNs >= 2500000000LL, qPrintable(QString("Final cooldown released after %1 ns").arg(elapsedNs)));
+        QCOMPARE(f.releases, 1); QCOMPARE(f.orders.size(), c.liveOrdersEnabled() ? 1 : 0); QCOMPARE(c.tradeResults().size(), 1);
+    }
+    void autoModeRequiresFreshSupportedProduct_data() {
+        QTest::addColumn<QJsonValue>("type"); QTest::addColumn<bool>("accepted");
+        QTest::newRow("individual") << QJsonValue("individual") << true;
+        QTest::newRow("traditional") << QJsonValue("ira_traditional") << true;
+        QTest::newRow("roth") << QJsonValue("ira_roth") << true;
+        for (const auto &type : {"joint", "unknown", "cash", "margin", "IRA_ROTH", " ira_roth"})
+            QTest::newRow(type) << QJsonValue(type) << false;
+        QTest::newRow("missing") << QJsonValue(QJsonValue::Undefined) << false;
+        QTest::newRow("null") << QJsonValue(QJsonValue::Null) << false;
+        QTest::newRow("non-string") << QJsonValue(42) << false;
+    }
+    void autoModeRequiresFreshSupportedProduct() {
+        QFETCH(QJsonValue, type); QFETCH(bool, accepted); Fixture f;
+        auto cached = f.session.accounts[1].toMap(); cached.insert("displayName", "My Roth IRA");
+        cached.insert("brokerage_account_type", "ira_roth"); cached.insert("type", "cash");
+        f.session.accounts[1] = cached;
+        f.overrideRead = [&](QUrl url) -> QJsonObject {
+            if (url.path() != "/accounts/") return {};
+            QJsonArray rows;
+            for (int i = 1; i <= 3; ++i) rows.append(QJsonObject{{"account_number", QString::number(i)},
+                {"url", f.origin + QString("/accounts/a%1/").arg(i)}, {"state", "active"},
+                {"brokerage_account_type", i == 2 ? type : QJsonValue("joint")}, {"type", "cash"}, {"nickname", "Roth IRA"}});
+            return {{"results", rows}, {"next", QJsonValue::Null}};
+        };
+        f.overrideOrder = [&](QVariantMap order) {
+            return qMakePair(201, QJsonObject{{"id", "selected-product"}, {"state", "queued"},
+                {"account", f.origin + "/accounts/a2/"}, {"instrument", f.origin + "/instruments/AAPL/"},
+                {"side", "buy"}, {"quantity", "1"}, {"ref_id", order.value("ref_id").toString()}});
+        };
+        auto d = f.deps(); d.autoModeAccountNumber = "2";
+        RHTradeController c(f.network, d); QVERIFY(c.submit("AAPL", "buy"));
+        if (accepted) {
+            QTRY_COMPARE(f.timers.size(), 1); QCOMPARE(f.orders.size(), 1);
+            QCOMPARE(c.tradeResults().size(), 1); QCOMPARE(c.tradeResults().first().toMap().value("status").toString(), "submitted");
+            QCOMPARE(f.delays.last(), 2500); QVERIFY(c.tradeResultsBusy()); QCOMPARE(f.releases, 0); f.tick();
+        }
+        QTRY_VERIFY(c.tradeResultsComplete()); QCOMPARE(f.orders.size(), accepted ? 1 : 0);
+        QCOMPARE(f.releases, 1); if (!accepted) QVERIFY(!c.error().isEmpty());
+    }
+    void autoModeValidatesEntireOriginalAndFreshScope_data() {
+        QTest::addColumn<QString>("fault");
+        for (const auto &fault : {"wrong-id", "unsafe-id", "space-id", "newline-id", "original-duplicate", "original-unsafe-sibling",
+                "original-url-sibling", "original-21-accounts", "fresh-missing-sibling", "fresh-url-sibling",
+                "fresh-extra-active", "fresh-duplicate-sibling", "fresh-invalid-sibling", "selected-inactive"})
+            QTest::newRow(fault) << QString(fault);
+    }
+    void autoModeValidatesEntireOriginalAndFreshScope() {
+        QFETCH(QString, fault); Fixture f; auto d = f.deps(); d.autoModeAccountNumber = "2";
+        if (fault == "wrong-id") d.autoModeAccountNumber = "9";
+        if (fault == "unsafe-id") d.autoModeAccountNumber = "2/../1";
+        if (fault == "space-id") d.autoModeAccountNumber = " 2";
+        if (fault == "newline-id") d.autoModeAccountNumber = "2\n";
+        if (fault == "original-duplicate") f.session.accounts.append(f.session.accounts.first());
+        if (fault == "original-unsafe-sibling" || fault == "original-url-sibling") {
+            auto sibling = f.session.accounts.first().toMap();
+            sibling.insert(fault == "original-unsafe-sibling" ? "accountNumber" : "_url", "unsafe/identity");
+            f.session.accounts[0] = sibling;
+        }
+        if (fault == "original-21-accounts")
+            for (int i = 4; i <= 21; ++i) f.session.accounts.append(QVariantMap{{"accountNumber", QString::number(i)},
+                {"_url", f.origin + QString("/accounts/a%1/").arg(i)}});
+        f.overrideRead = [&](QUrl url) -> QJsonObject {
+            if (url.path() != "/accounts/") return {};
+            QJsonArray rows;
+            for (int i = 1; i <= 3; ++i) {
+                if (i == 1 && fault == "fresh-missing-sibling") continue;
+                QJsonObject account{{"account_number", QString::number(i)},
+                    {"url", f.origin + QString("/accounts/a%1/").arg(i)}, {"state", "active"},
+                    {"brokerage_account_type", "ira_roth"}};
+                if (i == 1 && fault == "fresh-url-sibling") account.insert("url", f.origin + "/accounts/replaced/");
+                if (i == 1 && fault == "fresh-invalid-sibling") account.insert("state", 5);
+                if (i == 2 && fault == "selected-inactive") account.insert("state", "closed");
+                rows.append(account);
+                if (i == 1 && fault == "fresh-duplicate-sibling") rows.append(account);
+            }
+            if (fault == "fresh-extra-active") rows.append(QJsonObject{{"account_number", "unexpected"},
+                {"url", f.origin + "/accounts/unexpected/"}, {"state", "active"}, {"brokerage_account_type", "joint"}});
+            return {{"results", rows}, {"next", QJsonValue::Null}};
+        };
+        RHTradeController c(f.network, d); QVERIFY(c.submit("AAPL", "buy"));
+        QTRY_VERIFY(c.tradeResultsComplete()); QVERIFY(f.orders.isEmpty());
+        QCOMPARE(f.releases, 1); QVERIFY(!c.error().isEmpty());
+        QCOMPARE(f.requests.count("GET /instruments/"), 0);
+        for (const auto &raw : c.tradeResults()) QCOMPARE(raw.toMap().value("accountNumber").toString(), "2");
+    }
+    void autoModeTwentyTickersUseOnlySelectedAccountAndFullOwnership() {
+        Fixture f;
+        for (int i = 4; i <= 20; ++i) f.session.accounts.append(QVariantMap{{"accountNumber", QString::number(i)},
+            {"_url", f.origin + QString("/accounts/a%1/").arg(i)}});
+        QStringList symbols; for (char ch = 'A'; ch <= 'T'; ++ch) symbols.append(QString(QChar(ch)));
+        f.overrideRead = [&](QUrl url) -> QJsonObject {
+            if (url.path() != "/accounts/") return {};
+            QJsonArray rows;
+            for (int i = 1; i <= 20; ++i) rows.append(QJsonObject{{"account_number", QString::number(i)},
+                {"url", f.origin + QString("/accounts/a%1/").arg(i)}, {"state", "active"},
+                {"brokerage_account_type", i == 2 ? "ira_traditional" : "joint"}});
+            return {{"results", rows}, {"next", QJsonValue::Null}};
+        };
+        f.overrideOrder = [&](QVariantMap order) {
+            const auto symbol = symbols.at(f.orders.size() - 1);
+            return qMakePair(201, QJsonObject{{"id", "batch-" + symbol}, {"state", "queued"},
+                {"account", f.origin + "/accounts/a2/"}, {"instrument", f.origin + "/instruments/" + symbol + "/"},
+                {"side", "buy"}, {"quantity", "1"}, {"ref_id", order.value("ref_id").toString()}});
+        };
+        auto d = f.deps(); d.autoModeAccountNumber = "2"; int checks = 0;
+        d.current = [&](const auto &s) { ++checks; return s.accounts == f.session.accounts; };
+        RHTradeController c(f.network, d);
+        connect(&c, &RHTradeController::tradeResultsChanged, this, [&] {
+            for (const auto &raw : c.tradeResults()) QCOMPARE(raw.toMap().value("accountNumber").toString(), "2");
+        });
+        QVERIFY(c.submit(symbols.join(','), "buy"));
+        for (int row = 0; row < symbols.size(); ++row) {
+            QTRY_COMPARE(f.timers.size(), 1); QCOMPARE(f.orders.size(), row + 1);
+            QCOMPARE(c.tradeResults().size(), 20); QCOMPARE(f.requests.count("GET /quotes/"), 20);
+            QCOMPARE(f.requests.indexOf("POST /orders/"), 41);
+            QCOMPARE(f.orders.at(row).value("account").toString(), f.origin + "/accounts/a2/");
+            QCOMPARE(f.orders.at(row).value("symbol").toString(), symbols.at(row));
+            QCOMPARE(c.tradeResults().at(row).toMap().value("status").toString(), "submitted");
+            QCOMPARE(f.delays.last(), 2500); QVERIFY(c.tradeResultsBusy());
+            QVERIFY(!c.tradeResultsComplete()); QCOMPARE(f.releases, 0); f.tick();
+        }
+        QTRY_VERIFY(c.tradeResultsComplete()); QCOMPARE(f.releases, 1);
+        QCOMPARE(f.delays.size(), 20); QCOMPARE(f.acquisitions, 1); QVERIFY(checks > 20);
+    }
+    void autoModeCooldownCoversResultKinds_data() {
+        QTest::addColumn<QString>("kind");
+        for (const auto &kind : {"preview", "post-rejected", "unknown", "preflight-failed", "read-auth-failed", "sell-no-position", "sell-submitted", "reconciled", "filled"})
+            QTest::newRow(kind) << QString(kind);
+    }
+    void autoModeCooldownCoversResultKinds() {
+        QFETCH(QString, kind); Fixture f; auto d = f.deps(); d.autoModeAccountNumber = "2";
+        if (kind == "preview") d.loopbackLiveOrdersForTests = false;
+        int localChecks = 0, asyncChecks = 0; QString positionAccount;
+        d.current = [&](const auto &s) { return s.accounts == f.session.accounts; };
+        d.currentLocal = [&](const auto &s) { ++localChecks; return s.accounts == f.session.accounts; };
+        d.currentAsync = [&](const auto &s, auto done) { ++asyncChecks; done(s.accounts == f.session.accounts); };
+        const auto receipt = [&] {
+            return QJsonObject{{"id", "broker-auto"}, {"state", kind == "filled" ? "filled" : "queued"},
+                {"account", f.origin + "/accounts/a2/"}, {"instrument", f.origin + "/instruments/AAPL/"},
+                {"side", kind == "sell-submitted" ? "sell" : "buy"}, {"quantity", kind == "sell-submitted" ? "2.5" : "1"},
+                {"ref_id", f.orders.first().value("ref_id").toString()}};
+        };
+        f.overrideRead = [&](QUrl url) -> QJsonObject {
+            if (url.path() == "/accounts/") {
+                QJsonArray rows;
+                for (int i = 1; i <= 3; ++i) rows.append(QJsonObject{{"account_number", QString::number(i)},
+                    {"url", f.origin + QString("/accounts/a%1/").arg(i)}, {"state", "active"}, {"brokerage_account_type", "individual"}});
+                return {{"results", rows}, {"next", QJsonValue::Null}};
+            }
+            if (kind == "preflight-failed" && url.path() == "/quotes/")
+                return {{"results", QJsonArray{}}, {"next", QJsonValue::Null}};
+            if (kind == "sell-submitted" && url.path() == "/positions/") {
+                positionAccount = QUrlQuery(url).queryItemValue("account_number");
+                return {{"results", QJsonArray{QJsonObject{{"account", f.origin + "/accounts/a2/"},
+                    {"account_number", "2"}, {"instrument", f.origin + "/instruments/AAPL/"}, {"quantity", "3"},
+                    {"shares_held_for_sells", "0.5"}, {"shares_held_for_stock_grants", "0"},
+                    {"shares_held_for_options_collateral", "0"}, {"shares_held_for_options_events", "0"}}}},
+                    {"next", QJsonValue::Null}};
+            }
+            if (kind == "reconciled" && url.path() == "/orders/broker-auto/") return receipt();
+            return {};
+        };
+        if (kind == "read-auth-failed") { f.failedReadPath = "/accounts/"; f.failedReadStatus = 401; }
+        if (kind == "post-rejected") f.overrideOrder = [](QVariantMap) { return qMakePair(400, QJsonObject{{"detail", "Rejected"}}); };
+        if (kind == "unknown") f.overrideOrder = [](QVariantMap) { return qMakePair(201, QJsonObject{}); };
+        if (kind == "reconciled") f.overrideOrder = [](QVariantMap) { return qMakePair(201, QJsonObject{{"id", "broker-auto"}}); };
+        if (kind == "filled" || kind == "sell-submitted" || kind == "preview") f.overrideOrder = [&](QVariantMap) { return qMakePair(201, receipt()); };
+        RHTradeController c(f.network, d); QVERIFY(c.submit("AAPL", kind.startsWith("sell-") ? "sell" : "buy"));
+        QTRY_COMPARE(f.timers.size(), 1); QCOMPARE(f.delays, QList<int>{2500});
+        QCOMPARE(c.tradeResults().size(), 1); QVERIFY(c.tradeResultsBusy()); QVERIFY(!c.tradeResultsComplete());
+        QCOMPARE(f.releases, 0); QVERIFY(!c.submit("MSFT", "buy"));
+        const auto status = c.tradeResults().first().toMap().value("status").toString();
+        const auto expected = kind == "preview" ? (c.liveOrdersEnabled() ? "submitted" : "preview") : kind == "unknown" ? "unknown"
+            : kind == "sell-no-position" ? "skipped" : kind == "filled" ? "filled"
+            : kind == "reconciled" || kind == "sell-submitted" ? "submitted" : "failed";
+        QCOMPARE(status, QString(expected));
+        if (kind == "read-auth-failed") QVERIFY(c.authenticationRequired());
+        const bool post = kind == "post-rejected" || kind == "unknown" || kind == "sell-submitted" || kind == "reconciled" || kind == "filled"
+            || (kind == "preview" && c.liveOrdersEnabled());
+        QCOMPARE(f.orders.size(), post ? 1 : 0);
+        if (kind == "sell-submitted") { QCOMPARE(positionAccount, "2"); QCOMPARE(f.orders.first().value("quantity").toString(), "2.5"); }
+        if (kind == "reconciled") { QVERIFY(localChecks > 0); QVERIFY(asyncChecks > 0); QCOMPARE(f.requests.count("GET /orders/broker-auto/"), 1); }
+        f.tick(); QTRY_VERIFY(c.tradeResultsComplete()); QCOMPARE(f.releases, 1); QCOMPARE(f.delays.size(), 1);
+    }
     void readAuthenticationEvidenceIsIndependentOfPost_data() {
         QTest::addColumn<QString>("path"); QTest::addColumn<int>("http");
         for (const auto &path : {"/accounts/", "/instruments/", "/quotes/", "/positions/", "/orders/broker-id/"})

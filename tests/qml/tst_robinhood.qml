@@ -827,7 +827,7 @@ TestCase {
             compare(autoLabel.font.pixelSize, 18)
             compare(autoLabel.font.bold, true)
             const autoButton = findChild(view, "robinAutoMode")
-            compare(autoButton.enabled, false)
+            compare(autoButton.enabled, true)
             verify(autoLabel.implicitWidth <= autoLabel.width + 1)
             verify(autoLabel.mapToItem(view, autoLabel.width, 0).x <= autoButton.mapToItem(view, 0, 0).x)
             if (qmlTestArtifactDirectory.length > 0) {
@@ -843,7 +843,7 @@ TestCase {
             const autoButton = findChild(view, "robinAutoMode")
             verify(autoButton !== null)
             compare(autoButton.visible, true)
-            compare(autoButton.enabled, false)
+            compare(autoButton.enabled, true)
             verify(findText(view, "Your Sessions") !== null)
             RobinSessions.accounts.append(account("100", "Standard Brokerage"))
             RobinSessions.sessionActive = true
@@ -862,14 +862,14 @@ TestCase {
             mouseClick(back)
             tryCompare(view, "view", 0)
             tryCompare(autoButton, "visible", true)
-            compare(autoButton.enabled, false)
+            compare(autoButton.enabled, true)
             verify(findText(view, "Your Sessions") !== null)
         } finally { view.destroy() }
     }
-    function test_emptyPickerAndDisabledAutoMode() {
+    function test_emptyPickerAndAvailableAutoMode() {
         const view = createView()
         try {
-            compare(findChild(view, "robinAutoMode").enabled, false)
+            compare(findChild(view, "robinAutoMode").enabled, true)
             compare(findChild(view, "startRobinSession").enabled, false)
             compare(findChild(view, "addRobinAccount").enabled, true)
             noCredentials(view)
