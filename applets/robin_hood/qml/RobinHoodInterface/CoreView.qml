@@ -283,28 +283,63 @@ Item {
                     color: root.muted
                     wrapMode: Text.Wrap
                 }
-                Button {
-                    id: startButton
-                    objectName: "startRobinSession"
-                    font.pixelSize: 18
-                    font.bold: true
-                    visible: !root.selectedExpired || root.selectedCanRefresh
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 52
-                    text: RobinSessions.busy ? qsTr("Working…")
-                          : root.selectedExpired && root.selectedCanRefresh ? qsTr("Renew Session") : qsTr("Start Session")
-                    enabled: root.selectedIndex >= 0 && (!root.selectedExpired || root.selectedCanRefresh) && !RobinSessions.busy && !root.autoBusy
-                    onClicked: RobinSessions.startSession(root.selectedIndex)
-                    contentItem: Label {
-                        text: startButton.text
-                        color: startButton.enabled ? root.canvas : root.muted
-                        font: startButton.font
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
+                    spacing: 12
+                    Button {
+                        id: startButton
+                        objectName: "startRobinSession"
+                        font.pixelSize: 18
+                        font.bold: true
+                        visible: !root.selectedExpired || root.selectedCanRefresh
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 52
+                        text: RobinSessions.busy ? qsTr("Working…")
+                              : root.selectedExpired && root.selectedCanRefresh ? qsTr("Renew Session") : qsTr("Single Mode")
+                        enabled: root.selectedIndex >= 0 && (!root.selectedExpired || root.selectedCanRefresh) && !RobinSessions.busy && !root.autoBusy
+                        onClicked: RobinSessions.startSession(root.selectedIndex)
+                        contentItem: Label {
+                            text: startButton.text
+                            color: startButton.enabled ? root.canvas : root.muted
+                            font: startButton.font
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            radius: 14
+                            color: startButton.enabled ? (startButton.down ? "#83bd2c" : root.accent) : "#31403a"
+                        }
                     }
-                    background: Rectangle {
-                        radius: 14
-                        color: startButton.enabled ? (startButton.down ? "#83bd2c" : root.accent) : "#31403a"
+                    Item {
+                        visible: !startButton.visible
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 52
+                    }
+                    Button {
+                        id: autoModeButton
+                        objectName: "robinAutoMode"
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 52
+                        text: qsTr("Auto Mode")
+                        font.pixelSize: 18
+                        font.bold: true
+                        enabled: root.autoTrades !== null && !RobinSessions.busy && !root.autoBusy && !RobinTrades.tradeResultsBusy
+                        onClicked: { root.page = 4; root.informationAccount = null }
+                        contentItem: Label {
+                            text: autoModeButton.text
+                            font: autoModeButton.font
+                            color: autoModeButton.enabled ? root.accent : root.muted
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            radius: 14
+                            color: autoModeButton.down ? "#29352f" : root.surface
+                            border.color: root.edge
+                        }
                     }
                 }
                 Button {
@@ -323,44 +358,50 @@ Item {
                         RobinSessions.reauthenticate(root.selectedIndex)
                     }
                 }
-                Button {
-                    id: deleteButton
-                    objectName: "deleteRobinSession"
-                    font.pixelSize: 18
-                    font.bold: true
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 48
-                    text: qsTr("Delete Saved Account")
-                    enabled: root.selectedIndex >= 0 && !RobinSessions.busy && !root.autoBusy
-                    onClicked: {
-                        if (deleteDialogLoader.status !== Loader.Ready)
-                            return
-                        deleteDialogLoader.item.pendingIndex = root.selectedIndex
-                        deleteDialogLoader.item.pendingAccountName = root.selectedAccountName
-                        deleteDialogLoader.item.open()
+                    spacing: 12
+                    Button {
+                        objectName: "addRobinAccount"
+                        font.pixelSize: 18
+                        font.bold: true
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 48
+                        text: qsTr("Add Login")
+                        enabled: !RobinSessions.busy && !root.autoBusy
+                        onClicked: RobinSessions.beginNativeLogin()
                     }
-                    contentItem: Label {
-                        text: deleteButton.text
-                        font: deleteButton.font
-                        color: deleteButton.enabled ? "#ffe4dc" : root.muted
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
+                    Button {
+                        id: deleteButton
+                        objectName: "deleteRobinSession"
+                        font.pixelSize: 18
+                        font.bold: true
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 48
+                        text: qsTr("Remove Login")
+                        enabled: root.selectedIndex >= 0 && !RobinSessions.busy && !root.autoBusy
+                        onClicked: {
+                            if (deleteDialogLoader.status !== Loader.Ready)
+                                return
+                            deleteDialogLoader.item.pendingIndex = root.selectedIndex
+                            deleteDialogLoader.item.pendingAccountName = root.selectedAccountName
+                            deleteDialogLoader.item.open()
+                        }
+                        contentItem: Label {
+                            text: deleteButton.text
+                            font: deleteButton.font
+                            color: deleteButton.enabled ? "#ffe4dc" : root.muted
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            radius: 14
+                            color: deleteButton.enabled ? "#54302e" : "#31403a"
+                            border.color: deleteButton.enabled ? "#e8907f" : root.edge
+                        }
                     }
-                    background: Rectangle {
-                        radius: 14
-                        color: deleteButton.enabled ? "#54302e" : "#31403a"
-                        border.color: deleteButton.enabled ? "#e8907f" : root.edge
-                    }
-                }
-                Button {
-                    objectName: "addRobinAccount"
-                    font.pixelSize: 18
-                    font.bold: true
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 48
-                    text: qsTr("+ Add Another Account")
-                    enabled: !RobinSessions.busy && !root.autoBusy
-                    onClicked: RobinSessions.beginNativeLogin()
                 }
 
             }
@@ -414,34 +455,6 @@ Item {
                 }
             }
 
-            Rectangle {
-                visible: root.view === 0
-                Layout.fillWidth: true
-                Layout.preferredHeight: 68
-                radius: 14
-                color: root.surface
-                border.color: "#4c5b52"
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: 12
-                    Label {
-                        Layout.fillWidth: true
-                        text: qsTr("Auto Mode")
-                        font.pixelSize: 18
-                        color: root.accent
-                        font.bold: true
-                    }
-                    Button {
-                        objectName: "robinAutoMode"
-                        font.pixelSize: 18
-                        font.bold: true
-                        text: qsTr("Open")
-                        enabled: root.autoTrades !== null && !RobinSessions.busy && !root.autoBusy && !RobinTrades.tradeResultsBusy
-                        onClicked: { root.page = 4; root.informationAccount = null }
-                        Layout.preferredWidth: Math.max(120, implicitWidth)
-                    }
-                }
-            }
         }
     }
     Loader {

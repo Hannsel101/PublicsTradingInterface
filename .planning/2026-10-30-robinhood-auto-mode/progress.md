@@ -1,4 +1,9 @@
 # Progress
+
+## Saved-login action rows
+- User follow-up: Single Mode replaces Start Session; centered, whole-surface Auto Mode sits to its right with no Open button/old wrapper row. Add Login sits left of Remove Login on one row. Existing renewal, expired-session reauthentication, confirmation and busy semantics preserved; hidden Single Mode keeps the right-hand Auto position.
+- New desktop/compact action-row regression observed2RED cases before implementation. Covers label spelling, left/right order, shared vertical center, viewport bounds, text centering and edge-click Auto navigation without authentication. Existing typography/navigation/login/removal tests retained; updated obsolete single-button300px-width assumption to equal split-row bounds. An initial mistyped QtTest case filter was corrected to RobinHoodSessions before observing actual RED.
+- Actual Qt6.12 Debug and Release apps rebuilt; full QML/default Robinhood/real native Auto composition targets passed3/3 in each. No native trading/security changes, production credential reads or real orders.
 - Inspected AGENTS/CodeGraph, native lease/trade/context and QML disabled action. Loaded QML/UI/C++/TDD/planning skills. Current worktree was clean before this task; preserve any concurrent changes.
 - User clarified sellALL follows identical2.5sec pacing and all accounts before next session. Stated Debug preview remains preserved; no execution/trading permission requested for development.
 - Dispatched deleg_fbb96dbf: coordinator owner new rhautotradecontroller h/cpp and native integration; policy owner RHTradeController h/cpp/unit tests; UI owner Robinhood QML/local QML CMake and mock-backed tests. Parent owns default applet/root native/tests CMake and shipping-build verification.

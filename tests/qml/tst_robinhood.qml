@@ -799,6 +799,41 @@ TestCase {
             compare(RobinSessions.reauthenticateCalls, 0)
         } finally { view.destroy() }
     }
+    function test_sessionActionsShareRows_data() { return sizes() }
+    function test_sessionActionsShareRows(data) {
+        addSaved(7, false)
+        const view = createView(data.width, data.height)
+        try {
+            const single = findChild(view, "startRobinSession")
+            const auto = findChild(view, "robinAutoMode")
+            const add = findChild(view, "addRobinAccount")
+            const remove = findChild(view, "deleteRobinSession")
+            compare(single.text, "Single Mode")
+            compare(auto.text, "Auto Mode")
+            compare(add.text, "Add Login")
+            compare(remove.text, "Remove Login")
+            compare(findText(view, "Open"), null)
+            verify(waitForPolish(view.Window.window))
+            for (const pair of [[single, auto], [add, remove]]) {
+                const left = pair[0], right = pair[1]
+                tryVerify(() => Math.abs(left.mapToItem(view, 0, left.height / 2).y
+                    - right.mapToItem(view, 0, right.height / 2).y) <= 1)
+                verify(left.mapToItem(view, left.width, 0).x < right.mapToItem(view, 0, 0).x)
+                verify(left.mapToItem(view, 0, 0).x >= 0)
+                verify(right.mapToItem(view, right.width, 0).x <= view.width)
+            }
+            compare(auto.contentItem.horizontalAlignment, Text.AlignHCenter)
+            tryVerify(() => Math.abs(auto.contentItem.mapToItem(view, auto.contentItem.width / 2, 0).x
+                - auto.mapToItem(view, auto.width / 2, 0).x) <= 1)
+            reveal(view, auto)
+            mouseClick(auto, 6, auto.height / 2)
+            tryCompare(view, "view", 4)
+            compare(RobinSessions.lastStarted, -1)
+            mouseClick(findChild(view, "robinAutoBack"))
+            tryCompare(view, "view", 0)
+        } finally { view.destroy() }
+    }
+
     function test_sessionActionTypography_data() { return sizes() }
     function test_sessionActionTypography(data) {
         addSaved(7, false)
@@ -806,8 +841,8 @@ TestCase {
         const view = createView(data.width, data.height)
         try {
             verify(findText(view, "Your Sessions") !== null)
-            compare(findChild(view, "deleteRobinSession").text, "Delete Saved Account")
-            compare(findChild(view, "addRobinAccount").text, "+ Add Another Account")
+            compare(findChild(view, "deleteRobinSession").text, "Remove Login")
+            compare(findChild(view, "addRobinAccount").text, "Add Login")
             tryVerify(() => findChild(view, "robinSessionCard_7") !== null)
             mouseClick(findChild(view, "robinSessionCard_7"))
             tryCompare(view, "selectedIndex", 7)
@@ -822,14 +857,14 @@ TestCase {
                 tryVerify(() => button.contentItem.implicitWidth <= button.availableWidth + 1)
                 verify(button.mapToItem(view, button.width, 0).x <= view.width)
             }
-            const autoLabel = findText(view, "Auto Mode")
+            const autoButton = findChild(view, "robinAutoMode")
+            const autoLabel = autoButton.contentItem
             verify(autoLabel !== null)
             compare(autoLabel.font.pixelSize, 18)
             compare(autoLabel.font.bold, true)
-            const autoButton = findChild(view, "robinAutoMode")
             compare(autoButton.enabled, true)
             verify(autoLabel.implicitWidth <= autoLabel.width + 1)
-            verify(autoLabel.mapToItem(view, autoLabel.width, 0).x <= autoButton.mapToItem(view, 0, 0).x)
+            compare(autoLabel.horizontalAlignment, Text.AlignHCenter)
             if (qmlTestArtifactDirectory.length > 0) {
                 reveal(view, autoButton)
                 grabImage(view).save(qmlTestArtifactDirectory + "/session-actions-" + data.tag + ".png")
@@ -1170,7 +1205,11 @@ TestCase {
             verify(card.mapToItem(view, 0, 0).x >= 0)
             verify(card.mapToItem(view, card.width, 0).x <= data.width)
             verify(start.mapToItem(view, start.width, 0).x <= data.width)
-            verify(start.width >= 300)
+            const auto = findChild(view, "robinAutoMode")
+            verify(start.width > 0 && auto.width > 0)
+            tryVerify(() => Math.abs(start.width - auto.width) <= 1)
+            verify(start.contentItem.implicitWidth <= start.availableWidth + 1)
+            verify(auto.mapToItem(view, auto.width, 0).x <= data.width)
         } finally { view.destroy() }
     }
 }

@@ -34,6 +34,11 @@ None. Implementation, native/UI integration, independent review and regression v
 - Native audit found no blockers. UI pending-row failure presentation finding reproduced RED at compact/desktop sizes, corrected to neutral Waiting / Submitting, and final rebuilt Debug/Release app plus4/4 focused targets each passed. Reviewed ASan UI/native composition2/2 passed; original full34/34 suites and ASan5/5 native baseline also passed.
 - Resolve findings, final source/build checks and skill documentation. Distinguish tested fixtures from Windows/mobile/live provider checks.
 
+### Phase5: Saved-login button layout follow-up
+- **Status:** complete
+- Renamed Start Session to Single Mode, Add Another Account to Add Login and Delete Saved Account to Remove Login. Single Mode/fully clickable centered Auto Mode share one row; Add Login/Remove Login share the next action row. Removed obsolete Open control/Auto card; retained renewal/reauthentication visibility, confirmation and busy guards.
+- Desktop/compact regression observed2RED cases, then alignment/order/centering/edge-click/viewport tests passed. Updated obsolete full-width >=300px assertion for split-row geometry. Actual Debug/Release apps rebuilt and3/3 focused native/QML targets passed each.
+
 ## Errors
 - QML Preview tool not connected; use actual rebuilt Qt Quick fixtures. No live-preview claims.
 - Independent UI audit caught pending rows displayed as terminal failure; added pending regression, observed2RED rows, then fixed only the result presentation and reverified actual builds/fixtures.
