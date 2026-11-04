@@ -222,6 +222,9 @@ void RHSessionManager::commitBrowserSession(const QString &label, const QString 
         }
     }
     if (!replacing) while (find(slot)) ++slot;
+    if (!storedAuthenticationCanCommit(slot, id)) {
+        failLogin(QStringLiteral("Stored profile changed or authentication deadline expired.")); return;
+    }
     QString failure;
     auto reservation = reserveCredentials(&failure);
     if (!reservation || !credentialOwnershipCurrent(slot, &failure)) {
@@ -267,6 +270,14 @@ void RHSessionManager::commitBrowserSession(const QString &label, const QString 
             if (!current()) return;
             verifySession(session.index, QString::fromLatin1(token));
             return;
+        }
+        if (m_storedAuthentication) {
+            const auto operation=m_storedAuthentication;
+            const bool approved=saved && operation->clock.elapsed()<operation->timeoutMs;
+            finishStoredAuthentication(approved ? StoredAuthenticationResult::Approved : StoredAuthenticationResult::Failed,
+                approved ? QString{} : operation->clock.elapsed()>=operation->timeoutMs
+                    ? QStringLiteral("stored_authentication_timeout") : QStringLiteral("stored_authentication_persistence_failed"));
+            if (!current()) return;
         }
         // Last old-attempt action: direct idle observers may start another login.
         setBusy(false);
@@ -397,12 +408,29 @@ void RHSessionManager::failLogin(const QString &message)
     if (!guard || m_authGeneration != generation + 1 || m_readGeneration != readGeneration) return;
     setError(message);
     if (!guard || m_authGeneration != generation + 1 || m_readGeneration != readGeneration) return;
+    if (m_storedAuthentication) {
+        const auto operation=m_storedAuthentication;
+        QString reason=operation->nativeFailure;
+        if (reason.isEmpty()) reason=message.contains(QStringLiteral("identity"),Qt::CaseInsensitive)
+                || message.contains(QStringLiteral("email"),Qt::CaseInsensitive)
+            ? QStringLiteral("stored_authentication_identity_mismatch")
+            : QStringLiteral("stored_authentication_failed_local_authentication_required");
+        finishStoredAuthentication(StoredAuthenticationResult::Failed,reason);
+        if (!guard || m_authGeneration != generation + 1 || m_readGeneration != readGeneration) return;
+    }
     setBusy(false);
 }
 
 void RHSessionManager::cancelSignIn()
 {
     if (m_sessionCommit) return;
+    if (m_storedAuthentication && m_credentialIOPending) {
+        const QPointer<RHSessionManager> guard(this);
+        const auto operation=m_storedAuthentication;
+        finishStoredAuthentication(StoredAuthenticationResult::Failed,QStringLiteral("stored_authentication_cancelled"));
+        if (guard && m_storedAuthentication==operation) endApproval();
+        return; // The held read releases the credential lease and idles later.
+    }
     if (m_readingSession) {
         const QPointer<RHSessionManager> guard(this);
         const quint64 generation = m_readGeneration;

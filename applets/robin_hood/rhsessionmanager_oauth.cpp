@@ -13,7 +13,7 @@ void RHSessionManager::checkSessionRenewal()
     const auto *session = find(m_activeIndex);
     if (!session || !session->canRefresh || session->tokenType != QStringLiteral("Bearer")
         || m_unreconciledSessions.contains(session->index)
-        || session->expiresAt > QDateTime::currentDateTimeUtc().addSecs(120)) return;
+        || session->expiresAt > QDateTime::currentDateTimeUtc()) return;
     initializeSession(session->index);
 }
 

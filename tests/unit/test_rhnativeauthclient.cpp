@@ -71,6 +71,103 @@ QMap<QString, QString> form(const QByteArray &body) {
 class TestRHNativeAuthClient : public QObject {
     Q_OBJECT
 private slots:
+    void remotePushBudgetIsOptIn_data() {
+        QTest::addColumn<bool>("remote"); QTest::newRow("desktop-default")<<false; QTest::newRow("remote")<<true;
+    }
+    void remotePushBudgetIsOptIn() {
+        QFETCH(bool,remote); Fixture fixture;
+        fixture.json({{"verification_workflow", QJsonObject{{"id","w"}}}},400);
+        fixture.json({{"id","m"}});
+        fixture.json({{"context",QJsonObject{{"sheriff_challenge",QJsonObject{{"id","c"},{"type","prompt"},{"status","issued"}}}}}});
+        for(int i=0;i<68;++i) fixture.json({{"challenge_status","pending"}});
+        fixture.json({{"challenge_status","validated"}});
+        fixture.json({{"type_context",QJsonObject{{"result","workflow_status_approved"}}}});
+        fixture.json(fullGrant());
+        RHNativeAuthClient client(fixture.transport(16000,30000)); int grants=0;
+        client.setGrantHandler([&](RHOAuthGrant){++grants;});
+        QVERIFY(remote ? client.startRemote("owner@example.test","synthetic-password","device",30000)
+                       : client.start("owner@example.test","synthetic-password","device"));
+        QTRY_VERIFY_WITH_TIMEOUT(!client.busy(),35000);
+        QCOMPARE(grants,remote?1:0);
+        QCOMPARE(client.state(),remote?RHNativeAuthClient::State::Succeeded:RHNativeAuthClient::State::Failed);
+        if(!remote) QCOMPARE(client.statusText(),QString("Verification poll limit reached"));
+    }
+    void remoteWorkflowDeadlineOverridesOnlyDesktopWholeDeadline() {
+        Fixture fixture; fixture.responses.append({200,{}, {},true});
+        RHNativeAuthClient client(fixture.transport(1000,20));
+        QVERIFY(client.startRemote("owner@example.test","synthetic-password","device",200));
+        QTest::qWait(60); QVERIFY(client.busy());
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(),RHNativeAuthClient::State::Failed,500);
+        QCOMPARE(client.statusText(),QString("Authentication timed out"));
+        QCOMPARE(fixture.requests.size(),1);
+    }
+    void remoteDeadlineCoversEveryNetworkPhase_data() {
+        QTest::addColumn<int>("phase");
+        for(int phase=0;phase<6;++phase) QTest::newRow(qPrintable(QString::number(phase)))<<phase;
+    }
+    void remoteDeadlineCoversEveryNetworkPhase() {
+        QFETCH(int,phase); Fixture fixture;
+        const QList<QJsonObject> responses{
+            {{"verification_workflow",QJsonObject{{"id","w"}}}},
+            {{"id","m"}},
+            {{"context",QJsonObject{{"sheriff_challenge",QJsonObject{{"type","prompt"},{"status","issued"},{"id","c"}}}}}},
+            {{"challenge_status","validated"}},
+            {{"type_context",QJsonObject{{"result","workflow_status_approved"}}}}, fullGrant()};
+        for(int i=0;i<phase;++i) fixture.json(responses[i],i==0?400:200);
+        fixture.responses.append({200,{}, {},true});
+        RHNativeAuthClient client(fixture.transport(3000,10)); int grants=0,terminals=0;
+        client.setGrantHandler([&](RHOAuthGrant){++grants;});
+        connect(&client,&RHNativeAuthClient::changed,&client,[&]{if(!client.busy())++terminals;});
+        QVERIFY(client.startRemote("owner@example.test","password","device",2000));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.requests.size(),phase+1,1800);
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(),RHNativeAuthClient::State::Failed,2500);
+        QCOMPARE(client.statusText(),QString("Authentication timed out"));
+        QCOMPARE(grants,0); QCOMPARE(terminals,1);
+        // A server-side approval sent after expiry cannot resurrect the attempt.
+        const auto late=QJsonDocument(responses[phase]).toJson(QJsonDocument::Compact);
+        for(auto *socket:fixture.server.findChildren<QTcpSocket *>())
+            if(socket->state()==QAbstractSocket::ConnectedState) {
+                socket->write("HTTP/1.1 200 OK\r\nContent-Length: "+QByteArray::number(late.size())+"\r\n\r\n"+late);
+                socket->disconnectFromHost();
+            }
+        QTest::qWait(30); QCOMPARE(grants,0); QCOMPARE(terminals,1); QCOMPARE(fixture.requests.size(),phase+1);
+    }
+    void remoteRequestDeadlineRemainsIndependent() {
+        Fixture fixture; fixture.responses.append({200,{}, {},false,true});
+        // Allow loopback connection scheduling under concurrent sanitizer/build load.
+        RHNativeAuthClient client(fixture.transport(500,10)); int grants=0;
+        client.setGrantHandler([&](RHOAuthGrant){++grants;});
+        QVERIFY(client.startRemote("owner@example.test","password","device",1500));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(),RHNativeAuthClient::State::Failed,1200);
+        QCOMPARE(client.statusText(),QString("Request timed out")); QCOMPARE(grants,0); QCOMPARE(fixture.requests.size(),1);
+    }
+    void prevalidatedCodeChallengesRemainDesktopOnly_data() {
+        QTest::addColumn<QString>("type"); QTest::addColumn<bool>("remote");
+        QTest::newRow("remote-sms") << QString("sms") << true;
+        QTest::newRow("remote-email") << QString("email") << true;
+        QTest::newRow("desktop-sms") << QString("sms") << false;
+        QTest::newRow("desktop-email") << QString("email") << false;
+    }
+    void prevalidatedCodeChallengesRemainDesktopOnly() {
+        QFETCH(QString,type); QFETCH(bool,remote);
+        Fixture fixture;
+        fixture.json({{"verification_workflow",QJsonObject{{"id","w"}}}},400);
+        fixture.json({{"id","m"}});
+        fixture.json({{"context",QJsonObject{{"sheriff_challenge",QJsonObject{
+            {"type",type},{"status","validated"},{"id","c"}}}}}});
+        fixture.json({{"type_context",QJsonObject{{"result","workflow_status_approved"}}}});
+        fixture.json(fullGrant());
+        RHNativeAuthClient client(fixture.transport());
+        int grants=0; client.setGrantHandler([&](RHOAuthGrant){++grants;});
+        QVERIFY(remote ? client.startRemote("owner@example.test","fixture-password","device",3000)
+                       : client.start("owner@example.test","fixture-password","device"));
+        QTRY_VERIFY_WITH_TIMEOUT(!client.busy(),4000);
+        QCOMPARE(client.state(),remote?RHNativeAuthClient::State::Failed:RHNativeAuthClient::State::Succeeded);
+        QCOMPARE(grants,remote?0:1);
+        QCOMPARE(fixture.requests.size(),remote?3:5);
+        if(remote) QCOMPARE(client.statusText(),QString("Unsupported challenge; complete authentication locally"));
+        QTest::qWait(20); QCOMPARE(fixture.requests.size(),remote?3:5);
+    }
     void referenceRequestHeaders_data() {
         QTest::addColumn<QByteArray>("name");
         QTest::addColumn<QByteArray>("expected");

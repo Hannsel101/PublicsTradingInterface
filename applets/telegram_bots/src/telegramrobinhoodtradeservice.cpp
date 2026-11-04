@@ -1,26 +1,58 @@
 #include "telegramrobinhoodtradeservice.h"
+#include "rhautotradecontroller.h"
 #include "rhsessionmanager.h"
 #include "rhtradingcontext.h"
 #include <QRegularExpression>
+#include <QSet>
 #include <QTimer>
 #include <utility>
 
 // Keep Q_INIT_RESOURCE outside a namespace: the generated symbol is global.
 static void initializeRobinhoodResources() { Q_INIT_RESOURCE(rh_config); }
 namespace {
-const QString reauth = QStringLiteral("Robinhood Re-authentication required before trades can be completed.");
-using Session = RHTradeController::Session;
 using Dependencies = RHTradeController::Dependencies;
-struct Lease {
-    std::function<void()> release;
-    bool started = false, released = false;
-    void close() { if (started && !std::exchange(released, true) && release) release(); }
-    ~Lease() { close(); }
-};
+using Account = RHSessionManager::StoredSessionAccount;
+const QString inventoryFailure = QStringLiteral("Saved Robinhood account inventory could not be loaded completely; no orders were sent. No automatic sign-in was attempted.");
+const QString unavailable = QStringLiteral("Robinhood trading is unavailable; no orders were sent. No automatic sign-in was attempted.");
+constexpr qsizetype messageLimit = 3900;
 QString safeQuantity(const QVariant &value) {
     const auto text = value.toString();
     static const QRegularExpression decimal(QStringLiteral("\\A[0-9]{1,30}(?:\\.[0-9]{1,10})?\\z"));
     return decimal.match(text).hasMatch() ? text : QString();
+}
+// Split plain Unicode before escaping; never split an HTML entity or surrogate.
+QStringList textMessages(const QString &title, const QStringList &lines) {
+    QStringList messages;
+    QString message = title;
+    for (const auto &line : lines) {
+        if (message.size() + 1 >= messageLimit) { messages.append(message); message = title; }
+        message += '\n';
+        for (const auto scalar : line.toUcs4()) {
+            const char32_t point = scalar;
+            const QString escaped = QString::fromUcs4(&point, 1).toHtmlEscaped();
+            if (message.size() + escaped.size() > messageLimit) { messages.append(message); message = title + '\n'; }
+            message += escaped;
+        }
+    }
+    if (message != title || messages.isEmpty()) messages.append(message);
+    return messages;
+}
+QStringList warnings(const QStringList &emails) {
+    if (emails.isEmpty()) return {};
+    const QString head = QStringLiteral("🔴🔴 <b>Robinhood Reauthentication Required for the following Accounts</b> 🔴🔴\n"
+        "For each account send command /authenticate_robinhood_account accountEmail to remotely authenticate. (Note: Multi-Factor Authentication may be required)\n"
+        "Session Emails Affected: ");
+    const QString tail = QStringLiteral("\n🟡🟡 Warning: trades for these emails will not go through during this buy and sell order but can be part of the next set of orders if authenticated 🟡🟡");
+    QStringList messages, entries;
+    for (const auto &email : emails) {
+        const auto escaped = email.toHtmlEscaped();
+        if (!entries.isEmpty() && head.size() + entries.join(", ").size() + 2 + escaped.size() + tail.size() > messageLimit) {
+            messages.append(head + entries.join(", ") + tail); entries.clear();
+        }
+        entries.append(escaped);
+    }
+    if (!entries.isEmpty()) messages.append(head + entries.join(", ") + tail);
+    return messages;
 }
 }
 struct TelegramRobinhoodTradeService::State : QObject {
@@ -28,16 +60,12 @@ struct TelegramRobinhoodTradeService::State : QObject {
     QPointer<RHNetworkEngine> network;
     QPointer<RHSessionManager> sessions;
     Dependencies deps;
-    bool ownGraph = true, busy = false, waiting = false, revoked = false;
+    bool ownGraph = true, busy = false, finishing = false;
     quint64 generation = 0;
-    int slot = -1, offset = 0, chunkSize = 0;
-    QString profile, nickname, id, side;
-    QStringList symbols, chunk;
-    Session snapshot;
-    QVariantList results;
-    std::shared_ptr<Lease> lease;
-    QPointer<RHTradeController> controller;
-    QMetaObject::Connection activationConnection;
+    QString id, side;
+    QStringList symbols, notified;
+    QList<Account> inventory;
+    QPointer<RHAutoTradeController> controller;
     std::unique_ptr<RHNetworkEngine> ownedNetwork;
     std::unique_ptr<RHSessionManager> ownedSessions;
     QTimer dependencyWatch;
@@ -45,235 +73,163 @@ struct TelegramRobinhoodTradeService::State : QObject {
         dependencyWatch.setInterval(100);
         connect(&dependencyWatch, &QTimer::timeout, this, [this] {
             if (!busy || (network && sessions)) return;
-            revoked = true;
-            if (snapshot.accounts.isEmpty()) { settle({reauth}); return; }
-            const QPointer<State> guard(this);
-            if (controller) controller->cancel();
-            if (guard && busy) stopRemaining();
+            if (controller) { controller->cancel(); return; }
+            settle(textMessages(title(), {"🔴 Saved Robinhood dependencies became unavailable; no orders were sent."}));
         });
     }
-    ~State() override {
-        if (controller) delete controller.data();
-        if (lease) lease->close();
-        snapshot.token.fill('\0');
+    ~State() override { if (controller) delete controller.data(); }
+    QString title() const { return QStringLiteral("<b>Robinhood Auto %1 Results</b>").arg(side == "buy" ? "Buy" : "Sell"); }
+    template<class F> void later(F callback) {
+        const QPointer<State> guard(this); const auto epoch = generation;
+        QTimer::singleShot(0, this, [guard, epoch, callback = std::move(callback)]() mutable {
+            if (guard && guard->busy && guard->generation == epoch) callback(*guard);
+        });
     }
-    bool pinned() const {
-        if (!network || !sessions || sessions->rowCount() == 0 || sessions->reauthenticating()
-            || sessions->browserLoginPending() || sessions->nativeLoginPending()) return false;
-        const auto first = sessions->index(0);
-        return sessions->data(first, RHSessionManager::SessionIndexRole).toInt() == slot
-            && sessions->data(first, RHSessionManager::AccountIdRole).toString() == profile
-            && !sessions->data(first, RHSessionManager::IsExpiredRole).toBool();
+    bool matchesInventory(bool checkExpiry) const {
+        if (!sessions || inventory.size() != sessions->rowCount()) return false;
+        QSet<int> seenSlots; QSet<QString> seenIds;
+        for (int i = 0; i < inventory.size(); ++i) {
+            const auto &entry = inventory[i]; const auto index = sessions->index(i);
+            if (entry.sessionIndex < 0 || entry.profileId.isEmpty() || entry.email.isEmpty()
+                || seenSlots.contains(entry.sessionIndex) || seenIds.contains(entry.profileId)
+                || sessions->data(index, RHSessionManager::SessionIndexRole).toInt() != entry.sessionIndex
+                || sessions->data(index, RHSessionManager::AccountIdRole).toString() != entry.profileId
+                || (checkExpiry && sessions->data(index, RHSessionManager::IsExpiredRole).toBool() != entry.expired)) return false;
+            seenSlots.insert(entry.sessionIndex); seenIds.insert(entry.profileId);
+        }
+        return true;
     }
-    bool current(const Session &s, bool local = false) {
-        const QPointer<State> guard(this);
-        const auto check = local ? deps.currentLocal : deps.current;
-        const bool ok = pinned() && s.sessionIndex == slot && s.profileId == profile && check && check(s);
-        if (guard && !ok) revoked = true;
-        return guard && ok;
+    QStringList affected(const QVariantList &rows = {}) const {
+        QStringList emails;
+        for (const auto &entry : inventory) {
+            bool expired = entry.expired;
+            if (sessions) for (int i = 0; i < sessions->rowCount(); ++i) {
+                const auto index = sessions->index(i);
+                if (sessions->data(index, RHSessionManager::SessionIndexRole).toInt() == entry.sessionIndex
+                    && sessions->data(index, RHSessionManager::AccountIdRole).toString() == entry.profileId)
+                    expired |= sessions->data(index, RHSessionManager::IsExpiredRole).toBool();
+            }
+            for (const auto &raw : rows) {
+                const auto row = raw.toMap();
+                if (row.value("sessionIndex").toInt() == entry.sessionIndex && row.value("profileId").toString() == entry.profileId)
+                    expired |= row.value("nativeRow").toMap().value("authenticationRequired").toBool();
+            }
+            if (expired && !emails.contains(entry.email)) emails.append(entry.email);
+        }
+        return emails;
+    }
+    bool notice(const QStringList &emails) {
+        if (emails.isEmpty()) return true;
+        bool changed = false;
+        for (const auto &email : emails) changed |= !notified.contains(email);
+        if (!changed) return true;
+        notified = emails;
+        const auto request = id; const auto messages = warnings(emails);
+        const QPointer<State> guard(this); const auto epoch = generation;
+        emit q->reportReady(request, messages);
+        return guard && guard->busy && guard->generation == epoch;
     }
     void begin() {
-        const QPointer<State> guard(this);
+        const QPointer<State> guard(this); const auto epoch = generation;
         if (ownGraph && !network) {
             initializeRobinhoodResources();
             ownedNetwork = std::make_unique<RHNetworkEngine>(); network = ownedNetwork.get();
-            if (!network->loadConfiguration(QStringLiteral(":/robinhood/config/robinhood-api.json"))) { settle({reauth}); return; }
+            if (!network->loadConfiguration(QStringLiteral(":/robinhood/config/robinhood-api.json"))) { settle(textMessages(title(), {"🔴 " + unavailable})); return; }
             ownedSessions = std::make_unique<RHSessionManager>(*network); sessions = ownedSessions.get();
             deps = makeRHTradingDependencies(*sessions);
         }
         if (!network || !sessions || sessions->busy() || sessions->reauthenticating()
-            || sessions->browserLoginPending() || sessions->nativeLoginPending()) { settle({reauth}); return; }
-        dependencyWatch.start(); // Pointer liveness only; never poll disk/ownership.
+            || sessions->browserLoginPending() || sessions->nativeLoginPending()) { settle(textMessages(title(), {"🔴 " + unavailable})); return; }
+        dependencyWatch.start(); // Pointer liveness only; no background credential reads.
+        // Reload every admitted command so another process's explicit authentication
+        // is visible on the next batch. Construction remains credential-free.
         if (ownGraph) {
-            if (!sessions->load()) { if (guard) settle({reauth}); return; }
-            if (!guard) return;
+            const bool loaded = sessions->load();
+            if (!guard || generation != epoch || !busy) return;
+            if (!loaded) { settle(textMessages(title(), {"🔴 " + inventoryFailure})); return; }
         }
-        if (sessions->rowCount() == 0) { settle({reauth}); return; }
-        const auto first = sessions->index(0);
-        slot = sessions->data(first, RHSessionManager::SessionIndexRole).toInt();
-        profile = sessions->data(first, RHSessionManager::AccountIdRole).toString();
-        nickname = sessions->data(first, RHSessionManager::AccountNameRole).toString();
-        if (slot < 0 || profile.isEmpty() || !pinned()) { settle({reauth}); return; }
-        waiting = true;
-        const auto epoch = generation;
-        // startSession is the native saved-session verifier, not interactive login.
-        activationConnection = connect(sessions, &RHSessionManager::busyChanged, this, [guard, epoch] {
-            if (guard && guard->busy && guard->generation == epoch && guard->waiting
-                && guard->sessions && !guard->sessions->busy())
-                QTimer::singleShot(0, guard, [guard, epoch] { if (guard && guard->generation == epoch) guard->activated(); });
+        sessions->requestStoredSessionAccounts([guard, epoch](bool ok, QList<Account> entries, QString) mutable {
+            if (!guard || !guard->busy || guard->generation != epoch) return;
+            // Never advance native trading in a secure-store/model notification stack.
+            guard->later([ok, entries = std::move(entries)](State &s) mutable {
+                s.inventory = std::move(entries);
+                if (!ok || !s.matchesInventory(true)) { s.settle(textMessages(s.title(), {"🔴 " + inventoryFailure})); return; }
+                s.start();
+            });
         });
-        const bool started = sessions->startSession(slot);
-        if (!guard) return;
-        if (!started) { waiting = false; settle({reauth}); return; }
-        if (!sessions->busy()) QTimer::singleShot(0, this, [guard, epoch] { if (guard && guard->generation == epoch) guard->activated(); });
     }
-    void activated() {
-        if (!busy || !waiting || !sessions || sessions->busy()) return;
-        waiting = false;
-        disconnect(activationConnection); activationConnection = {};
-        if (!pinned() || !sessions->sessionActive() || !sessions->tradingUnavailableReason().isEmpty()
-            || !deps.acquire || !deps.current || !deps.currentLocal || !deps.currentAsync || !deps.release) { settle({reauth}); return; }
-        lease = std::make_shared<Lease>(); lease->release = deps.release; lease->started = true;
-        const auto held = lease;
-        const auto delivered = std::make_shared<bool>(false);
+    void start() {
+        if (!notice(affected())) return;
+        // A notice observer can change membership/authentication. Never admit a
+        // newly authenticated formerly-expired profile into this frozen batch.
+        if (!matchesInventory(true)) { settle(textMessages(title(), {"🔴 " + inventoryFailure})); return; }
+        bool eligible = false; for (const auto &entry : inventory) eligible |= !entry.expired;
+        if (!eligible) { settle(textMessages(title(), {"🔴 No initially unexpired saved Robinhood sessions; no orders were sent."})); return; }
+        controller = new RHAutoTradeController(*network, *sessions, deps, this);
+        connect(controller, &RHAutoTradeController::stateChanged, this, [this] {
+            if (controller && controller->tradeResultsComplete()) later([](State &s) { s.done(); });
+        });
         const QPointer<State> guard(this); const auto epoch = generation;
-        auto acquire = deps.acquire;
-        acquire([guard, held, delivered, epoch](bool ok, Session s, QString) mutable {
-            if (std::exchange(*delivered, true)) { s.token.fill('\0'); return; }
-            if (!guard || !guard->busy || guard->generation != epoch) { s.token.fill('\0'); held->close(); return; }
-            QTimer::singleShot(0, guard, [guard, held, epoch, ok, s = std::move(s)]() mutable {
-                if (!guard || !guard->busy || guard->generation != epoch) { s.token.fill('\0'); held->close(); return; }
-                if (!ok || !guard->current(s)) { s.token.fill('\0'); if (guard) guard->settle({reauth}); return; }
-                guard->snapshot = std::move(s);
-                const int count = guard->snapshot.accounts.size();
-                if (count == 0) { guard->settle({reauth}); return; }
-                if (count > 20) { guard->settle({"Robinhood account scope exceeds the supported capacity; no orders were sent."}); return; }
-                guard->chunkSize = qMin(20, 100 / count);
-                guard->next();
-            });
-        });
+        const bool admitted = controller->submit(symbols.join(','), side);
+        if (guard && guard->busy && guard->generation == epoch && !admitted)
+            settle(textMessages(title(), {"🔴 " + unavailable}));
     }
-    void next() {
-        if (!busy) return;
-        const QPointer<State> guard(this);
-        if (offset >= symbols.size()) { settle(report()); return; }
-        if (!network || !current(snapshot)) { if (guard) stopRemaining(); return; }
-        chunk = symbols.mid(offset, chunkSize);
-        Dependencies wrapped = deps;
-        wrapped.availabilityReason = [] { return QString(); }; // The overarching lease owns admission.
-        wrapped.acquire = [guard](auto done) {
-            if (!guard || !guard->current(guard->snapshot)) { done(false, {}, {}); return; }
-            done(true, guard->snapshot, {});
-        };
-        wrapped.release = [] {}; // Release the actual manager lease only after the final chunk/cooldown.
-        wrapped.current = [guard](const auto &s) { return guard && guard->current(s); };
-        wrapped.currentLocal = [guard](const auto &s) { return guard && guard->current(s, true); };
-        wrapped.currentAsync = [guard](const Session &s, auto done) {
-            if (!guard || !guard->pinned() || !guard->deps.currentAsync) { done(false); return; }
-            const auto check = guard->deps.currentAsync;
-            check(s, [guard, done = std::move(done)](bool ok) mutable {
-                const bool valid = guard && ok && guard->pinned();
-                if (guard && !valid) guard->revoked = true;
-                done(valid);
-            });
-        };
-        controller = new RHTradeController(*network, std::move(wrapped), this);
-        const auto epoch = generation;
-        connect(controller, &RHTradeController::tradeResultsCompleteChanged, this, [guard, epoch] {
-            if (guard && guard->generation == epoch && guard->controller && guard->controller->tradeResultsComplete())
-                QTimer::singleShot(0, guard, [guard, epoch] { if (guard && guard->generation == epoch) guard->chunkDone(); });
-        });
-        if (!controller->submit(chunk.join(','), side)) stopRemaining();
-    }
-    void appendRows(const QVariantList &native, const QStringList &requested) {
-        // Include every frozen account/ticker even when native preflight stops early.
-        for (const auto &symbol : requested) for (const auto &account : snapshot.accounts) {
-            const auto number = account.toMap().value("accountNumber").toString();
-            QVariantMap row;
-            for (const auto &item : native) {
-                const auto value = item.toMap();
-                if (value.value("symbol") == symbol && value.value("accountNumber") == number) { row = value; break; }
+    QStringList report(const QVariantList &rows) const {
+        QStringList lines;
+        for (const auto &entry : inventory) {
+            QStringList numbers;
+            for (const auto &raw : rows) {
+                const auto row = raw.toMap();
+                if (row.value("sessionIndex").toInt() != entry.sessionIndex || row.value("profileId").toString() != entry.profileId) continue;
+                const auto number = row.value("accountNumber").toString(); if (!numbers.contains(number)) numbers.append(number);
             }
-            if (row.isEmpty()) row = {{"symbol", symbol}, {"accountNumber", number}, {"status", "not_sent"}};
-            results.append(row);
-        }
-    }
-    void chunkDone() {
-        if (!busy || !controller || !controller->tradeResultsComplete()) return;
-        const auto rows = controller->tradeResults();
-        if (controller->authenticationRequired()) revoked = true;
-        bool halt = revoked || !controller->error().isEmpty();
-        for (const auto &raw : rows) {
-            const auto row = raw.toMap();
-            if (row.value("status") == "unknown") halt = true;
-        }
-        appendRows(rows, chunk); offset += chunk.size(); chunk.clear();
-        controller->deleteLater(); controller.clear();
-        const QPointer<State> guard(this);
-        if (!current(snapshot)) { if (guard) stopRemaining(); return; }
-        if (halt) stopRemaining(); else next();
-    }
-    void stopRemaining() {
-        if (controller) {
-            appendRows(controller->tradeResults(), chunk);
-            offset += chunk.size(); chunk.clear();
-            controller->deleteLater(); controller.clear();
-        }
-        appendRows({}, symbols.mid(offset)); offset = symbols.size();
-        settle(report());
-    }
-    QStringList report() const {
-        if (revoked) {
-            bool attempted = false;
-            for (const auto &raw : results) attempted |= raw.toMap().value("orderPostAttempted").toBool();
-            if (!attempted) return {reauth};
-        }
-        const auto title = QStringLiteral("<b>Robinhood Auto %1 Results</b>").arg(side == "buy" ? "Buy" : "Sell");
-        QStringList messages;
-        QString message = title;
-        const auto add = [&](const QString &line) {
-            // Bound encoded text too: every resulting message has intact HTML/entities.
-            const auto escaped = line.toHtmlEscaped();
-            if (message.size() + escaped.size() + 1 > 3900) { messages.append(message); message = title; }
-            message += '\n' + escaped;
-        };
-        if (revoked) add(reauth);
-        for (const auto &account : snapshot.accounts) {
-            const auto number = account.toMap().value("accountNumber").toString();
-            for (int category = 0; category < 3; ++category) {
-                QStringList entries;
-                for (const auto &raw : results) {
-                    const auto row = raw.toMap(); if (row.value("accountNumber") != number) continue;
+            for (const auto &number : numbers) for (int category = 0; category < 3; ++category) {
+                QStringList trades;
+                for (const auto &raw : rows) {
+                    const auto row = raw.toMap();
+                    if (row.value("sessionIndex").toInt() != entry.sessionIndex || row.value("profileId").toString() != entry.profileId
+                        || row.value("accountNumber").toString() != number) continue;
                     const auto status = row.value("status").toString();
-                    const bool attempted = row.value("orderPostAttempted").toBool();
-                    const bool sent = attempted && row.value("orderPostTransportOk").toBool() && status != "failed";
-                    const int kind = status == "preview" ? 2 : sent ? 0 : 1;
+                    const int kind = row.value("preview").toBool() ? 2 : row.value("success").toBool() ? 0 : 1;
                     if (kind != category) continue;
+                    // Auto's presentation is safe; native diagnostic strings never
+                    // enter Telegram. Preserve native uncertainty independently.
+                    const auto native = row.value("nativeRow").toMap();
                     QString detail;
                     if (kind == 2) detail = "Debug preview; not sent";
-                    else if (status == "unknown") detail = sent ? "Sent; confirmation unavailable; check broker; no automatic retry" : "Submission outcome unknown; check broker; no automatic retry";
-                    else if (sent) detail = status == "filled" ? "Sent; broker confirmed filled" : "Sent; not fill-confirmed";
-                    else if (status == "skipped") detail = "Skipped; no sellable position/order not sent";
-                    else if (attempted) detail = "Order send/rejection error; check broker before retrying";
-                    else detail = "Not sent";
-                    if (sent && row.value("orderState").isValid()) {
-                        const auto state = row.value("orderState").toString();
-                        if (QStringList{"queued", "unconfirmed", "confirmed", "partially_filled", "filled", "rejected", "cancelled", "failed"}.contains(state)) detail += "; status " + state;
-                    }
-                    const auto quantity = safeQuantity(row.value("quantity"));
-                    entries.append(row.value("symbol").toString() + (quantity.isEmpty() ? QString() : " (" + quantity + ")") + ": " + detail);
+                    else if (kind == 0) detail = native.value("status") == "unknown" ? "Sent; confirmation unavailable; check broker; no automatic retry"
+                        : native.value("orderState") == "filled" && native.value("success").toBool() ? "Sent; broker confirmed filled" : "Sent; not fill-confirmed";
+                    else if (status == "warning") detail = "Submission outcome unknown; check broker; no automatic retry";
+                    else if (native.value("status") == "skipped") detail = "Skipped; no eligible account or sellable position. Not sent";
+                    else if (native.value("orderPostAttempted").toBool()) detail = "Order send/rejection error; check broker before retrying";
+                    else detail = "Not sent; batch stopped or session unavailable. Check broker before retrying any uncertain order";
+                    const auto quantity = safeQuantity(native.value("quantity"));
+                    trades.append(row.value("symbol").toString() + (quantity.isEmpty() ? QString() : " (" + quantity + ")") + ": " + detail);
                 }
-                if (entries.isEmpty()) continue;
-                const auto heading = category == 0 ? QStringLiteral("🟢 Sent Trades") : category == 1 ? QStringLiteral("🔴 Failed/Not Sent Trades") : QStringLiteral("🟡 Preview Trades (not sent)");
-                // Bound display fields independently; never include native diagnostic/provider messages.
-                const auto prefix = heading + " — " + nickname.left(160) + " / Account " + number.left(128) + ": ";
-                QString line = prefix;
-                for (const auto &entry : entries) {
-                    if ((line + "; " + entry).toHtmlEscaped().size() > 3000 && line != prefix) { add(line); line = prefix; }
-                    if (line != prefix) line += "; ";
-                    line += entry;
-                }
-                add(line);
+                if (trades.isEmpty()) continue;
+                const QString heading = category == 0 ? "🟢 Sent Trades" : category == 1 ? "🔴 Failed/Not Sent Trades" : "🟡 Preview Trades (not sent)";
+                const auto prefix = heading + " — " + entry.email + " / " + (number.isEmpty() ? "Account scope unavailable" : "Account " + number) + ": ";
+                // A line per ticker keeps grouping/correlation in every fragment.
+                for (const auto &trade : trades) lines.append(prefix + trade);
             }
         }
-        if (message != title || messages.isEmpty()) messages.append(message);
-        return messages;
+        if (lines.isEmpty()) lines.append("🔴 No orders were sent; no eligible account results were available.");
+        return textMessages(title(), lines);
+    }
+    void done() {
+        if (!busy || finishing || !controller || !controller->tradeResultsComplete()) return;
+        finishing = true;
+        const auto rows = controller->tradeResults();
+        if (!notice(affected(rows))) return;
+        settle(report(rows));
     }
     void settle(QStringList messages) {
         if (!busy) return;
-        // Retire all old state before release/busy/completed direct observers run.
         const auto request = id;
         dependencyWatch.stop();
-        disconnect(activationConnection); activationConnection = {};
-        auto held = std::exchange(lease, {});
         if (controller) { delete controller.data(); controller.clear(); }
-        snapshot.token.fill('\0'); snapshot = {}; results.clear(); symbols.clear(); chunk.clear();
-        waiting = false; offset = 0; slot = -1; profile.clear(); nickname.clear(); id.clear(); side.clear();
-        ++generation;
-        const QPointer<State> guard(this);
-        if (held) held->close();
-        if (!guard) return;
-        busy = false;
+        inventory.clear(); notified.clear(); symbols.clear(); id.clear(); side.clear(); finishing = false;
+        ++generation; busy = false;
         const QPointer<TelegramRobinhoodTradeService> owner(q);
         emit q->busyChanged();
         if (owner) emit owner->completed(request, messages);
@@ -297,9 +253,9 @@ bool TelegramRobinhoodTradeService::submit(QString requestId, QStringList symbol
         const auto upper = symbol.toUpper(); if (!normalized.contains(upper)) normalized.append(upper);
     }
     if (normalized.join(',').size() > 4096) return false;
-    d->busy = true; d->revoked = false; d->id = std::move(requestId); d->symbols = std::move(normalized); d->side = std::move(side);
-    const auto epoch = ++d->generation; const QPointer<State> guard(d.get());
+    d->busy = true; d->id = std::move(requestId); d->symbols = std::move(normalized); d->side = std::move(side);
+    const QPointer<State> guard(d.get()); const auto epoch = ++d->generation;
     emit busyChanged();
-    if (guard) QTimer::singleShot(0, guard, [guard, epoch] { if (guard && guard->generation == epoch && guard->busy) guard->begin(); });
+    if (guard && guard->generation == epoch && guard->busy) guard->later([](State &s) { s.begin(); });
     return true;
 }

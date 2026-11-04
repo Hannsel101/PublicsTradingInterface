@@ -1,4 +1,5 @@
 #include "telegramagent.h"
+#include "telegramdebuglogging.h"
 #include "telegramwebhookmanager.h"
 #include "telegramcontrollertestserver.h"
 
@@ -59,7 +60,9 @@ void verifyLog(const QStringList &messages, const QString &transport, const QStr
     const auto message = payload.value("message").toObject();
     QCOMPARE(message.value("chat").toObject().value("id").toString(), QStringLiteral("[redacted]"));
     QCOMPARE(message.value("from").toObject().value("id").toString(), QStringLiteral("[redacted]"));
-    QCOMPARE(message.value("text").toString(), recognized ? text : QStringLiteral("[redacted unrecognized command]"));
+    const auto expectedText = text.contains("authenticate_robinhood_account")
+        ? (text.startsWith('/') ? "/" : "") + QString("authenticate_robinhood_account [redacted]") : text;
+    QCOMPARE(message.value("text").toString(), recognized ? expectedText : QStringLiteral("[redacted unrecognized command]"));
     QVERIFY(output.toUtf8().size() <= 8192);
 #else
     Q_UNUSED(transport); Q_UNUSED(text); Q_UNUSED(recognized);
@@ -71,11 +74,38 @@ void verifyLog(const QStringList &messages, const QString &transport, const QStr
 class TelegramDebugLoggingTest final : public QObject {
     Q_OBJECT
 private slots:
+    void authenticationDiagnosticsRetainOnlyCommandName_data()
+    {
+        QTest::addColumn<QString>("text");
+        QTest::newRow("email") << QString("authenticate_robinhood_account synthetic-private+tag@example.test");
+        QTest::newRow("slash-secrets") << QString("/authenticate_robinhood_account synthetic-private@example.test password=synthetic-private-password 123456:synthetic-private-token MFA=123456");
+        QTest::newRow("no-arg") << QString("authenticate_robinhood_account");
+        QTest::newRow("oversize") << "authenticate_robinhood_account " + QString(12000, 'x') + "@synthetic-private.test";
+        QTest::newRow("linebreak") << QString("authenticate_robinhood_account\nsynthetic-private@example.test");
+    }
+    void authenticationDiagnosticsRetainOnlyCommandName()
+    {
+        QFETCH(QString, text);
+        Capture capture;
+        logTelegramIncomingUpdate(incoming(text), false);
+#if PUBLICS_EXPECT_INCOMING_LOGS
+        QCOMPARE(capture.messages.size(), 1);
+        const auto output = capture.messages.first();
+        QVERIFY(!output.contains("synthetic-private"));
+        QVERIFY(!output.contains("123456"));
+        QVERIFY(!output.contains('@'));
+        const auto logged = QJsonDocument::fromJson(output.toUtf8()).object()["payload"].toObject()["message"].toObject()["text"].toString();
+        QCOMPARE(logged, (text.startsWith('/') ? "/" : "") + QString("authenticate_robinhood_account [redacted]"));
+#else
+        QVERIFY(capture.messages.isEmpty());
+#endif
+    }
     void pollingLogsAuthorizedCommandOnlyInDebug_data()
     {
         QTest::addColumn<QString>("command");
         QTest::addColumn<bool>("recognized");
         QTest::newRow("status") << QStringLiteral("/status") << true;
+        QTest::newRow("auth") << QStringLiteral("/authenticate_robinhood_account synthetic-private+tag@example.test") << true;
         QTest::newRow("buy") << QStringLiteral("publics_auto_buy AAPL, MSFT") << true;
         QTest::newRow("sell") << QStringLiteral("publics_auto_sell AAPL") << true;
         QTest::newRow("rh-buy") << QStringLiteral("robinhood_auto_buy aapl, MSFT") << true;
@@ -117,6 +147,8 @@ private slots:
             [&](QString ticket, QString, QStringList) { agent.completeTradeCommand(ticket, {QStringLiteral("Fixture result")}); });
         connect(&agent, &TelegramAgent::combinedTradeCommandReceived, &agent,
             [&](QString ticket, QString, QStringList) { agent.completeTradeCommand(ticket, {QStringLiteral("Fixture result")}); });
+        connect(&agent, &TelegramAgent::robinhoodAuthenticationCommandReceived, &agent,
+            [&](QString ticket, QString) { agent.completeTradeCommand(ticket, {QStringLiteral("Fixture result")}); });
         agent.start(QStringLiteral("123456:synthetic"));
         QTRY_COMPARE(provider.polls.size(), 1);
         Capture capture;
@@ -137,7 +169,7 @@ private slots:
     {
         QTest::addColumn<bool>("destroy");
         QTest::addColumn<QString>("command");
-        for (const auto &command : QStringList{"status", "publics_auto_buy AAPL", "robinhood_auto_sell AAPL"}) {
+        for (const auto &command : QStringList{"status", "publics_auto_buy AAPL", "robinhood_auto_sell AAPL", "authenticate_robinhood_account synthetic-private@example.test"}) {
             QTest::newRow(qPrintable("stop-" + command)) << false << command;
             QTest::newRow(qPrintable("destroy-" + command)) << true << command;
         }
@@ -196,6 +228,7 @@ private slots:
     {
         QTest::addColumn<QString>("command");
         QTest::newRow("status") << QString("status");
+        QTest::newRow("auth") << QString("authenticate_robinhood_account synthetic-private+tag@example.test");
         QTest::newRow("publics") << QString("publics_auto_buy AAPL");
         QTest::newRow("rh") << QString("/robinhood_auto_sell aapl,MSFT");
         QStringList many;

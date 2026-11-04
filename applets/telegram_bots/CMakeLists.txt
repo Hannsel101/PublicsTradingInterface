@@ -9,6 +9,7 @@ target_link_libraries(telegram_bots_storage PUBLIC Qt6::Core
 qt_add_library(telegram_bots_trading STATIC
     src/telegrampublicstradeservice.cpp src/telegrampublicstradeservice.h
     src/telegramrobinhoodtradeservice.cpp src/telegramrobinhoodtradeservice.h
+    src/telegramrobinhoodauthservice.cpp src/telegramrobinhoodauthservice.h
     src/telegramcombinedtradeservice.cpp src/telegramcombinedtradeservice.h)
 target_include_directories(telegram_bots_trading PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(telegram_bots_trading PUBLIC Qt6::Core publics_auth publics_api rh_trading

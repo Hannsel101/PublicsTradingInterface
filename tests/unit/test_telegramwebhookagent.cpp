@@ -181,6 +181,117 @@ class TestTelegramWebhookAgent : public QObject
 {
     Q_OBJECT
 private slots:
+    void authenticationWebhookRequiresSameSecretAndPrivateHumanPolicy()
+    {
+        QTemporaryDir ledger; WebhookFixture f;
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy auth(&agent, &TelegramAgent::robinhoodAuthenticationCommandReceived);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        const QString text = "/authenticate_robinhood_account Trader+tag@Example.com";
+        QCOMPARE(f.post(f.update(1, text), "bot123456:synthetic", "wrong_secret"), 403);
+        qint64 id = 2;
+        for (const auto &field : QStringList{"unknown-chat", "sender-mismatch", "group", "bot", "edited_message",
+                "forward_origin", "forward_from", "via_bot", "edit_date", "sender_chat", "business_connection_id"}) {
+            auto update = f.update(id++, text); auto message = update["message"].toObject();
+            if (field == "unknown-chat" || field == "sender-mismatch") {
+                auto from = message["from"].toObject(); from["id"] = 84; message["from"] = from;
+                if (field == "unknown-chat") { auto chat = message["chat"].toObject(); chat["id"] = 84; message["chat"] = chat; }
+            } else if (field == "bot") {
+                auto from = message["from"].toObject(); from["is_bot"] = true; message["from"] = from;
+            } else if (field == "group") {
+                auto chat = message["chat"].toObject(); chat["type"] = "group"; message["chat"] = chat;
+            } else if (field != "edited_message") message[field] = QJsonObject{};
+            update["message"] = message;
+            if (field == "edited_message") { update.remove("message"); update[field] = message; }
+            QCOMPARE(f.post(update), 200);
+        }
+        for (const auto &empty : QStringList{"authenticate_robinhood_account", "/authenticate_robinhood_account \t\r\n"})
+            QCOMPARE(f.post(f.update(id++, empty)), 200);
+        QCOMPARE(auth.size(), 0); QCOMPARE(f.provider.count("sendMessage"), 0);
+        QVERIFY(!QFile::exists(ledger.filePath("123456.watermark")));
+        QCOMPARE(f.post(f.update(100, text)), 200);
+        QTRY_COMPARE(auth.size(), 1);
+        QCOMPARE(auth[0][1].toString(), QString("Trader+tag@Example.com"));
+        QFile file(ledger.filePath("123456.watermark")); QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("PTI-TRADE-1\n123456\n100\n")); file.close();
+        // Another admitted auth job cannot replace the first job's origin/report ticket.
+        QCOMPARE(f.post(f.update(101, "authenticate_robinhood_account next@example.test")), 200);
+        QCOMPARE(auth.size(), 1);
+        QSignalSpy reports(&agent, &TelegramAgent::tradeReportFinished);
+        QVERIFY(agent.reportTradeCommand(auth[0][0].toString(), {"Stage starting"}));
+        QTRY_COMPARE(reports.size(), 1);
+        QCOMPARE(reports[0][0].toString(), auth[0][0].toString());
+        QCOMPARE(auth.size(), 1);
+        agent.completeTradeCommand(auth[0][0].toString(), {"Stage finished"});
+        QTRY_COMPARE(auth.size(), 2);
+        QCOMPARE(auth[1][1].toString(), QString("next@example.test"));
+        QCOMPARE(f.provider.count("sendMessage"), 2);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
+    void authenticationAndTradesShareDurableWatermarkAcrossInstances_data()
+    {
+        QTest::addColumn<QString>("trade"); QTest::addColumn<bool>("authFirst");
+        for (const auto &trade : QStringList{"publics_auto_buy AAPL", "publics_auto_sell AAPL",
+                "robinhood_auto_buy AAPL", "robinhood_auto_sell AAPL", "auto_buy AAPL", "auto_sell AAPL"}) {
+            QTest::newRow(qPrintable("auth-to-" + trade)) << trade << true;
+            QTest::newRow(qPrintable(trade + "-to-auth")) << trade << false;
+        }
+    }
+    void authenticationAndTradesShareDurableWatermarkAcrossInstances()
+    {
+        QFETCH(QString, trade); QFETCH(bool, authFirst);
+        QTemporaryDir ledger; WebhookFixture f;
+        const QString authText = "authenticate_robinhood_account a@example.test";
+        {
+            TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+            agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+            QSignalSpy auth(&agent, &TelegramAgent::robinhoodAuthenticationCommandReceived);
+            QSignalSpy publics(&agent, &TelegramAgent::tradeCommandReceived);
+            QSignalSpy rh(&agent, &TelegramAgent::robinhoodTradeCommandReceived);
+            QSignalSpy combined(&agent, &TelegramAgent::combinedTradeCommandReceived);
+            agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+            QCOMPARE(f.post(f.update(100, authFirst ? authText : trade)), 200);
+            QTRY_COMPARE(auth.size() + publics.size() + rh.size() + combined.size(), 1);
+            agent.stop(); QTRY_VERIFY(!agent.stopping());
+        }
+        {
+            TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+            agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+            QSignalSpy auth(&agent, &TelegramAgent::robinhoodAuthenticationCommandReceived);
+            QSignalSpy publics(&agent, &TelegramAgent::tradeCommandReceived);
+            QSignalSpy rh(&agent, &TelegramAgent::robinhoodTradeCommandReceived);
+            QSignalSpy combined(&agent, &TelegramAgent::combinedTradeCommandReceived);
+            agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+            QCOMPARE(f.post(f.update(100, authFirst ? trade : authText)), 200);
+            QCOMPARE(f.post(f.update(99, authFirst ? trade : authText)), 200);
+            QTest::qWait(50);
+            QCOMPARE(auth.size() + publics.size() + rh.size() + combined.size(), 0);
+            QCOMPARE(f.provider.count("sendMessage"), 0);
+            QCOMPARE(f.post(f.update(101, authFirst ? trade : authText)), 200);
+            QTRY_COMPARE(auth.size() + publics.size() + rh.size() + combined.size(), 1);
+            agent.stop(); QTRY_VERIFY(!agent.stopping());
+        }
+    }
+
+    void authenticationDurableFailureIsRetryable()
+    {
+        QTemporaryDir ledger; WebhookFixture f;
+        QFile corrupt(ledger.filePath("123456.watermark")); QVERIFY(corrupt.open(QIODevice::WriteOnly));
+        corrupt.write("corrupt"); corrupt.close();
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy auth(&agent, &TelegramAgent::robinhoodAuthenticationCommandReceived);
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        const auto update = f.update(1, "authenticate_robinhood_account a@example.test");
+        QCOMPARE(f.post(update), 503); QCOMPARE(auth.size(), 0);
+        QCOMPARE(f.provider.count("sendMessage"), 0); QVERIFY(corrupt.remove());
+        QCOMPARE(f.post(update), 200); QTRY_COMPARE(auth.size(), 1);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
     void emptyTradeCommandsAreSilentOnWebhook()
     {
         QTemporaryDir ledger;

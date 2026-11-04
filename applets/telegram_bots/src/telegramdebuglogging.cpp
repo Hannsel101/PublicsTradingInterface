@@ -62,8 +62,15 @@ QJsonValue redact(const QJsonValue &value, const QString &path, int depth, int &
         }
         return result;
     }
-    if (path == QStringLiteral("message.text"))
+    if (path == QStringLiteral("message.text")) {
+        // Identify the authentication command, not its grammar: even malformed
+        // attempts containing passwords/MFA must never retain an argument.
+        static const QRegularExpression authentication(QStringLiteral(
+            "\\A(/?authenticate_robinhood_account)(?:\\s|\\z)"));
+        const auto match = authentication.match(value.toString().trimmed());
+        if (match.hasMatch()) return match.captured(1) + QStringLiteral(" [redacted]");
         return recognizedText(value.toString()) ? value : QJsonValue(QStringLiteral("[redacted unrecognized command]"));
+    }
     if (value.isDouble() && (path == QStringLiteral("update_id") || path == QStringLiteral("message.message_id")
         || path == QStringLiteral("message.date") || path == QStringLiteral("message.entities[].offset")
         || path == QStringLiteral("message.entities[].length"))) return value;

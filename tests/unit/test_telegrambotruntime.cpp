@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QLockFile>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QtTest>
@@ -94,6 +95,101 @@ class TestTelegramBotRuntime final : public QObject
             {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}});
     }
 private slots:
+    void authenticationHasDurableAdmissionBeforeSignal()
+    {
+        QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
+        runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy auth(&runtime, &TelegramBotRuntime::robinhoodAuthenticationCommandReceived);
+        QByteArray durableAtSignal;
+        connect(&runtime, &TelegramBotRuntime::robinhoodAuthenticationCommandReceived, &runtime, [&] {
+            QFile file(ledger.filePath("123456.watermark"));
+            if (file.open(QIODevice::ReadOnly)) durableAtSignal = file.readAll();
+        });
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(10, "/authenticate_robinhood_account Trader+tag@Example.com")});
+        QTRY_COMPARE(auth.size(), 1);
+        QCOMPARE(auth[0][1].toString(), QString("Trader+tag@Example.com"));
+        QVERIFY(!auth[0][0].toString().isEmpty());
+        QCOMPARE(durableAtSignal, QByteArray("PTI-TRADE-1\n123456\n10\n"));
+        runtime.completeTradeCommand(auth[0][0].toString(), {"Authentication completed."});
+        QTRY_COMPARE(server.requests.size(), 3);
+        QCOMPARE(server.requests[2].body["chat_id"].toInteger(), qint64(42));
+        QCOMPARE(server.requests[2].body["text"].toString(), QString("Authentication completed."));
+        runtime.stop();
+    }
+
+    void authenticationGrammarAndActorBoundary_data()
+    {
+        QTest::addColumn<QString>("text"); QTest::addColumn<bool>("accepted");
+        QTest::addColumn<QString>("denial"); QTest::addColumn<bool>("silent");
+        const QString command = "authenticate_robinhood_account";
+        const auto add = [&](const char *name, QString text, bool accepted, QString denial = {}, bool silent = false) {
+            QTest::newRow(name) << text << accepted << denial << silent;
+        };
+        add("plain", command + " Trader@example.com", true);
+        add("slash-plus-case", "/" + command + " Trader+tag@Example.COM", true);
+        add("max-local", command + " " + QString(64, 'a') + "@example.test", true);
+        add("max-email", command + " " + QString(64, 'a') + "@" + QString(63, 'b') + "." + QString(63, 'c') + "." + QString(61, 'd'), true);
+        const QString valid = command + " a@example.test";
+        add("max-message", command + QString(4096 - valid.size() + 1, ' ') + "a@example.test", true);
+        add("oversize-message", command + QString(4097 - valid.size() + 1, ' ') + "a@example.test", false, {}, true);
+        add("local-over-64", command + " " + QString(65, 'a') + "@example.test", false);
+        add("email-over-254", command + " " + QString(64, 'a') + "@" + QString(63, 'b') + "." + QString(63, 'c') + "." + QString(62, 'd'), false);
+        add("domain-label-over-63", command + " a@" + QString(64, 'b') + ".test", false);
+        for (const auto &arg : QStringList{"a", "a@", "@example.test", "a@@example.test", "a..b@example.test",
+                ".a@example.test", "a.@example.test", "a@-example.test", "a@example-.test", "a@example..test",
+                "a@localhost", "a@example.test.", "a@example.test password", "a@example.test 123456",
+                "a@example.test,b@example.test", "a@example.test\nb@example.test", "a@example.test\npassword", "a@exämple.test"})
+            add(qPrintable(arg), command + " " + arg, false);
+        add("wrong-case", "Authenticate_robinhood_account a@example.test", false);
+        add("suffix", command + "@bot a@example.test", false);
+        add("empty", command, false, {}, true);
+        add("empty-slash", "/" + command + " \t\r\n", false, {}, true);
+        for (const auto &denial : QStringList{"unknown-chat", "sender-mismatch", "group", "bot", "edited_message",
+                "forward_origin", "forward_from", "via_bot", "edit_date", "sender_chat", "business_connection_id"})
+            add(qPrintable(denial), valid, false, denial, true);
+    }
+    void authenticationGrammarAndActorBoundary()
+    {
+        QFETCH(QString, text); QFETCH(bool, accepted); QFETCH(QString, denial); QFETCH(bool, silent);
+        QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
+        server.handler = [](const auto &request) { if (request.path.endsWith("/sendMessage")) acknowledge(request); };
+        runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy auth(&runtime, &TelegramBotRuntime::robinhoodAuthenticationCommandReceived);
+        QSignalSpy publics(&runtime, &TelegramBotRuntime::tradeCommandReceived);
+        QSignalSpy rh(&runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived);
+        QSignalSpy combined(&runtime, &TelegramBotRuntime::combinedTradeCommandReceived);
+        runtime.start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2);
+        auto incoming = tradeUpdate(10, text, denial == "unknown-chat" ? 84 : 42);
+        auto message = incoming["message"].toObject();
+        if (denial == "sender-mismatch" || denial == "bot") {
+            auto from = message["from"].toObject();
+            from[denial == "bot" ? "is_bot" : "id"] = denial == "bot" ? QJsonValue(true) : QJsonValue(84);
+            message["from"] = from;
+        } else if (denial == "group") {
+            auto chat = message["chat"].toObject(); chat["type"] = "group"; message["chat"] = chat;
+        } else if (!denial.isEmpty() && denial != "unknown-chat" && denial != "edited_message") message[denial] = QJsonObject{};
+        incoming["message"] = message;
+        if (denial == "edited_message") { incoming.remove("message"); incoming["edited_message"] = message; }
+        BotServer::answer(server.requests[1], QJsonArray{incoming});
+        if (accepted) {
+            QTRY_COMPARE(auth.size(), 1);
+            QCOMPARE(auth[0][1].toString(), text.trimmed().split(QRegularExpression("[ \\t]+"), Qt::SkipEmptyParts).last());
+        } else {
+            QTRY_VERIFY(server.requests.size() >= 3 && server.requests.last().path.endsWith("/getUpdates"));
+            QCOMPARE(auth.size(), 0);
+            QVERIFY(!QFile::exists(ledger.filePath("123456.watermark")));
+        }
+        if (silent || accepted)
+            for (const auto &request : server.requests) QVERIFY(!request.path.endsWith("/sendMessage"));
+        QCOMPARE(publics.size() + rh.size() + combined.size(), 0);
+        runtime.stop();
+    }
+
     void emptyTradeCommandsAreSilentAndDoNotClaimTrades()
     {
         QTemporaryDir ledger;
@@ -642,6 +738,53 @@ private slots:
         QCOMPARE(commands.size(), 0);
         QVERIFY(!runtime.active());
         if (mode == 3) QVERIFY(QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    }
+    void authenticationDirectObserverReentrancy_data()
+    {
+        QTest::addColumn<int>("action");
+        for (int action = 0; action < 4; ++action)
+            QTest::newRow(qPrintable(QString("action-%1").arg(action))) << action;
+    }
+    void authenticationDirectObserverReentrancy()
+    {
+        QFETCH(int, action);
+        const auto signal = &TelegramBotRuntime::robinhoodAuthenticationCommandReceived;
+        const QString text = "authenticate_robinhood_account a@example.test";
+        QTemporaryDir ledger; BotServer server;
+        QPointer<TelegramBotRuntime> runtime = new TelegramBotRuntime(server.root());
+        runtime->setAllowedChatIds({"42"}); runtime->setCommandLedgerPathForTests(ledger.path());
+        QString ticket;
+        connect(runtime, signal, &server,
+            [&](const QString &id, const QString &) {
+                ticket = id;
+                if (action == 0) runtime->stop();
+                else if (action == 1) delete runtime.data();
+                else if (action == 2) runtime->completeTradeCommand(id, {"<b>Done</b>"});
+                else {
+                    runtime->stop(); runtime->start("654321:replacement");
+                    runtime->completeTradeCommand(id, {"STALE"});
+                }
+            });
+        runtime->start("123456:synthetic");
+        QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
+        QTRY_COMPARE(server.requests.size(), 2); BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, text), tradeUpdate(2, text)});
+        QTRY_VERIFY_WITH_TIMEOUT(!ticket.isEmpty(), 1000);
+        QTest::qWait(100);
+        if (action <= 1) QCOMPARE(server.requests.size(), 2);
+        else if (action == 2) {
+            QTRY_COMPARE(server.requests.size(), 3);
+            QCOMPARE(server.requests[2].body["text"].toString(), QString("<b>Done</b>"));
+            runtime->completeTradeCommand(ticket, {"AGAIN"});
+            QTest::qWait(100); QCOMPARE(server.requests.size(), 3);
+        } else {
+            QTRY_COMPARE(server.requests.size(), 3);
+            QVERIFY(server.requests[2].path.endsWith("getMe"));
+            auto bot = BotServer::bot(); bot["id"] = 654321; BotServer::answer(server.requests[2], bot);
+            QTRY_COMPARE(server.requests.size(), 4);
+            runtime->completeTradeCommand(ticket, {"STILL STALE"});
+            QTest::qWait(100); QCOMPARE(server.requests.size(), 4);
+        }
+        delete runtime.data();
     }
     void tradeDirectObserverReentrancy_data()
     {

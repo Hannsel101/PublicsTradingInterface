@@ -1,127 +1,100 @@
-#include "telegramrobinhoodfixture.h"
-using TelegramRobinhoodFixture::Fixture;
-
+#include "telegramrobinhoodallsessionsfixture.h"
 #include "telegramrobinhoodtradeservice.h"
+
+using TelegramRobinhoodAllSessionsFixture::Fixture;
+
 class TelegramRobinhoodTradesTest : public QObject {
  Q_OBJECT
+ static QString warning(QStringList emails) {
+  return QStringLiteral("🔴🔴 <b>Robinhood Reauthentication Required for the following Accounts</b> 🔴🔴\n"
+   "For each account send command /authenticate_robinhood_account accountEmail to remotely authenticate. (Note: Multi-Factor Authentication may be required)\n"
+   "Session Emails Affected: %1\n"
+   "🟡🟡 Warning: trades for these emails will not go through during this buy and sell order but can be part of the next set of orders if authenticated 🟡🟡").arg(emails.join(", ").toHtmlEscaped());
+ }
+ static void drain(Fixture &f, TelegramRobinhoodTradeService &service, int maximumMs = 15000) {
+  QElapsedTimer clock; clock.start();
+  while (service.busy() && clock.elapsed() < maximumMs) {
+   QCoreApplication::processEvents();
+   if (!f.timers.isEmpty()) { QCOMPARE(f.delays.last(), 2500); auto timer = f.timers.takeFirst(); timer(); }
+   QTest::qWait(1);
+  }
+  QVERIFY(!service.busy());
+ }
 private slots:
- void readAuthenticationFailures_data() {
-  QTest::addColumn<QString>("path"); QTest::addColumn<int>("http");
-  for (const auto &path : {"/accounts/", "/instruments/", "/quotes/", "/positions/", "/orders/integration-order-1/"})
-   for (int http : {401, 403}) QTest::newRow(qPrintable(QString(path) + QString::number(http))) << QString(path) << http;
+ void expiryFixturePreservesNativeGrantAndOpaqueMetadata() {
+  Fixture f; QVERIFY(f.ready); f.saveNative("owner@example.test", "owner");
+  const auto metadata = [&] {
+   QFile file(f.dir.filePath("sessions.json"));
+   return file.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(file.readAll()).object() : QJsonObject{};
+  };
+  const auto readGrant = [&] {
+   QString ignored, secret; RHOAuthGrant grant;
+   if (f.store.secrets.value(0)) f.store.secrets[0]->read(ignored, secret);
+   if (!RHOAuthGrant::deserialize(secret, &grant)) return RHOAuthGrant{};
+   return grant;
+  };
+  const auto original = readGrant(); QVERIFY(original.primary());
+  const auto before = metadata(); QVERIFY(!before.isEmpty());
+  const auto expiry = QDateTime::currentDateTimeUtc().addSecs(-60);
+  QVERIFY(f.setExpiry(0, expiry));
+  const auto adjusted = readGrant(); QVERIFY(adjusted.primary());
+  QCOMPARE(adjusted.accessToken(), original.accessToken()); QCOMPARE(adjusted.refreshToken(), original.refreshToken());
+  QCOMPARE(adjusted.accountId, original.accountId); QCOMPARE(adjusted.nativeEmail, original.nativeEmail);
+  QCOMPARE(adjusted.nativePassword, original.nativePassword); QCOMPARE(adjusted.response, original.response);
+  QCOMPARE(adjusted.clientId, original.clientId); QCOMPARE(adjusted.deviceToken, original.deviceToken);
+  QCOMPARE(adjusted.expiresAt, expiry); QCOMPARE(adjusted.obtainedAt.addSecs(adjusted.response["expires_in"].toInteger()), expiry);
+  auto oldRow = before["sessions"].toArray().first().toObject();
+  const auto after = metadata(); auto newRow = after["sessions"].toArray().first().toObject();
+  QCOMPARE(newRow["expires_at"].toString(), expiry.toString(Qt::ISODateWithMs));
+  QString ignored, secret; QVERIFY(f.store.secrets[0]->read(ignored, secret));
+  QCOMPARE(newRow["credential_digest"].toString(), QString::fromLatin1(QCryptographicHash::hash(secret.toUtf8(), QCryptographicHash::Sha256).toHex()));
+  for (const auto key : {"created_at", "expires_at", "credential_digest"}) { oldRow.remove(key); newRow.remove(key); }
+  QCOMPARE(newRow, oldRow);
+  QCOMPARE(after["credential_revision_high_water"], before["credential_revision_high_water"]);
+  bool finished = false;
+  f.sessions->requestStoredSessionAccounts([&](bool ok, auto rows, QString) {
+   QVERIFY(ok); QCOMPARE(rows.size(), 1); QCOMPARE(rows.first().email, "owner@example.test"); QVERIFY(rows.first().expired); finished = true;
+  });
+  QTRY_VERIFY(finished); QCOMPARE(f.renewals.size(), 1);
  }
- void readAuthenticationFailures() {
-  QFETCH(QString, path); QFETCH(int, http); Fixture f; QVERIFY(f.ready);
-  for (const auto &name : {"first", "second"}) {
-   QVERIFY(f.sessions->saveAuthenticatedSession(name, QString("fixture-") + name, 3600)); QTRY_VERIFY(!f.sessions->busy());
-  }
-  auto deps = f.dependencies(); int releases = 0; const auto release = deps.release;
-  deps.release = [&] { ++releases; release(); };
-  const auto acquire = deps.acquire;
-  // Arm only after startSession and native lease acquisition succeeded: the
-  // account failure is the controller's fresh GET, not activation verification.
-  deps.acquire = [&, acquire](auto done) { acquire([&, done = std::move(done)](bool ok, auto s, auto reason) mutable {
-   QCOMPARE(s.sessionIndex, 0);
-   f.failedReadPath = path; f.readStatus = http; done(ok, std::move(s), reason);
-  }); };
-  const bool confirmation = path.startsWith("/orders/"); f.partialOrderReceipts = confirmation;
-  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), deps);
-  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QStringList symbols{"AAPL", "MSFT"};
-  for (int i = 0; i < 23; ++i) symbols.append(QString("T%1").arg(i));
-  const auto priorReads = f.store.readIndices.size();
-  QVERIFY(service.submit("read-auth", symbols, path == "/positions/" ? "sell" : "buy"));
-  QTRY_COMPARE(f.timers.size(), 1); auto cooldown = f.timers.takeFirst(); cooldown();
-  QTRY_COMPARE(completed.size(), 1);
-  const auto messages = completed.first().at(1).toStringList(); const auto report = messages.join('\n');
-  const QString warning = "Robinhood Re-authentication required before trades can be completed.";
-  if (!confirmation) QCOMPARE(messages, QStringList{warning});
-  else {
-   QCOMPARE(report.count(warning), 1); QVERIFY(report.contains("🟢 Sent Trades"));
-   QVERIFY(report.contains("Sent; confirmation unavailable")); QVERIFY(report.contains("MSFT"));
-   QVERIFY(report.contains("🔴 Failed/Not Sent Trades")); QVERIFY(report.contains("T22"));
-  }
-  QCOMPARE(f.orders.size(), confirmation ? 1 : 0); QCOMPARE(releases, 1);
-  QVERIFY(!report.contains("PROVIDER-SECRET")); QVERIFY(!report.contains("fixture-first")); QVERIFY(!report.contains("second"));
-  QVERIFY(!service.busy()); QVERIFY(!f.sessions->busy());
-  QTest::qWait(50); QCOMPARE(completed.size(), 1); QCOMPARE(releases, 1); QVERIFY(f.timers.isEmpty());
-  QCOMPARE(f.orders.size(), confirmation ? 1 : 0);
-  QVERIFY(!f.store.readIndices.mid(priorReads).contains(1));
- }
- void excessiveAccountScopeIsNotAuthenticationFailure() {
-  Fixture f; QVERIFY(f.ready); f.accountCount = 21;
-  QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
-  auto deps = f.dependencies(); int releases = 0; const auto release = deps.release;
-  deps.release = [&] { ++releases; release(); };
-  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), deps);
-  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QVERIFY(service.submit("capacity", {"AAPL"}, "buy")); QTRY_COMPARE(completed.size(), 1);
-  QCOMPARE(completed.first().at(1).toStringList(), QStringList{"Robinhood account scope exceeds the supported capacity; no orders were sent."});
-  QVERIFY(f.orders.isEmpty()); QCOMPARE(releases, 1); QVERIFY(!service.busy()); QVERIFY(!f.sessions->busy());
- }
- void destroyedSessionManagerSettlesWithoutStaleCallbacks() {
-  Fixture f; QVERIFY(f.ready);
-  QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
-  auto deps = f.dependencies(); std::function<void()> acquired;
-  const auto acquire = deps.acquire;
-  deps.acquire = [&, acquire](auto done) { acquire([&, done = std::move(done)](bool ok, auto s, auto reason) mutable {
-   acquired = [done = std::move(done), ok, s = std::move(s), reason]() mutable { done(ok, std::move(s), reason); };
-  }); };
-  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), deps);
-  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QVERIFY(service.submit("manager-destroyed", {"AAPL"}, "buy")); QTRY_VERIFY(bool(acquired));
-  f.sessions.reset();
-  QTRY_COMPARE(completed.size(), 1); QVERIFY(!service.busy()); QVERIFY(f.orders.isEmpty());
-  acquired(); QTest::qWait(50); QCOMPARE(completed.size(), 1);
- }
- void nativeSellAllKeepsExactQuantitiesAndSkipsEmptyAccount() {
-  Fixture f; QVERIFY(f.ready);
-  QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
+ void metadataOnlyExpiryMismatchFailsClosed() {
+  Fixture f; QVERIFY(f.ready); f.saveNative("owner@example.test", "owner");
+  QVERIFY(f.editMetadata([](QJsonArray &rows) {
+   auto row = rows[0].toObject(); row["expires_at"] = QDateTime::currentDateTimeUtc().addSecs(60).toString(Qt::ISODateWithMs); rows[0] = row;
+  }));
   TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies());
-  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QVERIFY(service.submit("sell", {"AAPL"}, "sell"));
-  for (int i = 0; i < 3; ++i) { QTRY_COMPARE(f.timers.size(), 1); auto cooldown = f.timers.takeFirst(); cooldown(); }
-  QTRY_COMPARE(completed.size(), 1); QCOMPARE(f.orders.size(), 2);
-  QCOMPARE(f.orders[0].value("quantity").toString(), "5.5"); QCOMPARE(f.orders[1].value("quantity").toString(), "2");
-  for (const auto &order : f.orders) QCOMPARE(order.value("side").toString(), "sell");
-  const auto report = completed.first().at(1).toStringList().join('\n');
-  QVERIFY(report.startsWith("<b>Robinhood Auto Sell Results</b>"));
-  QVERIFY(report.contains("🟢 Sent Trades")); QVERIFY(report.contains("🔴 Failed/Not Sent Trades")); QVERIFY(report.contains("Skipped"));
+  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed), notices(&service, &TelegramRobinhoodTradeService::reportReady);
+  const auto requests = f.requests.size(); QVERIFY(service.submit("mismatch", {"AAPL"}, "buy")); drain(f, service);
+  QCOMPARE(completed.size(), 1); QCOMPARE(notices.size(), 0); QVERIFY(f.orders.isEmpty()); QCOMPARE(f.requests.size(), requests);
+  QVERIFY(completed.first()[1].toStringList().join('\n').contains("could not be loaded completely")); QCOMPARE(f.renewals.size(), 1);
  }
- void midBatchOwnershipChangePreservesSentAndRemaining() {
-  Fixture f; QVERIFY(f.ready);
-  QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
-  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies());
-  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QStringList symbols; for (int i = 0; i < 21; ++i) symbols.append(QString("T%1").arg(i));
-  QVERIFY(service.submit("revoked", symbols, "buy")); QTRY_COMPARE(f.timers.size(), 1); QCOMPARE(f.orders.size(), 1);
-  QFile metadata(f.dir.filePath("sessions.json")); QVERIFY(metadata.open(QIODevice::ReadOnly));
-  auto doc = QJsonDocument::fromJson(metadata.readAll()).object(); metadata.close();
-  auto rows = doc.value("sessions").toArray(); auto row = rows[0].toObject(); row.insert("credential_revision", "999999"); rows[0] = row; doc.insert("sessions", rows);
-  QVERIFY(metadata.open(QIODevice::WriteOnly | QIODevice::Truncate)); metadata.write(QJsonDocument(doc).toJson()); metadata.close();
-  auto cooldown = f.timers.takeFirst(); cooldown(); QTRY_COMPARE(completed.size(), 1);
-  QCOMPARE(f.orders.size(), 1); QVERIFY(!f.sessions->busy());
-  const auto report = completed.first().at(1).toStringList().join('\n');
-  QVERIFY(report.contains("🟢 Sent Trades")); QVERIFY(report.contains("🔴 Failed/Not Sent Trades"));
-  QVERIFY(report.contains("Robinhood Re-authentication required before trades can be completed."));
-  for (const auto &symbol : symbols) QCOMPARE(report.count(symbol + (symbol == "T0" ? " (1):" : ":")) + report.count(symbol + (symbol == "T0" ? ":" : " (1):")), 3);
+ void warningObserverMayDestroyServiceBeforeAnyOrder() {
+  Fixture f; QVERIFY(f.ready); f.saveNative("expired@example.test", "expired"); f.saveNative("active@example.test", "active"); QVERIFY(f.expire(0));
+  auto service = std::make_unique<TelegramRobinhoodTradeService>(&f.network, f.sessions.get(), f.dependencies());
+  connect(service.get(), &TelegramRobinhoodTradeService::reportReady, this, [&] { service.reset(); });
+  QVERIFY(service->submit("destroy-warning", {"AAPL"}, "buy")); QTRY_VERIFY(!service);
+  QTest::qWait(50); QVERIFY(f.orders.isEmpty()); QVERIFY(!f.sessions->busy());
  }
- void ownerDestructionReleasesActualLeaseOnce_data() {
-  QTest::addColumn<QString>("phase");
-  for (const auto &phase : {"acquiring", "cooldown", "reconciling", "busy-observer"}) QTest::newRow(phase) << QString(phase);
+ void completedObserverMayReplaceBatchWithoutOldStateMutation() {
+  Fixture f; QVERIFY(f.ready); f.accountCount = 1; f.saveNative("owner@example.test", "owner");
+  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies()); QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
+  bool replaced = false;
+  connect(&service, &TelegramRobinhoodTradeService::busyChanged, &service, [&] {
+   if (!service.busy() && !replaced) { replaced = true; QVERIFY(service.submit("replacement", {"MSFT"}, "buy")); }
+  });
+  QVERIFY(service.submit("original", {"AAPL"}, "buy")); drain(f, service); QCOMPARE(completed.size(), 2);
+  QCOMPARE(completed[0][0].toString(), "original"); QCOMPARE(completed[1][0].toString(), "replacement"); QCOMPARE(f.orders.size(), 2);
  }
- void ownerDestructionReleasesActualLeaseOnce() {
-  QFETCH(QString, phase); Fixture f; QVERIFY(f.ready);
-  QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
-  auto deps = f.dependencies(); int releases = 0; auto release = deps.release;
+ void ownerDestructionReleasesActualLeaseExactlyOnce_data() {
+  QTest::addColumn<QString>("phase"); for (const auto phase : {"acquiring", "cooldown", "reconciling", "busy-observer"}) QTest::newRow(phase) << QString(phase);
+ }
+ void ownerDestructionReleasesActualLeaseExactlyOnce() {
+  QFETCH(QString, phase); Fixture f; QVERIFY(f.ready); f.saveNative("owner@example.test", "owner");
+  auto deps = f.dependencies(); const auto release = deps.release; const auto acquire = deps.acquire; int releases = 0; std::function<void()> acquired;
   deps.release = [&] { ++releases; release(); };
-  std::function<void()> acquired;
-  if (phase == "acquiring") {
-   auto acquire = deps.acquire;
-   deps.acquire = [&, acquire](auto done) { acquire([&, done = std::move(done)](bool ok, auto s, auto reason) mutable {
-    acquired = [done = std::move(done), ok, s = std::move(s), reason]() mutable { done(ok, std::move(s), reason); };
-   }); };
-  }
+  if (phase == "acquiring") deps.acquire = [&, acquire](auto done) { acquire([&, done = std::move(done)](bool ok, auto session, auto reason) mutable {
+   acquired = [done = std::move(done), ok, session = std::move(session), reason]() mutable { done(ok, std::move(session), reason); };
+  }); };
   if (phase == "reconciling") { f.partialOrderReceipts = true; f.holdOrderReads = true; }
   auto service = std::make_unique<TelegramRobinhoodTradeService>(&f.network, f.sessions.get(), deps);
   if (phase == "busy-observer") connect(service.get(), &TelegramRobinhoodTradeService::busyChanged, this, [&] { if (service && service->busy()) service.reset(); });
@@ -130,165 +103,170 @@ private slots:
   else if (phase == "reconciling") QTRY_VERIFY(f.heldOrderRead);
   else if (phase != "busy-observer") QTRY_COMPARE(f.timers.size(), 1);
   service.reset(); QVERIFY(!f.sessions->busy()); QCOMPARE(releases, phase == "busy-observer" ? 0 : 1);
-  const auto orders = f.orders.size();
-  if (acquired) acquired(); f.releaseOrderRead();
+  const auto orders = f.orders.size(); if (acquired) acquired(); f.releaseOrderRead();
   for (auto callback : std::exchange(f.timers, {})) callback();
-  QTest::qWait(100); QCOMPARE(f.orders.size(), orders); QCOMPARE(releases, phase == "busy-observer" ? 0 : 1);
+  QTest::qWait(50); QCOMPARE(f.orders.size(), orders); QCOMPARE(releases, phase == "busy-observer" ? 0 : 1);
  }
- void completedObserverCanImmediatelyReplaceBatch() {
-  Fixture f; QVERIFY(f.ready);
-  QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
+ void dependencyDeletionAndNativeCancellationSettleOnce_data() {
+  QTest::addColumn<bool>("destroy"); QTest::newRow("dependency-delete") << true; QTest::newRow("native-lease-released") << false;
+ }
+ void dependencyDeletionAndNativeCancellationSettleOnce() {
+  QFETCH(bool, destroy); Fixture f; QVERIFY(f.ready); f.saveNative("owner@example.test", "owner");
+  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies()); QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
+  QVERIFY(service.submit("cancel", {"AAPL", "MSFT"}, "buy")); QTRY_COMPARE(f.timers.size(), 1);
+  if (destroy) f.sessions.reset(); else f.sessions->releaseTradingSession();
+  if (!f.timers.isEmpty()) { auto cooldown = f.timers.takeFirst(); cooldown(); }
+  QTRY_COMPARE(completed.size(), 1); QVERIFY(!service.busy()); QCOMPARE(f.orders.size(), 1);
+  for (auto callback : std::exchange(f.timers, {})) callback(); QTest::qWait(50); QCOMPARE(completed.size(), 1); QCOMPARE(f.orders.size(), 1);
+ }
+ void newlyExpiredAtCompletionWarnsWithoutRefreshing() {
+  Fixture f; QVERIFY(f.ready); f.accountCount = 1; f.saveNative("expiring@example.test", "expiring");
+  QVERIFY(f.setExpiry(0, QDateTime::currentDateTimeUtc().addSecs(2)));
+  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies()); QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed); QSignalSpy notices(&service, &TelegramRobinhoodTradeService::reportReady);
+  QVERIFY(service.submit("clock-expiry", {"AAPL", "MSFT"}, "buy")); QTRY_COMPARE(f.timers.size(), 1); QCOMPARE(notices.size(), 0);
+  QTest::qWait(2100); drain(f, service); QCOMPARE(completed.size(), 1); QCOMPARE(notices.size(), 1);
+  QCOMPARE(notices.first()[1].toStringList(), QStringList{warning({"expiring@example.test"})}); QCOMPARE(f.orders.size(), 1); QCOMPARE(f.renewals.size(), 1);
+ }
+ void longCanonicalEmailWarningsRemainCompleteAndHtmlSafe() {
+  Fixture f; QVERIFY(f.ready); QStringList emails;
+  for (int i = 0; i < 6; ++i) { const auto email = QString(200, '&') + QString::number(i) + "@example.test"; emails.append(email); f.saveNative(email, QString("profile%1").arg(i)); }
+  for (int i = 0; i < 6; ++i) QVERIFY(f.expire(i));
+  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies()); QSignalSpy notices(&service, &TelegramRobinhoodTradeService::reportReady);
+  QVERIFY(service.submit("long", {"AAPL"}, "buy")); drain(f, service); QCOMPARE(notices.size(), 1);
+  const auto messages = notices.first()[1].toStringList(); QVERIFY(messages.size() > 1); const auto report = messages.join('\n');
+  qsizetype prior = -1; for (const auto &email : emails) { const auto escaped = email.toHtmlEscaped(); QCOMPARE(report.count(escaped), 1); const auto at = report.indexOf(escaped); QVERIFY(at > prior); prior = at; }
+  for (const auto &message : messages) { QVERIFY(message.size() <= 3900); QCOMPARE(message.count("<b>"), 1); QCOMPARE(message.count("</b>"), 1); QVERIFY(message.endsWith("if authenticated 🟡🟡")); }
+  QVERIFY(f.orders.isEmpty());
+ }
+ void completeInventoryFailureNeverTradesAValidSubset_data() {
+  QTest::addColumn<QString>("mode");
+  for (const auto mode : {"legacy", "missing-secret", "denied"}) QTest::newRow(mode) << QString(mode);
+ }
+ void completeInventoryFailureNeverTradesAValidSubset() {
+  QFETCH(QString, mode); Fixture f; QVERIFY(f.ready); f.saveNative("valid@example.test", "valid");
+  if (mode == "legacy") { QVERIFY(f.sessions->saveAuthenticatedSession("This is not an email", "legacy-fixture", 3600)); QTRY_VERIFY(!f.sessions->busy()); }
+  else { f.saveNative("second@example.test", "second"); if (mode == "missing-secret") f.store.secrets.remove(1); else f.store.failRead = true; }
+  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies());
+  QSignalSpy notices(&service, &TelegramRobinhoodTradeService::reportReady); QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
+  const auto count = f.requests.size(); QVERIFY(service.submit("inventory", {"AAPL"}, "buy")); drain(f, service);
+  QCOMPARE(completed.size(), 1); QCOMPARE(notices.size(), 0); QCOMPARE(f.requests.size(), count); QVERIFY(f.orders.isEmpty());
+  const auto text = completed.first()[1].toStringList().join('\n'); QVERIFY(text.contains("could not be loaded completely"));
+  QVERIFY(!text.contains("This is not an email")); QVERIFY(!text.contains("fixture"));
+ }
+ void nativeSellAllAcrossProfilesIsFreshAndExact() {
+  Fixture f; QVERIFY(f.ready); f.saveNative("one@example.test", "one"); f.saveNative("two@example.test", "two");
   TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies());
   QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  bool replaced = false;
-  connect(&service, &TelegramRobinhoodTradeService::busyChanged, this, [&] {
-   if (!service.busy() && !replaced) { replaced = true; QVERIFY(service.submit("replacement", {"MSFT"}, "buy")); }
-  });
-  QVERIFY(service.submit("original", {"AAPL"}, "buy"));
-  for (int i = 0; i < 6; ++i) { QTRY_COMPARE(f.timers.size(), 1); auto cooldown = f.timers.takeFirst(); cooldown(); }
-  QTRY_COMPARE(completed.size(), 2);
-  QCOMPARE(completed[0][0].toString(), "original"); QCOMPARE(completed[1][0].toString(), "replacement"); QCOMPARE(f.orders.size(), 6);
+  QVERIFY(service.submit("sell", {"AAPL", "MSFT"}, "sell")); drain(f, service);
+  QCOMPARE(completed.size(), 1); QCOMPARE(f.orders.size(), 4); QCOMPARE(f.delays.size(), 12);
+  QCOMPARE(f.requests.count("GET /positions/"), 12);
+  for (int i = 0; i < 4; ++i) { QCOMPARE(f.orders[i].value("quantity").toString(), i % 2 ? "2" : "5.5"); QCOMPARE(f.orders[i].value("side").toString(), "sell"); }
+  const auto report = completed.first()[1].toStringList().join('\n'); QVERIFY(report.startsWith("<b>Robinhood Auto Sell Results</b>"));
+  QVERIFY(report.contains("🟢 Sent Trades")); QVERIFY(report.contains("🔴 Failed/Not Sent Trades")); QVERIFY(report.contains("Skipped"));
  }
- void multipleNativeChunksRetainOneLeaseAndWholeReport() {
-  Fixture f; QVERIFY(f.ready);
-  QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
-  auto deps = f.dependencies(); int acquires = 0, releases = 0;
-  const auto acquire = deps.acquire; const auto release = deps.release;
-  deps.acquire = [&](auto done) { ++acquires; acquire(std::move(done)); };
-  deps.release = [&] { ++releases; release(); };
-  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), deps);
-  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QStringList symbols; for (int i = 0; i < 41; ++i) symbols.append(QString("T%1").arg(i));
-  QVERIFY(service.submit("chunks", symbols, "buy")); QVERIFY(!service.submit("overlap", {"AAPL"}, "sell"));
-  for (int i = 0; i < 123; ++i) {
-   QTRY_COMPARE(f.timers.size(), 1); QCOMPARE(f.orders.size(), i + 1);
-   QVERIFY(service.busy()); QVERIFY(f.sessions->busy()); QCOMPARE(releases, 0); QCOMPARE(completed.size(), 0);
-   QVERIFY(f.delays.last() >= 2000 && f.delays.last() <= 3000);
-   auto cooldown = f.timers.takeFirst(); cooldown();
-  }
-  QTRY_COMPARE(completed.size(), 1); QCOMPARE(acquires, 1); QCOMPARE(releases, 1);
-  QCOMPARE(f.orders.size(), 123); QVERIFY(!f.sessions->busy());
-  const auto messages = completed.first().at(1).toStringList();
-  const auto report = messages.join('\n');
-  for (const auto &symbol : symbols) QCOMPARE(report.count(symbol + " (1):"), 3);
-  for (const auto &message : messages) { QVERIFY(message.size() <= 4096); QVERIFY(message.startsWith("<b>Robinhood Auto Buy Results</b>")); }
-  QVERIFY(!report.contains("🔴")); QVERIFY(!report.contains("fixture-first"));
- }
- void transportAndPreviewReports_data() {
+ void reportsPreserveNativeOutcomeAndNeverRetryUnknown_data() {
   QTest::addColumn<QString>("mode");
-  for (const auto &mode : {"invalid-2xx", "dropped-post", "http-400", "preview", "reconciled"}) QTest::newRow(mode) << QString(mode);
+  for (const auto mode : {"unknown", "network", "rejected", "preview", "reconciled"}) QTest::newRow(mode) << QString(mode);
  }
- void transportAndPreviewReports() {
-  QFETCH(QString, mode); Fixture f; QVERIFY(f.ready);
-  QVERIFY(f.sessions->saveAuthenticatedSession("first & <owner>", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
-  f.malformedPost = mode == "invalid-2xx"; f.dropPost = mode == "dropped-post";
-  f.postStatus = mode == "http-400" ? 400 : 200;
+ void reportsPreserveNativeOutcomeAndNeverRetryUnknown() {
+  QFETCH(QString, mode); Fixture f; QVERIFY(f.ready); f.saveNative("one&owner@example.test", "one"); f.saveNative("two@example.test", "two");
+  f.malformedPost = mode == "unknown"; f.dropPost = mode == "network"; f.postStatus = mode == "rejected" ? 400 : 200;
   f.partialOrderReceipts = mode == "reconciled";
   auto deps = f.dependencies(); if (mode == "preview") deps.loopbackLiveOrdersForTests = false;
   TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), deps);
-  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QVERIFY(service.submit(mode, {"AAPL"}, "buy"));
-  const int rows = mode == "invalid-2xx" || mode == "dropped-post" ? 1 : 3;
-  for (int i = 0; i < rows; ++i) { QTRY_COMPARE(f.timers.size(), 1); auto cooldown = f.timers.takeFirst(); cooldown(); }
-  QTRY_COMPARE(completed.size(), 1);
-  const auto report = completed.first().at(1).toStringList().join('\n');
-  QVERIFY(report.contains("first &amp; &lt;owner&gt;")); QVERIFY(!report.contains("PROVIDER-SECRET"));
-  if (mode == "preview") {
-   if (f.network.stockLiveOrdersEnabled(false)) { QVERIFY(report.contains("🟢")); QCOMPARE(f.orders.size(), 3); }
-   else { QVERIFY(report.contains("🟡")); QVERIFY(report.contains("Debug preview; not sent")); QVERIFY(!report.contains("🟢")); QCOMPARE(f.orders.size(), 0); }
-  }
-  else if (mode == "http-400") { QVERIFY(report.contains("🔴")); QVERIFY(!report.contains("🟢")); QCOMPARE(f.orders.size(), 3); }
-  else if (mode == "reconciled") { QVERIFY(report.contains("🟢")); QVERIFY(report.contains("not fill-confirmed")); QCOMPARE(f.orders.size(), 3); }
-  else {
-   QCOMPARE(f.orders.size(), 1); QVERIFY(report.contains("check broker; no automatic retry"));
-   QVERIFY(report.contains(mode == "invalid-2xx" ? "🟢 Sent Trades" : "Submission outcome unknown"));
-   if (mode == "dropped-post") QVERIFY(!report.contains("🟢"));
-  }
+  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed); QSignalSpy notices(&service, &TelegramRobinhoodTradeService::reportReady);
+  QVERIFY(service.submit(mode, {"AAPL", "MSFT"}, "buy")); drain(f, service); QCOMPARE(completed.size(), 1); QCOMPARE(notices.size(), 0);
+  const auto report = completed.first()[1].toStringList().join('\n');
+  QVERIFY(report.contains("one&amp;owner@example.test")); QVERIFY(report.contains("two@example.test"));
+  QVERIFY(!report.contains("PROVIDER-SECRET")); QVERIFY(!report.contains("native-fixture"));
+  if (mode == "unknown" || mode == "network") {
+   QCOMPARE(f.orders.size(), 1); QVERIFY(report.contains("no automatic retry")); QVERIFY(report.contains("MSFT"));
+   QVERIFY(report.contains("🔴 Failed/Not Sent Trades"));
+   if (mode == "unknown") { QVERIFY(report.contains("🟢 Sent Trades")); QVERIFY(report.contains("Sent; confirmation unavailable")); }
+   else { QVERIFY(!report.contains("🟢")); QVERIFY(report.contains("Submission outcome unknown")); }
+  } else if (mode == "preview" && !f.network.stockLiveOrdersEnabled(false)) {
+   QCOMPARE(f.orders.size(), 0); QVERIFY(report.contains("🟡 Preview Trades")); QVERIFY(!report.contains("🟢"));
+  } else { QCOMPARE(f.orders.size(), 12); QVERIFY(report.contains(mode == "rejected" ? "🔴 Failed/Not Sent Trades" : "🟢 Sent Trades")); }
+  QCOMPARE(f.renewals.size(), 2); QTest::qWait(50); QCOMPARE(completed.size(), 1);
  }
- void initialAuthenticationFailuresNeverFallBack_data() {
-  QTest::addColumn<QString>("mode");
-  for (const auto &mode : {"expired", "read-only", "bad-store", "missing-token", "reauthenticating"}) QTest::newRow(mode) << QString(mode);
+ void nativeChunksHaveOneLeasePerSessionAndBoundedCompleteReports() {
+  Fixture f; QVERIFY(f.ready); f.saveNative("one@example.test", "one"); f.saveNative("two@example.test", "two");
+  auto deps = f.dependencies(); const auto acquire = deps.acquire; const auto release = deps.release; int acquires = 0, releases = 0;
+  deps.acquire = [&](auto done) { ++acquires; acquire(std::move(done)); }; deps.release = [&] { ++releases; release(); };
+  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), deps); QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
+  QStringList symbols; for (int i = 0; i < 41; ++i) symbols.append(QString("T%1").arg(i));
+  // 246 native orders plus preflights need headroom under concurrent ASan kits.
+  QVERIFY(service.submit("chunks", symbols, "buy")); QVERIFY(!service.submit("overlap", {"MSFT"}, "buy")); drain(f, service, 60000);
+  QCOMPARE(completed.size(), 1); QCOMPARE(f.orders.size(), 246); QCOMPARE(acquires, 2); QCOMPARE(releases, 2); QCOMPARE(f.delays.size(), 246);
+  const auto messages = completed.first()[1].toStringList(); const auto report = messages.join('\n');
+  for (const auto &symbol : symbols) QCOMPARE(report.count(symbol + " (1):"), 6);
+  for (const auto &message : messages) { QVERIFY(message.size() <= 3900); QVERIFY(message.startsWith("<b>Robinhood Auto Buy Results</b>")); QCOMPARE(message.count("<b>"), 1); QCOMPARE(message.count("</b>"), 1); }
  }
- void initialAuthenticationFailuresNeverFallBack() {
-  QFETCH(QString, mode); Fixture f; QVERIFY(f.ready);
-  QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
-  QVERIFY(f.sessions->saveAuthenticatedSession("second", "fixture-second", 3600)); QTRY_VERIFY(!f.sessions->busy());
-  QVERIFY(f.sessions->startSession(1)); QTRY_VERIFY(!f.sessions->busy());
-  std::unique_ptr<RHBrowserLogin> browser;
-  if (mode == "bad-store") f.store.failRead = true;
-  if (mode == "missing-token") f.store.tokens.remove(0);
-  if (mode == "expired" || mode == "read-only") {
-   QFile metadata(f.dir.filePath("sessions.json")); QVERIFY(metadata.open(QIODevice::ReadOnly));
-   auto doc = QJsonDocument::fromJson(metadata.readAll()).object(); metadata.close();
-   auto rows = doc.value("sessions").toArray(); auto row = rows[0].toObject();
-   if (mode == "expired") {
-    row.insert("created_at", QDateTime::currentDateTimeUtc().addSecs(-3600).toString(Qt::ISODateWithMs));
-    row.insert("expires_at", QDateTime::currentDateTimeUtc().addSecs(-60).toString(Qt::ISODateWithMs));
-   } else { row.insert("token_type", "WebSecondaryBearer"); row.insert("account_id", "integration-owner"); }
-   rows[0] = row; doc.insert("sessions", rows);
-   QVERIFY(metadata.open(QIODevice::WriteOnly | QIODevice::Truncate)); metadata.write(QJsonDocument(doc).toJson()); metadata.close(); QVERIFY2(f.sessions->load(), qPrintable(f.sessions->error()));
-  }
-  if (mode == "reauthenticating") {
-   browser = std::make_unique<RHBrowserLogin>(RHBrowserLogin::TokenHandler{}, nullptr, RHBrowserLogin::BackendMode::Test);
-   f.sessions->setBrowserLogin(browser.get()); QVERIFY(f.sessions->beginBrowserLogin("first"));
-  }
-  const auto methods = f.methods.size();
+ void allExpiredStillWarnsExactlyAndSubmitsNothing() {
+  Fixture f; QVERIFY(f.ready); f.saveNative("owner&one@example.test", "one"); f.saveNative("owner2@example.test", "two");
+  QVERIFY(f.expire(0)); QVERIFY(f.expire(1));
+  QFile metadata(f.dir.filePath("sessions.json")); QVERIFY(metadata.open(QIODevice::ReadOnly));
+  const auto bytes = metadata.readAll(); QVERIFY(!bytes.contains("@example.test")); QVERIFY(!bytes.contains("fixture-native-password"));
   TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies());
-  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QVERIFY(service.submit(mode, {"AAPL"}, "buy")); QTRY_COMPARE(completed.size(), 1);
-  QCOMPARE(completed.first().at(1).toStringList(), QStringList{"Robinhood Re-authentication required before trades can be completed."});
-  QVERIFY(f.orders.isEmpty()); QVERIFY(!f.methods.mid(methods).contains("POST")); QVERIFY(!service.busy());
+  QSignalSpy notices(&service, &TelegramRobinhoodTradeService::reportReady); QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
+  const auto requests = f.requests.size(); QVERIFY(service.submit("expired", {"AAPL"}, "sell")); drain(f, service);
+  QCOMPARE(completed.size(), 1); QCOMPARE(notices.size(), 1);
+  QCOMPARE(notices.first()[1].toStringList(), QStringList{warning({"owner&one@example.test", "owner2@example.test"})});
+  QCOMPARE(f.requests.size(), requests); QVERIFY(f.orders.isEmpty()); QVERIFY(f.timers.isEmpty());
  }
- void unauthorizedPostRequiresExactWarningAndRemainingSymbols() {
-  Fixture f; QVERIFY(f.ready); f.postStatus = 401;
-  QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
-  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies());
-  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QStringList symbols; for (int i = 0; i < 25; ++i) symbols.append(QString("T%1").arg(i));
-  QVERIFY(service.submit("401", symbols, "buy"));
-  QTRY_COMPARE(f.timers.size(), 1); auto cooldown = f.timers.takeFirst(); cooldown();
-  QTRY_COMPARE(completed.size(), 1); QCOMPARE(f.orders.size(), 1);
-  const auto report = completed.first().at(1).toStringList().join('\n');
-  QVERIFY(report.contains("Robinhood Re-authentication required before trades can be completed."));
-  QVERIFY(report.contains("T24")); QVERIFY(!report.contains("🟢")); QVERIFY(!report.contains("PROVIDER-SECRET"));
-  QVERIFY(!service.busy()); QVERIFY(!f.sessions->busy());
+ void authenticationEvidenceIncludesAccountPreflightWithoutNativeRows_data() {
+  QTest::addColumn<int>("http"); QTest::newRow("401") << 401; QTest::newRow("403") << 403;
  }
- void firstSavedSparseLoginUsesAllAccountsAndFinalCooldown() {
+ void authenticationEvidenceIncludesAccountPreflightWithoutNativeRows() {
+  QFETCH(int, http); Fixture f; QVERIFY(f.ready); f.saveNative("owner@example.test", "owner");
+  auto deps = f.dependencies(); const auto acquire = deps.acquire;
+  deps.acquire = [&, acquire](auto done) { acquire([&, done = std::move(done)](bool ok, auto session, auto reason) mutable {
+   f.failedReadPath = "/accounts/"; f.readStatus = http; done(ok, std::move(session), reason);
+  }); };
+  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), deps);
+  QSignalSpy notices(&service, &TelegramRobinhoodTradeService::reportReady); QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
+  QVERIFY(service.submit("auth", {"AAPL", "MSFT"}, "buy")); drain(f, service);
+  QCOMPARE(completed.size(), 1); QCOMPARE(notices.size(), 1);
+  QCOMPARE(notices.first()[1].toStringList(), QStringList{warning({"owner@example.test"})});
+  QVERIFY(f.orders.isEmpty()); QVERIFY(!completed.first()[1].toStringList().join('\n').contains("PROVIDER-SECRET"));
+ }
+ void allInitiallyUnexpiredSparseProfilesUseAccountTickerOrder() {
   Fixture f; QVERIFY(f.ready);
-  for (const auto &name : {"discard", "first <login>", "second"}) {
-   QVERIFY(f.sessions->saveAuthenticatedSession(name, QString(name).replace(' ', '-').replace('<','x').replace('>','x'), 3600));
-   QTRY_VERIFY(!f.sessions->busy());
-  }
+  f.saveNative("discard@example.test", "discard");
+  f.saveNative("first&owner@example.test", "first");
+  f.saveNative("expired@example.test", "expired");
+  f.saveNative("second@example.test", "second");
+  QCOMPARE(f.sessions->rowCount(), 4);
   QVERIFY(f.sessions->deleteSavedSession(0)); QTRY_VERIFY(!f.sessions->busy());
-  QCOMPARE(f.sessions->data(f.sessions->index(0), RHSessionManager::SessionIndexRole).toInt(), 1);
-  QVERIFY(f.sessions->startSession(2)); QTRY_VERIFY(!f.sessions->busy());
-  auto deps = f.dependencies(); int releases = 0; auto release = deps.release;
+  QVERIFY(f.expire(2));
+  auto deps = f.dependencies(); QList<int> acquiredSlots; int releases = 0;
+  const auto acquire = deps.acquire; const auto release = deps.release;
+  deps.acquire = [&](auto done) { acquire([&, done = std::move(done)](bool ok, auto session, auto reason) mutable {
+   acquiredSlots.append(session.sessionIndex); done(ok, std::move(session), reason);
+  }); };
   deps.release = [&] { ++releases; release(); };
   TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), deps);
+  QSignalSpy notices(&service, &TelegramRobinhoodTradeService::reportReady);
   QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QVERIFY(service.submit("first", {"AAPL", "MSFT"}, "buy"));
-  for (int i = 0; i < 6; ++i) {
+  connect(&service, &TelegramRobinhoodTradeService::reportReady, &service, [&](QString id, QStringList) {
+   QCOMPARE(id, "all"); QVERIFY(service.busy()); QVERIFY(f.orders.isEmpty()); QCOMPARE(acquiredSlots.size(), 0);
+  });
+  QVERIFY(service.submit("all", {"AAPL", "MSFT"}, "buy"));
+  for (int i = 0; i < 12; ++i) {
    QTRY_COMPARE(f.timers.size(), 1); QCOMPARE(f.orders.size(), i + 1);
-   QVERIFY(service.busy()); QVERIFY(f.sessions->busy()); QCOMPARE(completed.size(), 0); QCOMPARE(releases, 0);
-   QVERIFY(f.orderHeaders.last().contains("Authorization: Bearer first-xloginx"));
-   QCOMPARE(f.orders.last().value("quantity").toString(), "1");
+   QCOMPARE(completed.size(), 0); QVERIFY(service.busy()); QCOMPARE(f.delays.last(), 2500);
+   const auto order = f.orders.last(); QCOMPARE(order.value("quantity").toString(), "1");
+   QCOMPARE(order.value("account").toString(), f.brokerageOrigin + QString("/accounts/a%1/").arg((i % 6) / 2 + 1));
+   QCOMPARE(order.value("instrument").toString(), f.brokerageOrigin + (i % 2 ? "/instruments/MSFT/" : "/instruments/AAPL/"));
    auto cooldown = f.timers.takeFirst(); cooldown();
   }
-  QTRY_COMPARE(completed.size(), 1); QVERIFY(!service.busy()); QVERIFY(!f.sessions->busy()); QCOMPARE(releases, 1);
-  const auto report = completed.first().at(1).toStringList().join('\n');
+  QTRY_COMPARE(completed.size(), 1); QCOMPARE(acquiredSlots, QList<int>({1, 3})); QCOMPARE(releases, 2);
+  QCOMPARE(notices.size(), 1); QCOMPARE(notices.first()[1].toStringList(), QStringList{warning({"expired@example.test"})});
+  const auto report = completed.first()[1].toStringList().join('\n');
+  QVERIFY(report.contains("first&amp;owner@example.test")); QVERIFY(report.contains("second@example.test"));
   QVERIFY(report.contains("<b>Robinhood Auto Buy Results</b>")); QVERIFY(report.contains("🟢 Sent Trades"));
-  QVERIFY(report.contains("first &lt;login&gt;")); QVERIFY(!report.contains("second"));
-  for (int i = 1; i <= 3; ++i) QVERIFY(report.contains(QString("Account %1").arg(i)));
-  QVERIFY(report.contains("not fill-confirmed"));
- }
- void missingFirstLoginRequiresReauthentication() {
-  Fixture f; QVERIFY(f.ready);
-  TelegramRobinhoodTradeService service(&f.network, f.sessions.get(), f.dependencies());
-  QSignalSpy completed(&service, &TelegramRobinhoodTradeService::completed);
-  QVERIFY(service.submit("missing", {"AAPL"}, "buy"));
-  QTRY_COMPARE(completed.size(), 1);
-  QCOMPARE(completed.first().at(1).toStringList(), QStringList{"Robinhood Re-authentication required before trades can be completed."});
-  QVERIFY(f.orders.isEmpty()); QVERIFY(!service.busy()); QVERIFY(!f.sessions->busy());
+  QVERIFY(!report.contains("Reauthentication Required")); QVERIFY(!report.contains("native-fixture"));
+  QCOMPARE(f.renewals.size(), 4); // Only explicitly authenticated grants; no activation refresh.
  }
 };
 QTEST_GUILESS_MAIN(TelegramRobinhoodTradesTest)

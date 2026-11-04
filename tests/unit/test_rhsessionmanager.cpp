@@ -602,6 +602,145 @@ private slots:
         else f.manager->requestTradingSession(acquired);
         QTRY_VERIFY(completed); QVERIFY(!f.manager->busy());
     }
+    void oauthUnexpiredRepeatedOpenReusesExactGrantAndExpiry()
+    {
+        BrowserFixture f; QVERIFY(f.ready); QVERIFY(f.seedOAuth(604800)); QVERIFY(f.enableHoldings());
+        const QString original = f.store.values[0];
+        RHOAuthGrant grant; QVERIFY(RHOAuthGrant::deserialize(original, &grant));
+        const auto expiry = grant.expiresAt;
+        const auto created = grant.obtainedAt;
+        const QByteArray accounts = R"({"results":[{"id":"brokerage","account_number":"123","type":"cash","cash":"1.00"}]})";
+        f.http.responses = {accounts, R"({"results":[],"next":null})",
+                            accounts, R"({"results":[],"next":null})",
+                            accounts, R"({"results":[],"next":null})"};
+        f.http.statusCodes.fill(200, 6);
+        QSignalSpy saved(f.manager.get(), &RHSessionManager::sessionSaved);
+        for (int visit = 0; visit < 3; ++visit) {
+            QVERIFY(f.manager->initializeSession(0)); QTRY_VERIFY(!f.manager->busy());
+            QVERIFY2(f.manager->sessionActive(), qPrintable(f.manager->error()));
+            QCOMPARE(f.http.requests.size(), (visit + 1) * 2);
+            QVERIFY(f.http.requests[visit * 2].startsWith("GET /accounts/"));
+            QVERIFY(f.http.requests[visit * 2].contains("Authorization: Bearer old-access"));
+            QVERIFY(f.http.requests[visit * 2 + 1].startsWith("GET /positions/"));
+            QCOMPARE(f.manager->cachedAccounts(0).first().toMap()["holdingsStatus"].toString(), QString("fresh"));
+            QCOMPARE(f.store.values[0], original);
+            QCOMPARE(f.store.writes, 0);
+            QCOMPARE(saved.count(), 0);
+            QCOMPARE(f.manager->data(f.manager->index(0), RHSessionManager::ExpiresAtRole).toDateTime(), expiry);
+            QFile metadata(f.dir.filePath("sessions.json")); QVERIFY(metadata.open(QIODevice::ReadOnly));
+            const auto record = QJsonDocument::fromJson(metadata.readAll()).object()["sessions"].toArray().first().toObject();
+            QCOMPARE(record["expires_at"].toString(), expiry.toString(Qt::ISODateWithMs));
+            QCOMPARE(record["created_at"].toString(), created.toString(Qt::ISODateWithMs));
+            QVERIFY(!record["renewal_pending"].toBool());
+            QVERIFY(record["renewal_attempted_at"].toString().isEmpty());
+            f.manager->clearActiveSession();
+            QVERIFY(!f.manager->sessionActive());
+        }
+    }
+    void oauthInconsistentSavedExpiryFailsWithoutRenewal_data()
+    {
+        QTest::addColumn<int>("grantLifetime"); QTest::addColumn<int>("metadataOffset");
+        QTest::newRow("both-unexpired") << 3600 << 1;
+        QTest::newRow("metadata-expired") << 60 << -90;
+        QTest::newRow("grant-expired") << -60 << 7200;
+        QTest::newRow("both-expired") << -60 << -1;
+    }
+    void oauthInconsistentSavedExpiryFailsWithoutRenewal()
+    {
+        QFETCH(int, grantLifetime); QFETCH(int, metadataOffset);
+        BrowserFixture f; QVERIFY(f.ready); QVERIFY(f.seedOAuth(grantLifetime));
+        const QString original = f.store.values[0];
+        QFile metadata(f.dir.filePath("sessions.json")); QVERIFY(metadata.open(QIODevice::ReadOnly));
+        auto root = QJsonDocument::fromJson(metadata.readAll()).object(); metadata.close();
+        auto records = root["sessions"].toArray(); auto record = records.first().toObject();
+        const auto expiry = QDateTime::fromString(record["expires_at"].toString(), Qt::ISODateWithMs).addSecs(metadataOffset);
+        record["expires_at"] = expiry.toString(Qt::ISODateWithMs); records[0] = record; root["sessions"] = records;
+        QVERIFY(metadata.open(QIODevice::WriteOnly)); QVERIFY(metadata.write(QJsonDocument(root).toJson()) > 0); metadata.close();
+        QVERIFY(f.manager->load());
+        // A response is supplied only to make an erroneous dispatch terminate promptly.
+        f.http.responses = {R"({"results":[]})"}; f.http.statusCodes = {200};
+        QVERIFY(f.manager->initializeSession(0)); QTRY_VERIFY(!f.manager->busy());
+        QVERIFY(!f.manager->sessionActive());
+        QVERIFY(f.manager->error().contains("expiry", Qt::CaseInsensitive));
+        QCOMPARE(f.http.requests.size(), 0);
+        QCOMPARE(f.store.writes, 0); QCOMPARE(f.store.values[0], original);
+        QVERIFY(metadata.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(metadata.readAll()).object(), root);
+    }
+    void oauthUnexpiredRejectedBearerNeverRefreshes_data()
+    {
+        QTest::addColumn<int>("status");
+        QTest::newRow("revoked") << 401;
+        QTest::newRow("forbidden") << 403;
+    }
+    void oauthUnexpiredRejectedBearerNeverRefreshes()
+    {
+        QFETCH(int, status);
+        BrowserFixture f; QVERIFY(f.ready); QVERIFY(f.seedOAuth(3600));
+        const QString original = f.store.values[0];
+        const auto expiry = f.manager->data(f.manager->index(0), RHSessionManager::ExpiresAtRole);
+        f.http.responses = {R"({"detail":"Token rejected"})", R"({"detail":"Token rejected"})"};
+        f.http.statusCodes = {status, status};
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            QVERIFY(f.manager->initializeSession(0)); QTRY_VERIFY(!f.manager->busy());
+            QVERIFY(!f.manager->sessionActive());
+            QVERIFY(f.manager->error().contains("verify", Qt::CaseInsensitive));
+            QCOMPARE(f.http.requests.size(), attempt + 1);
+            QVERIFY(f.http.requests.last().startsWith("GET /accounts/"));
+            QVERIFY(f.http.requests.last().contains("Authorization: Bearer old-access"));
+            QCOMPARE(f.store.writes, 0); QCOMPARE(f.store.values[0], original);
+            QCOMPARE(f.manager->data(f.manager->index(0), RHSessionManager::ExpiresAtRole), expiry);
+            f.manager->checkSessionRenewal();
+            QVERIFY(!f.manager->busy());
+            QCOMPARE(f.http.requests.size(), attempt + 1);
+        }
+    }
+    void oauthUnexpiredReuseRetainsIdentityAndRotationGuards_data()
+    {
+        QTest::addColumn<QString>("branch");
+        for (const auto &branch : {"wrong-owner", "missing-owner", "secondary", "reduced-scope", "digest", "pending", "legacy-attempt"})
+            QTest::newRow(branch) << QString::fromLatin1(branch);
+    }
+    void oauthUnexpiredReuseRetainsIdentityAndRotationGuards()
+    {
+        QFETCH(QString, branch);
+        BrowserFixture f; QVERIFY(f.ready); QVERIFY(f.seedOAuth(3600));
+        auto secret = QJsonDocument::fromJson(f.store.values[0].toUtf8()).object();
+        QFile metadata(f.dir.filePath("sessions.json")); QVERIFY(metadata.open(QIODevice::ReadOnly));
+        auto root = QJsonDocument::fromJson(metadata.readAll()).object(); metadata.close();
+        auto records = root["sessions"].toArray(); auto record = records.first().toObject();
+        if (branch == "wrong-owner") record["account_id"] = "someone-else";
+        if (branch == "missing-owner") secret["account_id"] = "";
+        if (branch == "secondary") record["token_type"] = "WebSecondaryBearer";
+        if (branch == "reduced-scope") {
+            auto response = secret["response"].toObject(); response["scope"] = "read"; secret["response"] = response;
+            secret["effective_scope"] = "read";
+        }
+        if (branch == "digest") {
+            record["credential_revision"] = "1";
+            record["credential_digest"] = QString(64, 'a'); root["credential_revision_high_water"] = "1";
+        }
+        if (branch == "pending" || branch == "legacy-attempt") {
+            record["renewal_attempted_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+            if (branch == "pending") {
+                record["renewal_pending"] = true;
+                record["credential_revision"] = "1";
+                record["credential_digest"] = QString::fromLatin1(QCryptographicHash::hash(
+                    QJsonDocument(secret).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
+                root["credential_revision_high_water"] = "1";
+            }
+        }
+        records[0] = record; root["sessions"] = records;
+        f.store.values[0] = QString::fromUtf8(QJsonDocument(secret).toJson(QJsonDocument::Compact));
+        const auto original = f.store.values[0];
+        QVERIFY(metadata.open(QIODevice::WriteOnly)); QVERIFY(metadata.write(QJsonDocument(root).toJson()) > 0); metadata.close();
+        QVERIFY(f.manager->load());
+        QVERIFY(f.manager->initializeSession(0)); QTRY_VERIFY(!f.manager->busy());
+        QVERIFY(!f.manager->sessionActive()); QVERIFY(!f.manager->error().isEmpty());
+        QCOMPARE(f.http.requests.size(), 0); QCOMPARE(f.store.writes, 0); QCOMPARE(f.store.values[0], original);
+        QVERIFY(metadata.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(metadata.readAll()).object(), root);
+    }
     void oauthExpiredInitializationRenewsSelectedProfileWithoutBrowser()
     {
         BrowserFixture f; QVERIFY(f.ready); QVERIFY(f.seedOAuth());
@@ -695,10 +834,10 @@ private slots:
         f.manager->releaseTradingSession();
         QVERIFY(!f.manager->busy());
     }
-    void oauthIdleActiveProfileRenewsNearExpiryOnly()
+    void oauthIdleActiveProfileRenewsAfterActualExpiryOnly()
     {
         BrowserFixture f; QVERIFY(f.ready); QVERIFY(f.seedOAuth());
-        f.http.responses = {R"({"access_token":"new-access","refresh_token":"new-refresh","token_type":"Bearer","expires_in":90,"scope":"internal"})",
+        f.http.responses = {R"({"access_token":"new-access","refresh_token":"new-refresh","token_type":"Bearer","expires_in":2,"scope":"internal"})",
             R"({"id":"owner-id","username":"owner"})", R"({"results":[]})", R"({"results":[]})",
             R"({"access_token":"idle-access","refresh_token":"idle-refresh","token_type":"Bearer","expires_in":3600})",
             R"({"id":"owner-id","username":"owner"})", R"({"results":[]})", R"({"results":[]})"};
@@ -714,6 +853,19 @@ private slots:
         const auto firstRevision = firstRecord["credential_revision"].toString().toULongLong();
         QVERIFY(firstRevision > 0);
         QVERIFY(!firstRecord["renewal_attempted_at"].toString().isEmpty());
+        RHOAuthGrant firstGrant; QVERIFY(RHOAuthGrant::deserialize(f.store.values[0], &firstGrant));
+        const auto firstSecret = f.store.values[0];
+        const int firstWrites = f.store.writes;
+        QVERIFY(QDateTime::currentDateTimeUtc() < firstGrant.expiresAt);
+        f.manager->checkSessionRenewal();
+        f.manager->checkSessionRenewal();
+        QTest::qWait(30);
+        QVERIFY(!f.manager->busy());
+        QCOMPARE(f.http.requests.size(), 4);
+        QCOMPARE(f.store.values[0], firstSecret);
+        QCOMPARE(f.store.writes, firstWrites);
+        QCOMPARE(credentialRecord(), firstRecord);
+        QTRY_VERIFY(QDateTime::currentDateTimeUtc() >= firstGrant.expiresAt);
         f.manager->checkSessionRenewal();
         f.manager->checkSessionRenewal();
         QTRY_VERIFY(!f.manager->busy());

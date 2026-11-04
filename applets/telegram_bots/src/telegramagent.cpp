@@ -73,6 +73,7 @@ struct TelegramAgent::State
         QString side;
         QStringList symbols;
         Broker broker = Broker::Publics;
+        QString authenticationEmail;
     };
     QQueue<PendingReply> acknowledgements;
     QSet<qint64> allowedChatIds;
@@ -80,7 +81,12 @@ struct TelegramAgent::State
     bool ledgerPathInjected = false;
     QString tradeTicket;
     qint64 tradeChat = 0;
-    struct TradeReport { QString text; QString finishedRequest; };
+    bool authenticationCommand = false;
+    struct TradeReport {
+        QString text;
+        QString finishedRequest;
+        bool authenticationNotification = false;
+    };
     QQueue<TradeReport> tradeReports;
     bool reportSending = false;
     void settleReport(QString requestId)
@@ -105,7 +111,8 @@ struct TelegramAgent::State
     void appendReports(const QStringList &messages)
     {
         for (const auto &message : messages)
-            for (const auto &chunk : chunks(message)) tradeReports.enqueue({chunk, {}});
+            for (const auto &chunk : chunks(message))
+                tradeReports.enqueue({chunk, {}, authenticationCommand});
     }
     void sendTradeReport()
     {
@@ -114,11 +121,12 @@ struct TelegramAgent::State
             const auto report = tradeReports.dequeue();
             if (!report.finishedRequest.isEmpty()) { settleReport(report.finishedRequest); continue; }
             reportSending = true;
-            sendText(tradeChat, report.text, true);
+            sendText(tradeChat, report.text, true, report.authenticationNotification);
             return;
         }
         if (!tradeTicket.isEmpty()) return; // Intermediate reports do not retire the job.
         tradeChat = 0;
+        authenticationCommand = false;
         dispatchBusy = false;
         QTimer::singleShot(0, q, [this] { sendNext(); });
     }
@@ -389,8 +397,20 @@ struct TelegramAgent::State
                 }
             }
         }
+        // Authentication carries only a bounded account identifier, never a
+        // password, challenge response or additional argument. Preserve case.
+        static const QRegularExpression authenticationCommand(QStringLiteral(
+            "\\A/?authenticate_robinhood_account[ \t]+([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+)\\z"));
+        const auto authentication = authenticationCommand.match(text);
+        if (authentication.hasMatch() && message.value("text").toString().size() <= 4096) {
+            const auto email = authentication.captured(1);
+            if (email.size() <= 254 && email.indexOf(QLatin1Char('@')) <= 64)
+                item.authenticationEmail = email;
+        }
+        if (text == QStringLiteral("authenticate_robinhood_account")
+            || text == QStringLiteral("/authenticate_robinhood_account")) return true;
         if (acknowledgements.size() >= 100) return false;
-        if (!item.side.isEmpty()) {
+        if (!item.side.isEmpty() || !item.authenticationEmail.isEmpty()) {
             const auto claim = claimTrade(id);
             if (claim == Claim::Error) return false;
             if (claim == Claim::Duplicate) return true;
@@ -470,13 +490,17 @@ struct TelegramAgent::State
         attempted.insert(key); // Mark before dispatch: a lost receipt is not safe to retry.
         attemptOrder.enqueue(key);
         if (attemptOrder.size() > 1024) attempted.remove(attemptOrder.dequeue());
-        if (!acknowledgement.side.isEmpty() && allowedChatIds.contains(chat)) {
+        if ((!acknowledgement.side.isEmpty() || !acknowledgement.authenticationEmail.isEmpty())
+            && allowedChatIds.contains(chat)) {
             tradeChat = chat;
+            authenticationCommand = !acknowledgement.authenticationEmail.isEmpty();
             tradeTicket = QStringLiteral("%1:%2:%3:%4:%5").arg(botId).arg(acknowledgement.updateId)
                 .arg(chat).arg(generation).arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
             // Busy + immutable notification context and durable claim precede the
             // direct signal. A synchronous receiver may complete, stop or delete us.
-            if (acknowledgement.broker == Broker::Combined)
+            if (!acknowledgement.authenticationEmail.isEmpty())
+                emit q->robinhoodAuthenticationCommandReceived(tradeTicket, acknowledgement.authenticationEmail);
+            else if (acknowledgement.broker == Broker::Combined)
                 emit q->combinedTradeCommandReceived(tradeTicket, acknowledgement.side, acknowledgement.symbols);
             else if (acknowledgement.broker == Broker::Robinhood)
                 emit q->robinhoodTradeCommandReceived(tradeTicket, acknowledgement.side, acknowledgement.symbols);
@@ -549,12 +573,29 @@ struct TelegramAgent::State
         });
         deadline->start(3000); // Absolute, never refreshed by a dripping peer.
     }
-    void sendText(qint64 chat, const QString &text, bool html = false)
+    void authenticationNotificationFailed(const QString &message)
+    {
+        // The admitted native job and its immutable origin outlive this single
+        // delivery attempt. Never retry the message or re-dispatch the job.
+        reportSending = false;
+        const auto run = generation;
+        const QPointer<TelegramAgent> guard(q);
+        emit q->errorOccurred(message);
+        if (!guard || generation != run || !active) return;
+        sendTradeReport(); // Settles progress markers, then permits the terminal.
+    }
+    void sendText(qint64 chat, const QString &text, bool html = false,
+                  bool authenticationNotification = false)
     {
         QJsonObject body{{"chat_id", chat}, {"text", text}};
         if (html) body.insert("parse_mode", QStringLiteral("HTML"));
+        // Capture scope per queued attempt: completeTradeCommand may already
+        // have consumed tradeTicket while this progress request is in flight.
+        const std::function<void(QString)> failed = authenticationNotification
+            ? std::function<void(QString)>([this](QString message) { authenticationNotificationFailed(message); })
+            : std::function<void(QString)>{};
         request(QStringLiteral("sendMessage"), body,
-            [this, chat, text, html](QJsonValue value) {
+            [this, chat, text, html, failed](QJsonValue value) {
                 const auto message = value.toObject();
                 const auto receiptChat = message.value("chat").toObject();
                 if (!message.value("message_id").isDouble() || message.value("message_id").toInteger(-1) <= 0
@@ -563,13 +604,15 @@ struct TelegramAgent::State
                     || receiptChat.value("type").toString() != QStringLiteral("private")
                     || (message.contains("text") && (!message.value("text").isString()
                         || (!html && message.value("text").toString() != text)))) {
-                    fail(QStringLiteral("Telegram acknowledgement delivery is uncertain; invalid receipt. Not retried."));
+                    const auto error = QStringLiteral("Telegram acknowledgement delivery is uncertain; invalid receipt. Not retried.");
+                    if (failed) failed(error);
+                    else fail(error);
                     return;
                 }
                 if (html) { reportSending = false; sendTradeReport(); return; }
                 dispatchBusy = false;
                 sendNext();
-            });
+            }, failed);
     }
     void cancelRequests(bool preserveRegistration = false)
     {
@@ -637,7 +680,7 @@ struct TelegramAgent::State
         dispatchBusy = false;
         pollTimer.stop();
         acknowledgements.clear();
-        tradeTicket.clear(); tradeChat = 0; reportSending = false; discardReports();
+        tradeTicket.clear(); tradeChat = 0; authenticationCommand = false; reportSending = false; discardReports();
         admitted.clear(); admissionOrder.clear();
         offset = 0;
         botId = 0;
@@ -687,7 +730,8 @@ struct TelegramAgent::State
         if (changed) emit q->stateChanged();
         if (guard && generation == run) emit q->errorOccurred(message);
     }
-    void request(const QString &method, QJsonObject body, std::function<void(QJsonValue)> done)
+    void request(const QString &method, QJsonObject body, std::function<void(QJsonValue)> done,
+                 std::function<void(QString)> failed = {})
     {
         QUrl url = root;
         url.setPath(QStringLiteral("/bot") + token + QLatin1Char('/') + method);
@@ -746,7 +790,7 @@ struct TelegramAgent::State
         deadline->start(method == QStringLiteral("getUpdates") ? 35000 : 10000);
         QObject::connect(reply, &QIODevice::readyRead, q, consume);
         QObject::connect(reply, &QNetworkReply::finished, q,
-            [this, reply, deadline, run, response, consume, method, done = std::move(done)] {
+            [this, reply, deadline, run, response, consume, method, done = std::move(done), failed = std::move(failed)] {
             deadline->stop();
             pending.remove(reply);
             reply->deleteLater();
@@ -764,26 +808,41 @@ struct TelegramAgent::State
                 }
             }
             if (generation != run) return;
-            const auto reject = [this, &method](QString message) {
+            // Read the reply synchronously (the webhook manager may auto-delete
+            // it), but run observers outside finished/readyRead/abort stacks.
+            const auto dispatch = [owner = QPointer<TelegramAgent>(q), run](std::function<void()> callback) {
+                QTimer::singleShot(0, owner, [owner, run, callback = std::move(callback)] {
+                    if (owner && owner->d->generation == run) callback();
+                });
+            };
+            const auto reject = [this, &method, &failed, &dispatch](QString message, bool recoverable = true) {
                 // Never expose URLs, provider descriptions, raw bodies or errorString().
                 if (method == QStringLiteral("sendMessage"))
                     message += QStringLiteral(" Acknowledgement delivery is uncertain; not retried.");
-                fail(message);
+                dispatch([this, failed, recoverable, message = std::move(message)] {
+                    if (failed && recoverable) failed(message);
+                    else fail(message);
+                });
             };
+            const auto rejectHardFailure = [&reject](int code) {
+                switch (code) {
+                case 401: reject(QStringLiteral("Telegram 401: bot token rejected."), false); return true;
+                case 403: reject(QStringLiteral("Telegram 403: access forbidden."), false); return true;
+                case 409: reject(QStringLiteral("Telegram 409: polling conflict; check other pollers or an existing webhook."), false); return true;
+                default: return false;
+                }
+            };
+            const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            // Known authorization/conflict headers outrank recoverable body failures.
+            if (rejectHardFailure(status)) return;
             if (response->oversized) { reject(QStringLiteral("Telegram response exceeded size limit.")); return; }
             if (response->timedOut) { reject(QStringLiteral("Telegram request timed out.")); return; }
-            const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             if (status >= 300 && status < 400) { reject(QStringLiteral("Telegram redirect refused.")); return; }
             const auto doc = QJsonDocument::fromJson(response->bytes);
             const auto object = doc.object();
             const int code = status >= 400 ? status : object.value("error_code").toInt();
-            switch (code) {
-            case 401: reject(QStringLiteral("Telegram 401: bot token rejected.")); return;
-            case 403: reject(QStringLiteral("Telegram 403: access forbidden.")); return;
-            case 409: reject(QStringLiteral("Telegram 409: polling conflict; check other pollers or an existing webhook.")); return;
-            case 429: reject(QStringLiteral("Telegram 429: rate limited; wait before starting again.")); return;
-            default: break;
-            }
+            if (rejectHardFailure(code)) return;
+            if (code == 429) { reject(QStringLiteral("Telegram 429: rate limited; wait before starting again.")); return; }
             if (reply->error() != QNetworkReply::NoError || status == 0) {
                 reject(QStringLiteral("Telegram network or service request failed.")); return;
             }
@@ -791,7 +850,7 @@ struct TelegramAgent::State
                 || !object.contains("result")) {
                 reject(QStringLiteral("Telegram returned an invalid or rejected response.")); return;
             }
-            done(object.value("result"));
+            dispatch([done, result = object.value("result")] { done(result); });
         });
     }
 };

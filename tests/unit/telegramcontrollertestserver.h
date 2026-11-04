@@ -15,6 +15,7 @@ class ControllerBotServer final : public QTcpServer
 public:
     QList<QPointer<QTcpSocket>> polls;
     QList<QJsonObject> messages;
+    QList<int> messageBotIds;
     QStringList requestedMethods;
     int healthStatus = 200;
     bool holdHealth = false;
@@ -75,6 +76,7 @@ public:
                     } else if (path.endsWith("/sendMessage")) {
                         const auto payload = QJsonDocument::fromJson(bytes->mid(end + 4, length)).object();
                         messages.append(payload);
+                        messageBotIds.append(path.startsWith("/bot987654:") ? 987654 : 123456);
                         if (loseFirstMessageAcknowledgement && messages.size() == 1) {
                             socket->abort();
                             return;

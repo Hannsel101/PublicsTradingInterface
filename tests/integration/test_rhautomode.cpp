@@ -228,18 +228,20 @@ private slots:
         QTest::qWait(20); QVERIFY(f.orders.isEmpty());
         QVERIFY(!controller.error().isEmpty());
     }
-    void ownedSavedSessionOAuthRenewalCanCompleteBeforeLeaseAcquisition() {
+    void ownedSavedSessionReusesUnexpiredOAuthGrantBeforeLeaseAcquisition() {
         Fixture f; QVERIFY(f.ready); f.accountCount = 1;
         const QJsonObject grant{{"access_token", "fixture-primary"}, {"refresh_token", "fixture-refresh"},
             {"token_type", "Bearer"}, {"scope", "internal"}, {"expires_in", 3600}};
         QVERIFY(f.sessions->acceptOAuthGrant(grant, "integration-client", "fixture-device"));
         QTRY_VERIFY(!f.sessions->busy()); QCOMPARE(f.sessions->rowCount(), 1);
         const auto priorSecret = f.store.tokens.value(0);
+        const auto priorExpiry = f.sessions->data(f.sessions->index(0), RHSessionManager::ExpiresAtRole);
         RHAutoTradeController controller(f.network, *f.sessions, f.dependencies());
         QSignalSpy prompts(f.sessions.get(), &RHSessionManager::reauthenticationRequested);
         QVERIFY(controller.submit("AAPL,MSFT", "buy")); drain(f, controller);
-        QCOMPARE(f.renewals.size(), 1); QCOMPARE(f.orders.size(), 2); QCOMPARE(controller.tradeResults().size(), 2);
-        QVERIFY(f.store.tokens.value(0) != priorSecret);
+        QCOMPARE(f.renewals.size(), 0); QCOMPARE(f.orders.size(), 2); QCOMPARE(controller.tradeResults().size(), 2);
+        QCOMPARE(f.store.tokens.value(0), priorSecret);
+        QCOMPARE(f.sessions->data(f.sessions->index(0), RHSessionManager::ExpiresAtRole), priorExpiry);
         QCOMPARE(controller.tradeResults().first().toMap().value("profileId").toString(), "integration-owner");
         QVERIFY(controller.error().isEmpty()); QCOMPARE(prompts.size(), 0);
     }

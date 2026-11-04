@@ -2,6 +2,7 @@
 #include "rhcredentialstore.h"
 #include "rhnetworkengine.h"
 #include "rhsessionmanager.h"
+#include <QCryptographicHash>
 #include <QtTest>
 #include <QQmlEngine>
 #include <QQmlComponent>
@@ -92,6 +93,276 @@ struct Fixture {
 class RHSessionManagerNativeTest : public QObject {
     Q_OBJECT
 private slots:
+    void storedInventoryUsesVerifiedEmailAndNoSecrets() {
+        Fixture f; f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin()); QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
+        QTRY_VERIFY(!f.manager->busy());
+        f.store.holdRead=true;
+        f.manager=std::make_unique<RHSessionManager>(f.network,f.dir.filePath("sessions.json"),&f.store,nullptr,2000,1,&f.locker);
+        QVERIFY(f.label().startsWith("Saved Robinhood"));
+        bool done=false; QList<RHSessionManager::StoredSessionAccount> rows;
+        f.manager->requestStoredSessionAccounts([&](bool ok, auto result, QString reason) {
+            QVERIFY2(ok,qPrintable(reason)); rows=std::move(result); done=true;
+        });
+        QCOMPARE(f.store.pendingReads.size(),2);
+        auto stale=f.store.pendingReads.takeFirst(); stale();
+        auto inventory=f.store.pendingReads.takeFirst(); inventory();
+        QTRY_VERIFY(done); QCOMPARE(rows.size(),1);
+        QCOMPARE(rows[0].sessionIndex,0); QCOMPARE(rows[0].profileId,QString("owner-id"));
+        QCOMPARE(rows[0].email,QString("owner@example.test")); QVERIFY(!rows[0].expired);
+        QCOMPARE(f.store.writes,1); QCOMPARE(f.http.requests.size(),3);
+        QVERIFY(!f.manager->busy());
+    }
+    void storedAuthenticationWaitsForProgressThenDurableCommit() {
+        Fixture f; f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin()); QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
+        QTRY_VERIFY(!f.manager->busy());
+        f.http.responses.append(Fixture::grant()); f.http.responses.append(Fixture::profile()); f.http.responses.append(Fixture::accounts());
+        f.store.holdWrite=true;
+        std::function<void()> proceed; int calls=0;
+        QVERIFY(f.manager->authenticateStoredSession(" OWNER@example.test ",
+            [&](QString email, auto continuation) { QCOMPARE(email,QString("owner@example.test")); proceed=std::move(continuation); },
+            [&](RHSessionManager::StoredAuthenticationResult result, QString email, QString reason) {
+                ++calls; QCOMPARE(result,RHSessionManager::StoredAuthenticationResult::Approved);
+                QCOMPARE(email,QString("owner@example.test")); QVERIFY(reason.isEmpty());
+                QFile metadata(f.dir.filePath("sessions.json")); QVERIFY(metadata.open(QIODevice::ReadOnly));
+                const auto root=QJsonDocument::fromJson(metadata.readAll()).object();
+                QCOMPARE(root["sessions"].toArray()[0].toObject()["credential_digest"].toString(),
+                    QString::fromLatin1(QCryptographicHash::hash(f.store.values[0].toUtf8(),QCryptographicHash::Sha256).toHex()));
+            },2000));
+        QTRY_VERIFY(bool(proceed)); QCOMPARE(f.http.requests.size(),3); QCOMPARE(calls,0);
+        QVERIFY(!f.manager->authenticateStoredSession("owner@example.test",{},{}));
+        proceed(); proceed(); QTRY_VERIFY(bool(f.store.pending)); QCOMPARE(calls,0);
+        QCOMPARE(f.http.requests.size(),6); QVERIFY(f.http.requests[3].contains("password=fixture-password"));
+        auto commit=std::move(f.store.pending); commit(); QTRY_COMPARE(calls,1); QVERIFY(!f.manager->busy());
+        QCOMPARE(f.store.writes,2); QCOMPARE(f.manager->rowCount(),1);
+        QVERIFY(f.manager->metaObject()->indexOfMethod("authenticateStoredSession(QString)")==-1);
+    }
+    void storedAuthenticationEligibilityBoundary_data() {
+        QTest::addColumn<qint64>("remainingMs"); QTest::addColumn<bool>("skip");
+        QTest::newRow("far-valid")<<qint64(7200000)<<true;
+        QTest::newRow("exact-hour")<<qint64(3600000)<<true;
+        QTest::newRow("one-ms-under-hour")<<qint64(3599999)<<false;
+        QTest::newRow("expired")<<qint64(-1)<<false;
+    }
+    void storedAuthenticationEligibilityBoundary() {
+        QFETCH(qint64,remainingMs); QFETCH(bool,skip);
+        Fixture f; f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin()); QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
+        QTRY_VERIFY(!f.manager->busy());
+        RHOAuthGrant grant; QVERIFY(RHOAuthGrant::deserialize(f.store.values[0],&grant));
+        const auto now=grant.expiresAt.addMSecs(-remainingMs);
+        f.manager->setStoredAuthenticationClockForTests([now]{return now;});
+        const auto original=f.store.values; const auto expiry=f.manager->data(f.manager->index(0),RHSessionManager::ExpiresAtRole);
+        QFile file(f.dir.filePath("sessions.json")); QVERIFY(file.open(QIODevice::ReadOnly)); const auto metadata=file.readAll();file.close();
+        int calls=0,ready=0; RHSessionManager::StoredAuthenticationResult result{}; QString reason;
+        QVERIFY(f.manager->authenticateStoredSession(" OWNER@example.test ",
+            [&](QString email,auto){++ready;QCOMPARE(email,QString("owner@example.test"));},
+            [&](auto value,QString email,QString failure){++calls;result=value;reason=failure;QCOMPARE(email,QString("owner@example.test"));},500));
+        if(skip) {
+            QTRY_COMPARE(calls,1); QCOMPARE(result,RHSessionManager::StoredAuthenticationResult::NotNeeded);
+            QCOMPARE(reason,grant.expiresAt.toUTC().toString(Qt::ISODateWithMs)); QCOMPARE(ready,0);
+            QVERIFY(!f.manager->busy()); QVERIFY(f.manager->error().isEmpty());
+        } else {
+            QTRY_COMPARE(ready,1); QCOMPARE(calls,0); f.manager->cancelSignIn(); QTRY_COMPARE(calls,1);
+        }
+        QCOMPARE(f.http.requests.size(),3); QCOMPARE(f.store.writes,1); QCOMPARE(f.store.values,original);
+        QCOMPARE(f.manager->data(f.manager->index(0),RHSessionManager::ExpiresAtRole),expiry);
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(),metadata);
+    }
+    void storedAuthenticationUsesRemoteBudgetAndOriginalDeadline() {
+        Fixture f; f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin()); QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
+        QTRY_VERIFY(!f.manager->busy());
+        RHNativeAuthClient shortDesktop({f.http.origin(),16000,20,1});
+        f.manager->setNativeAuthClient(&shortDesktop);
+        int calls=0; QString reason; std::function<void()> proceed;
+        QElapsedTimer total; total.start();
+        QVERIFY(f.manager->authenticateStoredSession("owner@example.test",
+            [&](QString,auto next){proceed=next;},
+            [&](auto result,QString,QString failure){++calls; QCOMPARE(result,RHSessionManager::StoredAuthenticationResult::Failed);reason=failure;},2000));
+        QTRY_VERIFY(bool(proceed));
+        QTest::qWait(1200); proceed();
+        QTRY_COMPARE(f.http.requests.size(),4);
+        QTest::qWait(70);
+        QVERIFY2(f.manager->busy(),qPrintable(reason)); QCOMPARE(calls,0);
+        QTRY_COMPARE_WITH_TIMEOUT(calls,1,2500);
+        QCOMPARE(reason,QString("stored_authentication_timeout"));
+        QVERIFY(total.elapsed()>=2000); QVERIFY(total.elapsed()<3000); QTRY_VERIFY(!f.manager->busy());
+        QCOMPARE(f.store.writes,1);
+        if(f.http.peer && f.http.peer->state()==QAbstractSocket::ConnectedState)
+            Server::respond(f.http.peer,Fixture::grant());
+        QTest::qWait(40); QCOMPARE(calls,1); QCOMPARE(f.store.writes,1);
+    }
+    void storedPushApprovalRequiresIdentityAccountsAndDurableCommit() {
+        Fixture f; f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin()); QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
+        QTRY_VERIFY(!f.manager->busy());
+        f.http.responses.append(R"({"verification_workflow":{"id":"w"}})");
+        f.http.responses.append(R"({"id":"m"})");
+        f.http.responses.append(R"({"context":{"sheriff_challenge":{"type":"prompt","status":"issued","id":"c"}}})");
+        for(int i=0;i<68;++i) f.http.responses.append(R"({"challenge_status":"pending"})");
+        f.http.responses.append(R"({"challenge_status":"validated"})");
+        f.http.responses.append(R"({"type_context":{"result":"workflow_status_approved"}})");
+        f.http.responses.append(Fixture::grant()); f.http.responses.append(Fixture::profile()); f.http.responses.append(Fixture::accounts());
+        f.http.statuses={200,200,200,400}; f.store.holdWrite=true;
+        int calls=0;
+        QVERIFY(f.manager->authenticateStoredSession("owner@example.test",[](QString,auto next){next();},
+            [&](auto result,QString,QString reason){++calls; QCOMPARE(result,RHSessionManager::StoredAuthenticationResult::Approved);QVERIFY(reason.isEmpty());},30000));
+        QTRY_VERIFY_WITH_TIMEOUT(bool(f.store.pending),35000); QCOMPARE(calls,0);
+        QCOMPARE(f.http.requests.size(),3+3+68+1+1+3); QVERIFY(f.manager->busy());
+        auto commit=std::move(f.store.pending); commit();
+        QTRY_COMPARE(calls,1); QVERIFY(!f.manager->busy()); QCOMPARE(f.store.writes,2);
+    }
+    void storedAuthenticationFailuresNeverReplaceCredentials_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto &name : {"not-found","rejected","code-required","push-denied","wrong-identity","write-failed"})
+            QTest::newRow(name)<<QString(name);
+    }
+    void storedAuthenticationFailuresNeverReplaceCredentials() {
+        QFETCH(QString,scenario); Fixture f;
+        f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin()); QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
+        QTRY_VERIFY(!f.manager->busy()); const auto original=f.store.values;
+        if (scenario=="rejected") { f.http.responses.append(R"({"error":"invalid_grant","detail":"fixture-password native-access"})"); f.http.statuses={200,200,200,400}; }
+        if (scenario=="code-required" || scenario=="push-denied") {
+            f.http.responses.append(R"({"verification_workflow":{"id":"workflow"}})");
+            f.http.responses.append(R"({"id":"machine"})");
+            f.http.responses.append(scenario=="code-required" ? QByteArray(R"({"context":{"sheriff_challenge":{"type":"sms","status":"issued","id":"challenge"}}})")
+                : QByteArray(R"({"context":{"sheriff_challenge":{"type":"prompt","status":"issued","id":"challenge"}}})"));
+            f.http.responses.append(R"({"challenge_status":"denied"})");
+            f.http.statuses={200,200,200,400,200,200,200};
+        }
+        if (scenario=="wrong-identity" || scenario=="write-failed") {
+            f.http.responses.append(Fixture::grant());
+            f.http.responses.append(scenario=="wrong-identity" ? QByteArray(R"({"id":"other-owner","email":"owner@example.test"})") : Fixture::profile());
+            f.http.responses.append(Fixture::accounts());
+        }
+        f.store.failWrite=scenario=="write-failed";
+        int ready=0,calls=0; QString safeReason;
+        RHSessionManager::StoredAuthenticationResult result{};
+        QVERIFY(f.manager->authenticateStoredSession(scenario=="not-found" ? "missing@example.test" : "owner@example.test",
+            [&](QString,auto next) { ++ready; next(); },
+            [&](auto value,QString,QString reason) { ++calls; result=value; safeReason=reason; },1000));
+        QTRY_COMPARE_WITH_TIMEOUT(calls,1,2500); QTRY_VERIFY(!f.manager->busy());
+        QCOMPARE(result,scenario=="not-found" ? RHSessionManager::StoredAuthenticationResult::NotFound : RHSessionManager::StoredAuthenticationResult::Failed);
+        QCOMPARE(ready,scenario=="not-found" ? 0 : 1); QCOMPARE(f.store.values,original);
+        QVERIFY(!safeReason.contains("fixture-password")); QVERIFY(!safeReason.contains("native-access")); QVERIFY(!safeReason.isEmpty());
+        if (scenario=="not-found") QCOMPARE(f.http.requests.size(),3);
+        if (scenario=="rejected") QVERIFY2(safeReason.contains("invalid_grant"),qPrintable(safeReason));
+        if (scenario=="code-required") {
+            QVERIFY2(safeReason.contains("unsupported") && safeReason.contains("local"),qPrintable(safeReason));
+            QCOMPARE(f.http.requests.size(),6);
+        }
+        if (scenario=="push-denied") QVERIFY2(safeReason.contains("not approved"),qPrintable(safeReason));
+    }
+    void storedAuthenticationRequestTimeoutIsNotEightMinuteTimeout() {
+        Fixture f; f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin()); QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
+        QTRY_VERIFY(!f.manager->busy());
+        RHNativeAuthClient shortRequest({f.http.origin(),50,20,1}); f.manager->setNativeAuthClient(&shortRequest);
+        int calls=0; QString reason;
+        QVERIFY(f.manager->authenticateStoredSession("owner@example.test",[](QString,auto next){next();},
+            [&](auto result,QString,QString failure){++calls;QCOMPARE(result,RHSessionManager::StoredAuthenticationResult::Failed);reason=failure;},1000));
+        QTRY_COMPARE_WITH_TIMEOUT(calls,1,600); QCOMPARE(reason,QString("Request timed out"));
+        QVERIFY(!f.manager->busy()); QCOMPARE(f.http.requests.size(),4); QCOMPARE(f.store.writes,1);
+    }
+    void storedAuthenticationRejectsExpiryMismatchBeforeSkip_data() {
+        QTest::addColumn<int>("shift"); QTest::newRow("metadata-later")<<7200;QTest::newRow("metadata-earlier")<<-7200;
+    }
+    void storedAuthenticationRejectsExpiryMismatchBeforeSkip() {
+        QFETCH(int,shift); Fixture f; f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin()); QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
+        QTRY_VERIFY(!f.manager->busy());
+        QFile file(f.dir.filePath("sessions.json"));QVERIFY(file.open(QIODevice::ReadOnly));
+        auto root=QJsonDocument::fromJson(file.readAll()).object();file.close();
+        auto rows=root["sessions"].toArray();auto row=rows[0].toObject();
+        const auto expiry=QDateTime::fromString(row["expires_at"].toString(),Qt::ISODateWithMs);
+        QVERIFY(expiry.isValid());row["expires_at"]=expiry.addSecs(shift).toUTC().toString(Qt::ISODateWithMs);
+        rows[0]=row;root["sessions"]=rows;QVERIFY(file.open(QIODevice::WriteOnly));file.write(QJsonDocument(root).toJson());file.close();
+        f.manager->setStoredAuthenticationClockForTests([expiry]{return expiry.addSecs(-7200);});
+        int calls=0,ready=0; RHSessionManager::StoredAuthenticationResult result{};
+        QVERIFY(f.manager->authenticateStoredSession("owner@example.test",[&](QString,auto){++ready;},
+            [&](auto value,QString,QString reason){++calls;result=value;QVERIFY(!reason.isEmpty());}));
+        QTRY_COMPARE(calls,1);QCOMPARE(result,RHSessionManager::StoredAuthenticationResult::Failed);
+        QCOMPARE(ready,0);QCOMPARE(f.http.requests.size(),3);QCOMPARE(f.store.writes,1);QVERIFY(!f.manager->busy());
+    }
+    void storedAuthenticationTerminalObserversAreSafe_data() {
+        QTest::addColumn<QString>("action");
+        for(const auto *action:{"delete","cancel-replace","idle-replace"})QTest::newRow(action)<<QString(action);
+    }
+    void storedAuthenticationTerminalObserversAreSafe() {
+        QFETCH(QString,action);Fixture f;f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin());QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));QTRY_VERIFY(!f.manager->busy());
+        RHOAuthGrant grant;QVERIFY(RHOAuthGrant::deserialize(f.store.values[0],&grant));
+        f.manager->setStoredAuthenticationClockForTests([expiry=grant.expiresAt]{return expiry.addSecs(-7200);});
+        int calls=0;bool replacement=false;
+        if(action=="idle-replace")connect(f.manager.get(),&RHSessionManager::busyChanged,&f.store,[&]{
+            if(f.manager && !f.manager->busy() && !replacement){replacement=true;QVERIFY(f.manager->beginNativeLogin());}
+        });
+        QVERIFY(f.manager->authenticateStoredSession("owner@example.test",{},[&](auto result,QString,QString){
+            ++calls;QCOMPARE(result,RHSessionManager::StoredAuthenticationResult::NotNeeded);
+            if(action=="delete")f.manager.reset();
+            if(action=="cancel-replace"){f.manager->cancelSignIn();replacement=f.manager->beginNativeLogin();QVERIFY(replacement);}
+        }));
+        QTRY_COMPARE(calls,1);
+        if(action=="delete")QVERIFY(!f.manager);else{QVERIFY(replacement);QVERIFY(f.manager->busy());QVERIFY(f.manager->nativeLoginPending());}
+        QCOMPARE(f.http.requests.size(),3);QCOMPARE(f.store.writes,1);
+    }
+    void storedAuthenticationLateCancelCannotMisclassifyDeadline() {
+        Fixture f;f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin());QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));QTRY_VERIFY(!f.manager->busy());
+        int calls=0;QString reason;bool ready=false;
+        QVERIFY(f.manager->authenticateStoredSession("owner@example.test",[&](QString,auto){ready=true;},
+            [&](auto result,QString,QString failure){++calls;QCOMPARE(result,RHSessionManager::StoredAuthenticationResult::Failed);reason=failure;},200));
+        QTRY_VERIFY(ready);QThread::msleep(220);f.manager->cancelSignIn();
+        QCOMPARE(calls,1);QCOMPARE(reason,QString("stored_authentication_timeout"));QVERIFY(!f.manager->busy());
+    }
+    void storedAuthenticationDeadlineClassifiesHeldReadBeforeTimerDelivery() {
+        Fixture f; f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin()); QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
+        QTRY_VERIFY(!f.manager->busy()); f.store.holdRead=true;
+        int calls=0; QString reason;
+        QVERIFY(f.manager->authenticateStoredSession("owner@example.test",[](QString,auto next){next();},
+            [&](auto result,QString,QString failure){++calls;QCOMPARE(result,RHSessionManager::StoredAuthenticationResult::Failed);reason=failure;},100));
+        QTRY_COMPARE(f.store.pendingReads.size(),1);
+        QThread::msleep(120); // Deliberately exhaust the monotonic budget without delivering timers.
+        auto inventory=f.store.pendingReads.takeFirst(); inventory();
+        if(!f.store.pendingReads.isEmpty()){auto proof=f.store.pendingReads.takeFirst();proof();}
+        QTRY_COMPARE(calls,1); QCOMPARE(reason,QString("stored_authentication_timeout"));
+        QTRY_VERIFY(!f.manager->busy()); QCOMPARE(f.http.requests.size(),3); QCOMPARE(f.store.writes,1);
+    }
+    void storedAuthenticationDeadlineIncludesLookupProgressAndCommit_data() {
+        QTest::addColumn<QString>("phase");
+        for (const auto &name:{"lookup","progress","commit","cancel-lookup"}) QTest::newRow(name)<<QString(name);
+    }
+    void storedAuthenticationDeadlineIncludesLookupProgressAndCommit() {
+        QFETCH(QString,phase); Fixture f; f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts()};
+        QVERIFY(f.manager->beginNativeLogin()); QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
+        QTRY_VERIFY(!f.manager->busy());
+        f.http.responses.append(Fixture::grant()); f.http.responses.append(Fixture::profile()); f.http.responses.append(Fixture::accounts());
+        f.store.holdRead=phase.contains("lookup"); f.store.holdWrite=phase=="commit";
+        int calls=0,ready=0; std::function<void()> progress; QString reason;
+        const int timeoutMs=phase=="commit"?2000:100;
+        QVERIFY(f.manager->authenticateStoredSession("owner@example.test",
+            [&](QString,auto next) { ++ready; progress=next; if(phase=="commit")next(); },
+            [&](auto result,QString,QString safeReason) { ++calls; QCOMPARE(result,RHSessionManager::StoredAuthenticationResult::Failed); reason=safeReason; },timeoutMs));
+        if (phase.contains("lookup")) { QTRY_COMPARE(f.store.pendingReads.size(),1); if(phase=="cancel-lookup")f.manager->cancelSignIn(); }
+        if (phase=="progress") QTRY_VERIFY(bool(progress));
+        if (phase=="commit") QTRY_VERIFY(bool(f.store.pending));
+        QTRY_COMPARE_WITH_TIMEOUT(calls,1,timeoutMs+1000);
+        QVERIFY(reason.contains(phase=="cancel-lookup"?"cancel":"timeout"));
+        if (phase.contains("lookup") || phase=="commit") {
+            QVERIFY(f.manager->busy()); QVERIFY(!f.manager->authenticateStoredSession("owner@example.test",{},{}));
+            RHSessionManager other(f.network,f.dir.filePath("sessions.json"),&f.store,nullptr,2000,1,&f.locker);
+            QVERIFY(!other.saveAuthenticatedSession("other","other-token",3600));
+        }
+        if (phase.contains("lookup")) { auto read=f.store.pendingReads.takeFirst(); read(); read(); }
+        if (phase=="commit") { auto write=std::move(f.store.pending); write(); }
+        if (progress) progress();
+        QTRY_VERIFY(!f.manager->busy()); QTest::qWait(10); QCOMPARE(calls,1);
+        if (phase!="commit") { QCOMPARE(f.store.writes,1); QCOMPARE(f.http.requests.size(),3); }
+    }
     void realNativeFormCredentialAndCodeContract() {
         Fixture f;
         f.http.responses = {R"({"verification_workflow":{"id":"workflow"}})",
@@ -194,7 +465,9 @@ private slots:
         QTRY_COMPARE(f.manager->rowCount(),1);QVERIFY(!f.manager->busy());
     }
     void rotationKeepsCredentialsAndOpaqueLabelAcrossRestart(){
-        Fixture f;f.http.responses={Fixture::grant(),Fixture::profile(),Fixture::accounts(),
+        Fixture f;
+        auto initialGrant=Fixture::grant();initialGrant.replace("\"expires_in\":3600", "\"expires_in\":2");
+        f.http.responses={initialGrant,Fixture::profile(),Fixture::accounts(),
             R"({"access_token":"rotated-access","refresh_token":"rotated-refresh","token_type":"Bearer","expires_in":3600})",
             Fixture::profile(),Fixture::accounts(),Fixture::accounts()};
         QVERIFY(f.manager->beginNativeLogin());QVERIFY(f.manager->signIn("owner@example.test","fixture-password"));
@@ -203,6 +476,7 @@ private slots:
         QCOMPARE(original.value("access_token"),QJsonValue("native-access"));
         f.manager=std::make_unique<RHSessionManager>(f.network,f.dir.filePath("sessions.json"),&f.store,nullptr,2000,1,&f.locker);
         QTRY_COMPARE(f.label(),QString("owner@example.test"));
+        QTRY_VERIFY(f.manager->data(f.manager->index(0),RHSessionManager::IsExpiredRole).toBool());
         QVERIFY(f.manager->initializeSession(0));QTRY_VERIFY(!f.manager->busy());
         QCOMPARE(f.store.writes,2);QVERIFY(f.manager->sessionActive());
         RHOAuthGrant grant;QVERIFY(RHOAuthGrant::deserialize(f.store.values[0],&grant));

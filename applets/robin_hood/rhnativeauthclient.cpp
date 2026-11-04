@@ -1,6 +1,7 @@
 #include "rhnativeauthclient.h"
 #include "securecredentiallocker.h"
 
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QStringList>
@@ -102,6 +103,10 @@ struct RHNativeAuthClient::Impl {
     QString machine, challenge;
     bool retried = false;
     int polls = 0;
+    int pollLimit = 64;
+    int budgetMs = 120000;
+    bool remote = false;
+    QElapsedTimer clock;
     QByteArray received;
 
     Impl(RHNativeAuthClient *owner, TestTransport config, bool test) : q(owner), transport(std::move(config)) {
@@ -114,7 +119,9 @@ struct RHNativeAuthClient::Impl {
         poll.setSingleShot(true);
         whole.setTimerType(Qt::PreciseTimer);
         poll.setTimerType(Qt::PreciseTimer);
-        QObject::connect(&whole, &QTimer::timeout, q, [this] { finish(State::Failed, "Authentication timed out"); });
+        QObject::connect(&whole, &QTimer::timeout, q, [this] {
+            if (!expired()) whole.start(budgetMs - int(clock.elapsed()));
+        });
     }
     bool busy() const { return state == State::Requesting || state == State::WaitingForCode || state == State::WaitingForApproval; }
     void clear() {
@@ -139,8 +146,15 @@ struct RHNativeAuthClient::Impl {
         emit q->changed();
         return guard && generation == epoch && busy();
     }
+    bool expired() {
+        if (clock.isValid() && clock.elapsed() >= budgetMs) {
+            finish(State::Failed, "Authentication timed out"); return true;
+        }
+        return false;
+    }
     using Completion = std::function<void(QJsonObject, int)>;
     void request(const QByteArray &method, const QString &path, QByteArray body, bool json, Completion completion) {
+        if (expired()) { wipe(body); return; }
         QNetworkRequest request(transport.origin.resolved(QUrl(path)));
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
         request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
@@ -164,7 +178,7 @@ struct RHNativeAuthClient::Impl {
         reply = r; received.clear(); r->setReadBufferSize(maxBody + 1);
         auto *deadline = new QTimer(r); deadline->setSingleShot(true); deadline->setTimerType(Qt::PreciseTimer);
         QObject::connect(deadline, &QTimer::timeout, q, [this, epoch] {
-            if (generation == epoch) finish(State::Failed, "Request timed out");
+            if (generation == epoch && !expired()) finish(State::Failed, "Request timed out");
         });
         deadline->start(transport.requestTimeoutMs);
         QObject::connect(r, &QNetworkReply::readyRead, q, [this, epoch, r] {
@@ -176,6 +190,7 @@ struct RHNativeAuthClient::Impl {
         QObject::connect(r, &QNetworkReply::finished, q, [this, epoch, r, deadline, completion = std::move(completion)] {
             deadline->stop();
             if (generation != epoch || reply != r) { r->deleteLater(); return; }
+            if (expired()) return;
             received += r->read(maxBody + 1 - received.size());
             const int statusCode = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             const auto error = r->error(); reply.clear(); r->deleteLater();
@@ -197,7 +212,8 @@ struct RHNativeAuthClient::Impl {
         });
     }
     void later(std::function<void()> action) {
-        if (++polls > 64) { finish(State::Failed, "Verification poll limit reached"); return; }
+        if (expired()) return;
+        if (++polls > pollLimit) { finish(State::Failed, "Verification poll limit reached"); return; }
         QObject::disconnect(&poll, nullptr, q, nullptr);
         const auto epoch = generation;
         QObject::connect(&poll, &QTimer::timeout, q, [this, epoch, action = std::move(action)] {
@@ -227,6 +243,9 @@ struct RHNativeAuthClient::Impl {
                 const auto type = sheriff.value("type").toString();
                 const auto status = sheriff.value("status").toString();
                 if (!validId(challenge)) { finish(State::Failed, "Invalid verification challenge"); return; }
+                if (remote && (type == "sms" || type == "email")) {
+                    finish(State::Failed, "Unsupported challenge; complete authentication locally"); return;
+                }
                 if ((type == "sms" || type == "email") && status == "validated") {
                     continueWorkflow(); return;
                 }
@@ -318,6 +337,27 @@ struct RHNativeAuthClient::Impl {
             finish(State::Failed, rejectionSummary(object, http));
         });
     }
+    bool begin(const QString &username, const QString &password, const QString &deviceToken,
+               const QString &mfaCode, bool remoteAttempt, int timeoutMs) {
+        if (busy()) return false;
+        if (!valid || username.isEmpty() || username.size() > 512 || password.isEmpty() || password.size() > 4096
+            || deviceToken.isEmpty() || deviceToken.size() > 512 || (!mfaCode.isEmpty() && !codeValid(mfaCode))) {
+            finish(State::Failed, "Invalid authentication input"); return false;
+        }
+        clear();
+        remote = remoteAttempt;
+        budgetMs = remote ? std::clamp(timeoutMs, 1, 480000) : transport.workflowTimeoutMs;
+        // Remote production polling can cover eight minutes; desktop retains 64.
+        pollLimit = remote ? (budgetMs + transport.pollIntervalMs - 1) / transport.pollIntervalMs + 2 : 64;
+        clock.start();
+        if (!credentials.set(username, password)) {
+            finish(State::Failed, "Could not stage authentication input securely"); return false;
+        }
+        device = deviceToken; mfa = mfaCode;
+        whole.start(budgetMs);
+        if (announce(State::Requesting, "Requesting password grant")) login();
+        return true;
+    }
 };
 
 RHNativeAuthClient::RHNativeAuthClient(QObject *parent) : QObject(parent),
@@ -326,19 +366,11 @@ RHNativeAuthClient::RHNativeAuthClient(TestTransport transport, QObject *parent)
     d(std::make_unique<Impl>(this, std::move(transport), true)) {}
 RHNativeAuthClient::~RHNativeAuthClient() = default;
 bool RHNativeAuthClient::start(const QString &username, const QString &password, const QString &deviceToken, const QString &mfaCode) {
-    if (d->busy()) return false;
-    if (!d->valid || username.isEmpty() || username.size() > 512 || password.isEmpty() || password.size() > 4096
-        || deviceToken.isEmpty() || deviceToken.size() > 512 || (!mfaCode.isEmpty() && !codeValid(mfaCode))) {
-        d->finish(State::Failed, "Invalid authentication input"); return false;
-    }
-    d->clear();
-    if (!d->credentials.set(username, password)) {
-        d->finish(State::Failed, "Could not stage authentication input securely"); return false;
-    }
-    d->device = deviceToken; d->mfa = mfaCode;
-    d->whole.start(d->transport.workflowTimeoutMs);
-    if (d->announce(State::Requesting, "Requesting password grant")) d->login();
-    return true;
+    return d->begin(username, password, deviceToken, mfaCode, false, 120000);
+}
+bool RHNativeAuthClient::startRemote(const QString &username, const QString &password,
+                                     const QString &deviceToken, int timeoutMs) {
+    return d->begin(username, password, deviceToken, {}, true, timeoutMs);
 }
 void RHNativeAuthClient::submitCode(const QString &code) { d->submit(code); }
 void RHNativeAuthClient::cancel() { if (d->busy()) d->finish(State::Cancelled, "Cancelled"); }

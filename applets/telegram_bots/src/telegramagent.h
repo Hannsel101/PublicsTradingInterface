@@ -56,11 +56,15 @@ public:
     // Intermediate report: preserves the current origin and busy lease. true
     // admits one report attempt; tradeReportFinished settles it asynchronously,
     // including cancellation/failure (not proof of delivery). false emits nothing.
+    // An admitted authentication job retains its origin after uncertain progress
+    // or final notification delivery; neither message nor job is retried. Hard
+    // authorization errors and explicit Stop/revocation still fail closed.
     bool reportTradeCommand(QString requestId, QStringList htmlMessages);
 
 signals:
     void inspectorPortConflict();
     void tradeCommandReceived(QString requestId, QString side, QStringList symbols);
+    void robinhoodAuthenticationCommandReceived(QString requestId, QString email);
     void robinhoodTradeCommandReceived(QString requestId, QString side, QStringList symbols);
     void combinedTradeCommandReceived(QString requestId, QString side, QStringList symbols);
     void tradeReportFinished(QString requestId);

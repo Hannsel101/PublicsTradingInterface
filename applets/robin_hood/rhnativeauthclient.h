@@ -24,6 +24,10 @@ public:
     ~RHNativeAuthClient() override;
     bool start(const QString &username, const QString &password, const QString &deviceToken,
                const QString &mfaCode = {});
+    // Opt-in push-only login. The caller supplies its remaining total budget;
+    // request deadlines and all transport/security gates remain unchanged.
+    bool startRemote(const QString &username, const QString &password, const QString &deviceToken,
+                     int timeoutMs = 480000);
     void submitCode(const QString &code);
     void cancel();
     State state() const;

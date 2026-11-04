@@ -33,6 +33,11 @@ TelegramCombinedTradeService::TelegramCombinedTradeService(
         });
     }
     if (robinhood) {
+        connect(robinhood, &TelegramRobinhoodTradeService::reportReady, this,
+                [this](const QString &id, QStringList messages) {
+            if (m_phase != Phase::Robinhood || m_stageId.isEmpty() || id != m_stageId) return;
+            emit noticeReady(m_requestId, std::move(messages));
+        });
         connect(robinhood, &TelegramRobinhoodTradeService::busyChanged, this, &TelegramCombinedTradeService::notifyBusy);
         connect(robinhood, &TelegramRobinhoodTradeService::completed, this,
                 [this](QString id, QStringList messages) {

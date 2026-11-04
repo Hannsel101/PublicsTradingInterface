@@ -63,6 +63,7 @@ signals:
     void activationFinished(QString botId, bool success);
     void settingsUnlockFinished(QString botId, bool success);
     void tradeRequested(QString botId, QString requestId, QString side, QStringList symbols);
+    void robinhoodAuthenticationRequested(QString botId, QString requestId, QString email);
     void robinhoodTradeRequested(QString botId, QString requestId, QString side, QStringList symbols);
     void combinedTradeRequested(QString botId, QString requestId, QString side, QStringList symbols);
     void tradeReportFinished(QString botId, QString requestId);

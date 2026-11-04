@@ -234,6 +234,7 @@ RHSessionManager::~RHSessionManager()
     }
     ++m_readGeneration;
     endApproval();
+    finishStoredAuthentication(StoredAuthenticationResult::Failed, QStringLiteral("stored_authentication_cancelled"));
 }
 
 int RHSessionManager::rowCount(const QModelIndex &parent) const
@@ -280,6 +281,10 @@ const RHSessionManager::Session *RHSessionManager::find(int sessionIndex) const
 
 void RHSessionManager::setBusy(bool value)
 {
+    const QPointer<RHSessionManager> guard(this);
+    const auto operationGeneration = m_operationGeneration;
+    if (!value) storedAuthenticationIdle();
+    if (!guard || m_operationGeneration != operationGeneration) return;
     if (!value) releaseCredentialReservation();
     if (!value) m_readingSession = false;
     if (m_busy == value)
@@ -434,6 +439,26 @@ QString RHSessionManager::credentialDigest(const QString &secret)
 bool RHSessionManager::credentialOwnershipCurrent(int slot, QString *failure) const
 {
     return credentialOwnershipAtPath(m_metadataPath, find(slot), slot, failure);
+}
+
+bool RHSessionManager::readStoredRoster(QList<Session> *sessions) const
+{
+    QJsonObject metadata;
+    QString failure;
+    if (!readMetadata(m_metadataPath, metadata, failure)) return false;
+    sessions->clear();
+    for (const auto &value : metadata.value("sessions").toArray()) {
+        const auto item = value.toObject();
+        sessions->append(Session{item.value("index").toInt(), item.value("account_name").toString(),
+            QDateTime::fromString(item.value("created_at").toString(), Qt::ISODateWithMs),
+            QDateTime::fromString(item.value("expires_at").toString(), Qt::ISODateWithMs),
+            item.value("token_type").toString(), item.value("account_id").toString(),
+            item.value("can_refresh").toBool(),
+            QDateTime::fromString(item.value("renewal_attempted_at").toString(), Qt::ISODateWithMs),
+            item.value("credential_revision").toString().toULongLong(), item.value("credential_digest").toString(),
+            item.value("renewal_pending").toBool(), item.value("native_label").toBool()});
+    }
+    return true;
 }
 
 bool RHSessionManager::credentialOwnershipAtPath(const QString &path, const Session *expected,
@@ -814,6 +839,22 @@ bool RHSessionManager::initializeSession(int sessionIndex)
                 setError(QStringLiteral("Saved OAuth identity is inconsistent; sign in again."));
                 if (!guard || generation != m_readGeneration) return;
                 setBusy(false); return;
+            }
+            if (!selected->expiresAt.isValid() || !grant.expiresAt.isValid()
+                || selected->expiresAt != grant.expiresAt) {
+                setError(QStringLiteral("Saved OAuth expiry is inconsistent; sign in again."));
+                if (!guard || generation != m_readGeneration) return;
+                setBusy(false); return;
+            }
+            const auto now = QDateTime::currentDateTimeUtc();
+            // Opening a saved profile verifies its current bearer; it is not a
+            // request for a new grant or a sliding extension of provider expiry.
+            if (now < grant.expiresAt && now < selected->expiresAt
+                && !selected->renewalPending
+                && !(selected->credentialRevision == 0 && selected->renewalAttemptedAt.isValid()
+                     && grant.obtainedAt <= selected->renewalAttemptedAt)) {
+                verifySession(sessionIndex, QString::fromLatin1(grant.accessToken()));
+                return;
             }
             renewOAuthGrant(sessionIndex, std::move(grant), credentialDigest(token));
             return;

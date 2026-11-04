@@ -76,8 +76,19 @@ private slots:
         QVERIFY(controller.stopAll());
     }
 
+    void unavailableRobinhoodRouteReturnsBrokerSpecificFailure_data()
+    {
+        QTest::addColumn<QString>("command");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("trade") << QStringLiteral("robinhood_auto_buy AAPL")
+            << QStringLiteral("🔴 Robinhood trading is unavailable. No order was submitted.");
+        QTest::newRow("authentication") << QStringLiteral("authenticate_robinhood_account owner@example.test")
+            << QStringLiteral("Authentication Failed: Robinhood authentication is unavailable.");
+    }
     void unavailableRobinhoodRouteReturnsBrokerSpecificFailure()
     {
+        QFETCH(QString, command);
+        QFETCH(QString, expected);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         ControllerBotServer server;
@@ -96,12 +107,11 @@ private slots:
         QVERIFY(socket);
         ControllerBotServer::answer(socket, QJsonArray{QJsonObject{
             {"update_id", 1}, {"message", QJsonObject{
-                {"message_id", 1}, {"date", 1700000000}, {"text", "robinhood_auto_buy AAPL"},
+                {"message_id", 1}, {"date", 1700000000}, {"text", command},
                 {"from", QJsonObject{{"id", 42}, {"is_bot", false}}},
                 {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}}}}});
         QTRY_COMPARE(server.messages.size(), 1);
-        QCOMPARE(server.messages.first().value("text").toString(),
-            QStringLiteral("🔴 Robinhood trading is unavailable. No order was submitted."));
+        QCOMPARE(server.messages.first().value("text").toString(), expected);
         QVERIFY(!controller.busy());
         QVERIFY(controller.stopAll());
     }

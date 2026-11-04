@@ -265,6 +265,10 @@ TelegramBotRuntime *TelegramBotsController::runtimeFor(const QString &id)
         [this, id](QString requestId, QString side, QStringList symbols) {
             if (!m_destroying && !m_stoppingAll) emit tradeRequested(id, requestId, side, symbols);
         });
+    connect(runtime, &TelegramBotRuntime::robinhoodAuthenticationCommandReceived, this,
+        [this, id](QString requestId, QString email) {
+            if (!m_destroying && !m_stoppingAll) emit robinhoodAuthenticationRequested(id, requestId, email);
+        });
     connect(runtime, &TelegramBotRuntime::robinhoodTradeCommandReceived, this,
         [this, id](QString requestId, QString side, QStringList symbols) {
             if (!m_destroying && !m_stoppingAll) emit robinhoodTradeRequested(id, requestId, side, symbols);

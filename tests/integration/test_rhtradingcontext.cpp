@@ -498,30 +498,44 @@ private slots:
         QTRY_VERIFY(trades.tradeResultsComplete()); QVERIFY(!f.sessions->busy()); QCOMPARE(f.orders.size(), 3);
         f.sessions->clearActiveSession(); QVERIFY(!f.sessions->sessionActive());
     }
-    void renewedOAuthBundleEnablesOrdersWithFreshBearerOnly() {
+    void savedOAuthBundleUsesExpectedBearerForOrders_data() {
+        QTest::addColumn<bool>("expired");
+        QTest::newRow("unexpired-reuses-original") << false;
+        QTest::newRow("expired-renews") << true;
+    }
+    void savedOAuthBundleUsesExpectedBearerForOrders() {
+        QFETCH(bool, expired);
         Fixture f; QVERIFY(f.ready);
         const QJsonObject initial{{"access_token", "initial-primary-fixture"},
             {"refresh_token", "refresh-original-fixture"}, {"token_type", "Bearer"},
-            {"scope", "internal"}, {"expires_in", 3600}};
+            {"scope", "internal"}, {"expires_in", expired ? 2 : 604800}};
         const QString device = QStringLiteral("12345678-1234-4123-8123-123456789abc");
         QVERIFY(f.sessions->acceptOAuthGrant(initial, "integration-client", device));
         QTRY_VERIFY(!f.sessions->busy());
         QCOMPARE(f.sessions->rowCount(), 1);
         QVERIFY(f.sessions->data(f.sessions->index(0), RHSessionManager::CanRefreshRole).toBool());
+        const auto originalSecret = f.store.tokens.value(0);
+        const auto originalExpiry = f.sessions->data(f.sessions->index(0), RHSessionManager::ExpiresAtRole);
+        if (expired) QTRY_VERIFY(f.sessions->data(f.sessions->index(0), RHSessionManager::IsExpiredRole).toBool());
         QVERIFY(f.sessions->initializeSession(0));
         QTRY_VERIFY(!f.sessions->busy());
         QVERIFY2(f.sessions->sessionActive(), qPrintable(f.sessions->error()));
-        QCOMPARE(f.renewals.size(), 1);
-        const auto renewal = f.renewals.first();
-        QCOMPARE(renewal.value("grant_type").toString(), QStringLiteral("refresh_token"));
-        QCOMPARE(renewal.value("refresh_token").toString(), QStringLiteral("refresh-original-fixture"));
-        QCOMPARE(renewal.value("client_id").toString(), QStringLiteral("integration-client"));
-        QCOMPARE(renewal.value("device_token").toString(), device);
-        QVERIFY(!renewal.contains("password")); QVERIFY(!renewal.contains("mfa_code"));
+        QCOMPARE(f.renewals.size(), expired ? 1 : 0);
+        if (expired) {
+            const auto renewal = f.renewals.first();
+            QCOMPARE(renewal.value("grant_type").toString(), QStringLiteral("refresh_token"));
+            QCOMPARE(renewal.value("refresh_token").toString(), QStringLiteral("refresh-original-fixture"));
+            QCOMPARE(renewal.value("client_id").toString(), QStringLiteral("integration-client"));
+            QCOMPARE(renewal.value("device_token").toString(), device);
+            QVERIFY(!renewal.contains("password")); QVERIFY(!renewal.contains("mfa_code"));
+        } else {
+            QCOMPARE(f.store.tokens.value(0), originalSecret);
+            QCOMPARE(f.sessions->data(f.sessions->index(0), RHSessionManager::ExpiresAtRole), originalExpiry);
+        }
         RHOAuthGrant saved;
         QVERIFY(RHOAuthGrant::deserialize(f.store.tokens.value(0), &saved));
-        QCOMPARE(saved.accessToken(), QByteArray("renewed-primary-fixture"));
-        QCOMPARE(saved.refreshToken(), QByteArray("refresh-rotated-fixture"));
+        QCOMPARE(saved.accessToken(), QByteArray(expired ? "renewed-primary-fixture" : "initial-primary-fixture"));
+        QCOMPARE(saved.refreshToken(), QByteArray(expired ? "refresh-rotated-fixture" : "refresh-original-fixture"));
         RHTradeController trades(f.network, f.dependencies());
         QVERIFY2(trades.available(), qPrintable(trades.unavailableReason()));
         const auto before = f.requests.size();
@@ -535,16 +549,22 @@ private slots:
             QCOMPARE(f.orders.at(i).value("bid_ask_timestamp"), f.orders.at(i < 3 ? 0 : 3).value("bid_ask_timestamp"));
             QVERIFY(!f.orders.at(i).contains("preset_percent_limit"));
             QVERIFY(f.sessions->busy());
-            QVERIFY(f.orderHeaders.at(i).contains("Authorization: Bearer renewed-primary-fixture\r\n"));
-            QVERIFY(!f.orderHeaders.at(i).contains("initial-primary-fixture"));
+            QVERIFY(f.orderHeaders.at(i).contains(QByteArray("Authorization: Bearer ") + saved.accessToken() + "\r\n"));
+            if (expired) QVERIFY(!f.orderHeaders.at(i).contains(initial.value("access_token").toString().toUtf8()));
             QVERIFY(!f.orderHeaders.at(i).contains("refresh-"));
             auto callback = f.timers.takeFirst(); callback();
         }
         QTRY_VERIFY(trades.tradeResultsComplete());
         const auto presentation = QJsonDocument::fromVariant(trades.tradeResults()).toJson();
+        QVERIFY(!presentation.contains(saved.accessToken()));
+        QVERIFY(!presentation.contains(saved.refreshToken()));
         QVERIFY(!presentation.contains("renewed-primary-fixture"));
         QVERIFY(!presentation.contains("refresh-rotated-fixture"));
-        QVERIFY(!f.sessions->busy()); QCOMPARE(f.renewals.size(), 1);
+        QVERIFY(!f.sessions->busy()); QCOMPARE(f.renewals.size(), expired ? 1 : 0);
+        if (!expired) {
+            QCOMPARE(f.store.tokens.value(0), originalSecret);
+            QCOMPARE(f.sessions->data(f.sessions->index(0), RHSessionManager::ExpiresAtRole), originalExpiry);
+        }
     }
     void actualSessionLeaseDrivesAllAccountsAndFinalCooldown() {
         Fixture f; QVERIFY(f.ready);

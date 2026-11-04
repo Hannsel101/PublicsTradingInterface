@@ -31,8 +31,14 @@ if(TARGET telegram_bots_ui)
     publics_add_test(test_telegramtradebridge integration/test_telegramtradebridge.cpp
         telegram_bots_applet telegram_bots_backend telegram_bots_trading publics_auth publics_api publics_trading)
     set_tests_properties(test_telegramtradebridge PROPERTIES TIMEOUT 120)
+    publics_add_test(test_telegramrobinhoodauthservice unit/test_telegramrobinhoodauthservice.cpp
+        telegram_bots_trading rh_sessions Qt6::Network)
+    publics_add_test(test_telegramrobinauthbridge integration/test_telegramrobinauthbridge.cpp
+        telegram_bots_applet telegram_bots_backend telegram_bots_trading rh_sessions Qt6::Network)
+    set_tests_properties(test_telegramrobinhoodauthservice test_telegramrobinauthbridge PROPERTIES TIMEOUT 240)
     publics_add_test(test_telegrambotstore unit/test_telegrambotstore.cpp telegram_bots_storage OpenSSL::Crypto)
     publics_add_test(test_telegrambotruntime unit/test_telegrambotruntime.cpp telegram_bots_runtime)
+    publics_add_test(test_telegramagent unit/test_telegramagent.cpp telegram_bots_runtime)
     publics_add_test(test_telegramwebhookhost unit/test_telegramwebhookhost.cpp telegram_bots_runtime)
     publics_add_test(test_telegramwebhookmanager unit/test_telegramwebhookmanager.cpp telegram_bots_runtime)
     publics_add_test(test_telegramwebhookagent unit/test_telegramwebhookagent.cpp telegram_bots_runtime)

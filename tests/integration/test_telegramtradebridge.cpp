@@ -18,7 +18,8 @@
 #include "rhnetworkengine.h"
 #include "rhsessionmanager.h"
 #include "securecredentiallocker.h"
-#include "telegramrobinhoodfixture.h"
+#include "telegramrobinhoodallsessionsfixture.h"
+#include "telegramcombinedtradeservice.h"
 #include "auth/publicauthclient.h"
 #include "api/publicapiworker.h"
 #include "trading/autotradecontroller.h"
@@ -129,17 +130,72 @@ public:
 class TelegramTradeBridgeTest final : public QObject {
     Q_OBJECT
 private slots:
+    void combinedNoticesAreCorrelatedWithoutAdvancingSettlement()
+    {
+        TelegramRobinhoodAllSessionsFixture::Fixture rh;
+        QVERIFY(rh.ready);
+        rh.saveNative("active@example.test", "active");
+        TelegramRobinhoodTradeService robinhood(&rh.network, rh.sessions.get(), rh.dependencies());
+        TelegramCombinedTradeService combined(nullptr, &robinhood);
+        QSignalSpy boundaries(&combined, &TelegramCombinedTradeService::reportReady);
+        QSignalSpy notices(&combined, SIGNAL(noticeReady(QString,QStringList)));
+        QSignalSpy completed(&combined, &TelegramCombinedTradeService::completed);
+        QVERIFY(notices.isValid());
+        const QStringList warning{QStringLiteral("<b>Expiry warning</b>")};
+        emit robinhood.reportReady("foreign", warning);
+        QCOMPARE(notices.size(), 0);
+        QVERIFY(combined.submit("root-request", {"AAPL"}, "BUY"));
+        QTRY_COMPARE(boundaries.size(), 1);
+        QVERIFY(rh.orders.isEmpty());
+        emit robinhood.reportReady("root-request", warning);
+        QCOMPARE(notices.size(), 0);
+        combined.continueAfterReport("root-request");
+        QTRY_COMPARE(rh.timers.size(), 1);
+        QString childId;
+        connect(&robinhood, &TelegramRobinhoodTradeService::completed, &combined,
+                [&](QString id, QStringList) {
+            childId = id;
+            // Terminal delivery is deferred; the matching child still owns this phase.
+            emit robinhood.reportReady(id, warning);
+            QCOMPARE(completed.size(), 0);
+            QVERIFY(combined.busy());
+        });
+        QElapsedTimer clock; clock.start();
+        while (robinhood.busy() && clock.elapsed() < 15000) {
+            QCoreApplication::processEvents();
+            if (!rh.timers.isEmpty()) { auto cooldown = rh.timers.takeFirst(); cooldown(); }
+            QTest::qWait(1);
+        }
+        QVERIFY(!robinhood.busy());
+        QVERIFY(!childId.isEmpty());
+        QCOMPARE(notices.size(), 1);
+        QCOMPARE(notices.first()[0].toString(), QStringLiteral("root-request"));
+        QCOMPARE(notices.first()[1].toStringList(), warning);
+        QCOMPARE(boundaries.size(), 1);
+        emit robinhood.reportReady(childId + "/stale", warning);
+        QCOMPARE(notices.size(), 1);
+        combined.continueAfterReport("root-request");
+        QTRY_COMPARE(completed.size(), 1);
+        emit robinhood.reportReady(childId, warning);
+        QCOMPARE(notices.size(), 1);
+        QCOMPARE(rh.orders.size(), 3);
+        QCOMPARE(rh.renewals.size(), 1);
+    }
+
     void nativeRobinhoodAndCombinedCommandsUseRealComposition_data()
     {
         QTest::addColumn<QString>("command");
         QTest::addColumn<bool>("combined");
         QTest::addColumn<bool>("sell");
         QTest::addColumn<bool>("loseAck");
-        QTest::newRow("robinhood-buy") << QStringLiteral("robinhood_auto_buy aapl") << false << false << false;
-        QTest::newRow("robinhood-sell") << QStringLiteral("robinhood_auto_sell aApL") << false << true << false;
-        QTest::newRow("combined-buy") << QStringLiteral("auto_buy aapl") << true << false << false;
-        QTest::newRow("combined-sell") << QStringLiteral("auto_sell AaPl") << true << true << false;
-        QTest::newRow("combined-lost-publics-report-ack") << QStringLiteral("auto_buy AAPL") << true << false << true;
+        QTest::addColumn<bool>("expired");
+        QTest::newRow("robinhood-buy") << QStringLiteral("robinhood_auto_buy aapl") << false << false << false << false;
+        QTest::newRow("robinhood-sell") << QStringLiteral("robinhood_auto_sell aApL") << false << true << false << false;
+        QTest::newRow("combined-buy") << QStringLiteral("auto_buy aapl") << true << false << false << false;
+        QTest::newRow("combined-sell") << QStringLiteral("auto_sell AaPl") << true << true << false << false;
+        QTest::newRow("combined-lost-publics-report-ack") << QStringLiteral("auto_buy AAPL") << true << false << true << false;
+        QTest::newRow("robinhood-expired-warning") << QStringLiteral("robinhood_auto_buy AAPL") << false << false << false << true;
+        QTest::newRow("combined-expired-warning") << QStringLiteral("auto_buy AAPL") << true << false << false << true;
     }
 
     void nativeRobinhoodAndCombinedCommandsUseRealComposition()
@@ -148,6 +204,7 @@ private slots:
         QFETCH(bool, combined);
         QFETCH(bool, sell);
         QFETCH(bool, loseAck);
+        QFETCH(bool, expired);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         QSettings::setDefaultFormat(QSettings::IniFormat);
@@ -171,20 +228,24 @@ private slots:
         });
         AutoTradeController trader(&auth, &worker);
         TelegramPublicsTradeService publics(&trader, &auth);
-        TelegramRobinhoodFixture::Fixture rh;
+        TelegramRobinhoodAllSessionsFixture::Fixture rh;
         QVERIFY(rh.ready);
-        QVERIFY(rh.sessions->saveAuthenticatedSession("first", "fixture-first", 3600));
-        QTRY_VERIFY(!rh.sessions->busy());
-        QVERIFY(rh.sessions->saveAuthenticatedSession("second", "fixture-second", 3600));
-        QTRY_VERIFY(!rh.sessions->busy());
+        rh.saveNative("first@example.test", "first");
+        rh.saveNative("second@example.test", "second");
+        if (expired) {
+            rh.saveNative("expired@example.test", "expired");
+            QVERIFY(rh.expire(2));
+        }
         TelegramRobinhoodTradeService robinhood(&rh.network, rh.sessions.get(), rh.dependencies());
         QSignalSpy publicsCompleted(&publics, &TelegramPublicsTradeService::completed);
         QSignalSpy robinhoodCompleted(&robinhood, &TelegramRobinhoodTradeService::completed);
         ControllerBotServer telegram;
+        ControllerBotServer otherTelegram;
         telegram.loseFirstMessageAcknowledgement = loseAck;
         BridgeBotStore store;
+        int runtimeCount = 0;
         TelegramBotsController controller(&store, [&](QObject *owner) {
-            auto *agent = new TelegramAgent(telegram.root(), owner);
+            auto *agent = new TelegramAgent(++runtimeCount == 1 ? telegram.root() : otherTelegram.root(), owner);
             agent->setCommandLedgerPathForTests(directory.filePath(QStringLiteral("ledger")));
             return agent;
         });
@@ -192,6 +253,8 @@ private slots:
         applet.start();
         QVERIFY(controller.startBotWithPassword(QStringLiteral("one"), QStringLiteral("fixture password 123")));
         QTRY_COMPARE(telegram.polls.size(), 1);
+        QVERIFY(controller.startBotWithPassword(QStringLiteral("two"), QStringLiteral("fixture password 123")));
+        QTRY_COMPARE(otherTelegram.polls.size(), 1);
         int messagesAtFirstRhOrder = -1;
         bool intermediateSettled = false;
         bool settledAtFirstRhOrder = false;
@@ -203,10 +266,11 @@ private slots:
                 settledAtFirstRhOrder = intermediateSettled;
             }
         };
-        ControllerBotServer::answer(telegram.polls.takeFirst(), QJsonArray{QJsonObject{{"update_id", 1000},
+        const QJsonObject update{{"update_id", 1000},
             {"message", QJsonObject{{"message_id", 1000}, {"date", 1700000000}, {"text", command},
                 {"from", QJsonObject{{"id", 42}, {"is_bot", false}}},
-                {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}}}}});
+                {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}}}};
+        ControllerBotServer::answer(telegram.polls.takeFirst(), QJsonArray{update});
         controller.selectBot(QStringLiteral("two"));
         if (combined && !sell) {
             QTRY_COMPARE(publicsBroker.orders.size(), 1);
@@ -216,33 +280,48 @@ private slots:
             QVERIFY(!controller.stopAll());
             publicsBroker.release();
         }
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 6; ++i) {
             QTRY_COMPARE_WITH_TIMEOUT(rh.timers.size(), 1, 5000);
+            QCOMPARE(rh.delays.last(), 2500);
+            QCOMPARE(robinhoodCompleted.size(), 0);
             QVERIFY(controller.busy());
             QVERIFY(!applet.canStop());
-            QCOMPARE(telegram.messages.size(), combined ? 1 : 0);
+            QTRY_COMPARE(telegram.messages.size(), int(combined) + int(expired));
             if (combined)
                 QVERIFY(telegram.messages.first().value("text").toString().contains("Publics Auto"));
+            if (expired) {
+                const auto text = telegram.messages.at(int(combined)).value("text").toString();
+                QVERIFY(text.contains("Robinhood Reauthentication Required"));
+                QVERIFY(text.contains("expired@example.test"));
+                QVERIFY(!text.contains("first@example.test"));
+                QVERIFY(!text.contains("second@example.test"));
+            }
             auto cooldown = rh.timers.takeFirst();
             cooldown();
         }
         QTRY_COMPARE(robinhoodCompleted.size(), 1);
-        QTRY_COMPARE(telegram.messages.size(), combined && !loseAck ? 2 : 1);
+        QTRY_COMPARE(telegram.messages.size(), loseAck ? 1 : int(combined) + int(expired) + 1);
         QCOMPARE(publicsCompleted.size(), combined ? 1 : 0);
         if (combined) QVERIFY(settledAtFirstRhOrder);
-        QCOMPARE(messagesAtFirstRhOrder, combined ? 1 : 0);
-        QCOMPARE(rh.orders.size(), sell ? 2 : 3);
-        for (const auto &headers : rh.orderHeaders) {
-            QVERIFY(headers.contains("fixture-first"));
-            QVERIFY(!headers.contains("fixture-second"));
+        // Warnings are informational, not another continuation/settlement gate.
+        QVERIFY(messagesAtFirstRhOrder >= int(combined));
+        QCOMPARE(rh.orders.size(), sell ? 4 : 6);
+        QCOMPARE(rh.delays.size(), 6);
+        QCOMPARE(rh.renewals.size(), 2 + int(expired)); // Initial sign-ins only.
+        QCOMPARE(rh.requests.count("GET /positions/"), sell ? 6 : 0);
+        for (qsizetype i = 0; i < rh.orderHeaders.size(); ++i) {
+            const auto &headers = rh.orderHeaders[i];
+            const bool firstProfile = i < (sell ? 2 : 3);
+            QVERIFY(headers.contains(firstProfile ? "Bearer native-fixture-first" : "Bearer native-fixture-second"));
+            QVERIFY(!headers.contains(firstProfile ? "Bearer native-fixture-second" : "Bearer native-fixture-first"));
         }
-        for (const auto &order : rh.orders) {
+        for (qsizetype i = 0; i < rh.orders.size(); ++i) {
+            const auto &order = rh.orders[i];
             QCOMPARE(order.value("side").toString(), sell ? QStringLiteral("sell") : QStringLiteral("buy"));
-            if (!sell) QCOMPARE(order.value("quantity").toString(), QStringLiteral("1"));
-        }
-        if (sell) {
-            QCOMPARE(rh.orders.at(0).value("quantity").toString(), QStringLiteral("5.5"));
-            QCOMPARE(rh.orders.at(1).value("quantity").toString(), QStringLiteral("2"));
+            QCOMPARE(order.value("instrument").toString(), rh.brokerageOrigin + "/instruments/AAPL/");
+            const auto account = i % (sell ? 2 : 3) + 1;
+            QCOMPARE(order.value("account").toString(), rh.brokerageOrigin + QString("/accounts/a%1/").arg(account));
+            QCOMPARE(order.value("quantity").toString(), sell ? (account == 1 ? QStringLiteral("5.5") : QStringLiteral("2")) : QStringLiteral("1"));
         }
         QCOMPARE(publicsBroker.orders.size(), combined && !sell ? 2 : 0);
         QCOMPARE(publicsBroker.portfolioReads, combined ? 2 : 0);
@@ -252,9 +331,26 @@ private slots:
         QVERIFY(rhText.contains(sell ? "Robinhood Auto Sell Results" : "Robinhood Auto Buy Results"));
         QVERIFY(rhText.contains("🟢 Sent Trades"));
         QVERIFY(!rhText.contains("🟢 Filled"));
+        QVERIFY(rhText.contains("first@example.test"));
+        QVERIFY(rhText.contains("second@example.test"));
+        QVERIFY(!rhText.contains("native-fixture"));
         QCOMPARE(report.value("chat_id").toInteger(), qint64(42));
         QCOMPARE(controller.selectedId(), QStringLiteral("two"));
+        QVERIFY(otherTelegram.messages.isEmpty());
         QVERIFY(!controller.busy());
+        if (!loseAck) {
+            QTRY_COMPARE(telegram.polls.size(), 1);
+            ControllerBotServer::answer(telegram.polls.takeFirst(), QJsonArray{update});
+            QTRY_COMPARE(telegram.polls.size(), 1);
+        } else {
+            // Uncertain delivery stops intake; it must not replay either broker.
+            QTest::qWait(100);
+            QVERIFY(rh.timers.isEmpty());
+        }
+        QCOMPARE(rh.orders.size(), sell ? 4 : 6);
+        QCOMPARE(publicsBroker.orders.size(), combined && !sell ? 2 : 0);
+        QCOMPARE(robinhoodCompleted.size(), 1);
+        QCOMPARE(rh.renewals.size(), 2 + int(expired));
         QVERIFY(controller.stopAll());
     }
 
@@ -360,7 +456,7 @@ private slots:
                 {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}}}}});
         QTRY_COMPARE(otherTelegram.messages.size(), 2);
         QCOMPARE(otherTelegram.messages.last().value("text").toString(),
-            QStringLiteral("Robinhood Re-authentication required before trades can be completed."));
+            QStringLiteral("<b>Robinhood Auto Sell Results</b>\n🔴 No initially unexpired saved Robinhood sessions; no orders were sent."));
         QCOMPARE(telegram.messages.size(), 1);
         QCOMPARE(broker.orders.size(), 2);
         QVERIFY(!robinhood.busy());

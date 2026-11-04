@@ -21,6 +21,8 @@ public:
 signals:
     void busyChanged();
     void completed(QString requestId, QStringList htmlMessages);
+    // Intermediate warning only; does not release the batch/composite busy gate.
+    void reportReady(QString requestId, QStringList htmlMessages);
 private:
     struct State;
     std::unique_ptr<State> d;

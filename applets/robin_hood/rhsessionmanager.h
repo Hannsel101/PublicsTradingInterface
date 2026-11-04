@@ -103,6 +103,26 @@ public:
     // C++ timer/resume hook; never reads or renews a non-active saved profile.
     void checkSessionRenewal();
 
+    // Native-only saved identity inventory. Never includes credentials or tokens.
+    struct StoredSessionAccount {
+        int sessionIndex = -1;
+        QString profileId, email;
+        bool expired = false;
+    };
+    using StoredSessionAccountsCompletion = std::function<void(bool, QList<StoredSessionAccount>, QString safeReason)>;
+    void requestStoredSessionAccounts(StoredSessionAccountsCompletion done);
+    enum class StoredAuthenticationResult { Approved, NotFound, Failed, NotNeeded };
+    using StoredAuthenticationReady = std::function<void(QString canonicalEmail, std::function<void()> continueAuthentication)>;
+    using StoredAuthenticationCompletion = std::function<void(StoredAuthenticationResult, QString canonicalEmail, QString safeReason)>;
+    bool authenticateStoredSession(QString email, StoredAuthenticationReady ready, StoredAuthenticationCompletion done);
+    // Native test hook only: never source this deadline from command input.
+    bool authenticateStoredSession(QString email, StoredAuthenticationReady ready, StoredAuthenticationCompletion done, int timeoutMs);
+
+    // C++-only deterministic wall clock for eligibility tests; never command input.
+    void setStoredAuthenticationClockForTests(std::function<QDateTime()> clock) {
+        if (!m_busy && !m_storedAuthentication) m_storedAuthenticationClock = std::move(clock);
+    }
+
     // C++-only lease; no token, callback or session snapshot enters Qt's meta-object API.
     struct TradingSession {
         int sessionIndex = -1;
@@ -180,6 +200,29 @@ private:
         bool renewalPending = false;
         bool nativeLabel = false;
     };
+    struct StoredAuthenticationOperation {
+        Session pinned{};
+        QString email, nativeFailure;
+        StoredAuthenticationReady ready;
+        StoredAuthenticationCompletion done;
+        SecureCredentialLocker::PendingCredentials credentials;
+        QElapsedTimer clock;
+        QTimer timer;
+        int timeoutMs = 480000;
+        bool terminal = false, continued = false, dispatching = false;
+    };
+    std::shared_ptr<StoredAuthenticationOperation> m_storedAuthentication;
+    std::function<QDateTime()> m_storedAuthenticationClock;
+    void finishStoredAuthentication(StoredAuthenticationResult result, const QString &safeReason = {});
+    void storedAuthenticationIdle();
+    void storedAuthenticationTimeout();
+    bool storedAuthenticationCanCommit(int slot, const QString &profileId) const;
+    void continueStoredAuthentication(const std::shared_ptr<StoredAuthenticationOperation> &operation);
+    bool readStoredRoster(QList<Session> *sessions) const;
+    struct StoredInventoryOperation;
+    using StoredInventoryCompletion = std::function<void(bool, QList<StoredSessionAccount>, QList<Session>, QString)>;
+    void collectStoredSessionAccounts(StoredInventoryCompletion done);
+    void readStoredSessionAccount(const std::shared_ptr<StoredInventoryOperation> &operation);
     static QString metadataLabel(const Session &session);
     void hydrateNativeLabels();
     void finishNativeLogin();

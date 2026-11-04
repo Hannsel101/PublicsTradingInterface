@@ -38,6 +38,8 @@ public:
 signals:
     void busyChanged();
     void reportReady(QString requestId, QStringList htmlMessages);
+    // Informational Robinhood warnings; never a broker-stage continuation boundary.
+    void noticeReady(QString requestId, QStringList htmlMessages);
     void completed(QString requestId, QStringList htmlMessages);
 
 private:
