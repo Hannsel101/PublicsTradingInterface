@@ -15,13 +15,16 @@ bool recognizedText(const QString &text)
 {
     if (text.size() > 4096) return false;
     static const QRegularExpression syntax(QStringLiteral(
-        "\\A(?:/?status|/?publics_auto_(?:buy|sell)[ \t]+[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?"
-        "(?:[ \t]*,[ \t]*[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?){0,49})\\z"));
+        "\\A(?:/?status|/?publics_auto_(?:buy|sell)[,\\s]+[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?"
+        "(?:[,\\s]+[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?){0,49}[,\\s]*)\\z"),
+        QRegularExpression::UseUnicodePropertiesOption);
     static const QRegularExpression robinhoodSyntax(QStringLiteral(
-        "\\A/?robinhood_auto_(?:buy|sell)[ \t]+[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?"
-        "(?:[ \t]*,[ \t]*[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?)*\\z"));
+        "\\A/?robinhood_auto_(?:buy|sell)[,\\s]+[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?"
+        "(?:[,\\s]+[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?)*[,\\s]*\\z"),
+        QRegularExpression::UseUnicodePropertiesOption);
     static const QRegularExpression combinedSyntax(QStringLiteral(
-        "\\A/?auto_(?:buy|sell)[ \t]+[A-Za-z]{1,10}(?:[ \t]*,[ \t]*[A-Za-z]{1,10})*\\z"));
+        "\\A/?auto_(?:buy|sell)[,\\s]+[A-Za-z]{1,10}(?:[,\\s]+[A-Za-z]{1,10})*[,\\s]*\\z"),
+        QRegularExpression::UseUnicodePropertiesOption);
     const auto trimmed = text.trimmed();
     return (text.size() <= 1024 && syntax.match(trimmed).hasMatch())
         || robinhoodSyntax.match(trimmed).hasMatch() || combinedSyntax.match(trimmed).hasMatch();

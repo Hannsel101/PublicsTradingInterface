@@ -15,6 +15,7 @@
 #include <QTimer>
 #include <QtTest>
 #include <functional>
+#include <csignal>
 
 // Synthetic, independently enumerated Bot API User/Message/WebhookInfo fixtures.
 // No request-echo receipts; traffic is loopback and credentials are synthetic.
@@ -308,7 +309,8 @@ private slots:
         for (const auto &command : QStringList{"publics_auto_buy", "publics_auto_sell",
                 "robinhood_auto_buy", "robinhood_auto_sell", "auto_buy", "auto_sell"}) {
             for (const auto &text : QStringList{command, "/" + command,
-                    " \t" + command + " \t\r\n", "/" + command + " \t"})
+                    " \t" + command + " \t\r\n", "/" + command + " \t",
+                    command + ",,,", "/" + command + QString::fromUtf8("\u00a0,,\t,\n\u2003,")})
                 QCOMPARE(f.post(f.update(id++, text)), 200);
         }
         QTest::qWait(100);
@@ -317,6 +319,88 @@ private slots:
         QVERIFY(!QFile::exists(ledger.filePath("123456.watermark")));
         QCOMPARE(f.post(f.update(id, "unrelated message")), 200);
         QTRY_COMPARE(f.provider.count("sendMessage"), 1);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
+    void tickerSeparatorsOnAuthenticatedWebhook_data()
+    {
+        QTest::addColumn<QString>("command");
+        for (const auto &command : QStringList{"publics_auto_buy", "publics_auto_sell",
+                "robinhood_auto_buy", "robinhood_auto_sell", "auto_buy", "auto_sell"})
+            QTest::newRow(qPrintable(command)) << command;
+    }
+    void tickerSeparatorsOnAuthenticatedWebhook()
+    {
+        QFETCH(QString, command);
+        QTemporaryDir ledger; WebhookFixture f;
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy publics(&agent, &TelegramAgent::tradeCommandReceived);
+        QSignalSpy rh(&agent, &TelegramAgent::robinhoodTradeCommandReceived);
+        QSignalSpy combined(&agent, &TelegramAgent::combinedTradeCommandReceived);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        qint64 id = 1;
+        for (const auto &tail : QStringList{" aapl mSfT    goog AaPl", " aapl, mSfT  ,goog AaPl",
+                " aapl mSfT,goog AaPl", QString::fromUtf8("\u00a0,,aapl\t\r\nmSfT,\u2003goog\u2028AaPl,,\u3000")}) {
+            const auto update = f.update(id, " \t/" + command + tail);
+            QCOMPARE(f.post(update, "bot123456:synthetic", "wrong_secret"), 403);
+            QCOMPARE(f.post(update), 200);
+            const auto &calls = command.startsWith("publics_") ? publics : command.startsWith("robinhood_") ? rh : combined;
+            QTRY_COMPARE(calls.size(), id);
+            QCOMPARE(publics.size() + rh.size() + combined.size(), id);
+            QCOMPARE(calls.last()[1].toString(), command.endsWith("sell") ? QString("sell") : QString("buy"));
+            QCOMPARE(calls.last()[2].toStringList(), (QStringList{"AAPL", "MSFT", "GOOG"}));
+            QCOMPARE(f.post(update), 200); // Duplicate intake must not replay.
+            QCOMPARE(calls.size(), id);
+            agent.completeTradeCommand(calls.last()[0].toString(), {});
+            ++id;
+        }
+        QCOMPARE(f.provider.count("sendMessage"), 0);
+        QFile file(ledger.filePath("123456.watermark")); QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("PTI-TRADE-1\n123456\n4\n"));
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
+    void tickerWhitespaceBoundsOnAuthenticatedWebhook_data() { tickerSeparatorsOnAuthenticatedWebhook_data(); }
+    void tickerWhitespaceBoundsOnAuthenticatedWebhook()
+    {
+        QFETCH(QString, command);
+        QTemporaryDir ledger; WebhookFixture f;
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy publics(&agent, &TelegramAgent::tradeCommandReceived);
+        QSignalSpy rh(&agent, &TelegramAgent::robinhoodTradeCommandReceived);
+        QSignalSpy combined(&agent, &TelegramAgent::combinedTradeCommandReceived);
+        const auto &calls = command.startsWith("publics_") ? publics : command.startsWith("robinhood_") ? rh : combined;
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        const int bound = command.startsWith("publics_") ? 1024 : 4096;
+        const QString exact = command + QString(bound - command.size() - 1, '\t') + "A";
+        QCOMPARE(f.post(f.update(1, exact)), 200);
+        QTRY_COMPARE(calls.size(), 1);
+        QCOMPARE(calls.last()[2].toStringList(), (QStringList{"A"}));
+        agent.completeTradeCommand(calls.last()[0].toString(), {});
+        QCOMPARE(f.post(f.update(2, exact + " ")), 200);
+        // The envelope's existing 4096-unit ceiling silently denies oversized
+        // RH/composite text; Publics' narrower parser bound retains its reply.
+        QTRY_COMPARE(f.provider.count("sendMessage"), bound == 1024 ? 1 : 0);
+        QCOMPARE(calls.size(), 1);
+        QStringList symbols;
+        const int count = command.startsWith("publics_") ? 50 : 300;
+        for (int i = 0; i < count; ++i)
+            symbols.append(QString(1, QChar('A' + i / 26)) + QChar('A' + i % 26));
+        QCOMPARE(f.post(f.update(3, command + " ,," + symbols.join("\t\n") + ",,")), 200);
+        QTRY_COMPARE(calls.size(), 2);
+        QCOMPARE(calls.last()[2].toStringList(), symbols);
+        agent.completeTradeCommand(calls.last()[0].toString(), {});
+        if (command.startsWith("publics_")) {
+            QCOMPARE(f.post(f.update(4, command + " " + QString("a \t").repeated(51))), 200);
+            QTRY_COMPARE(f.provider.count("sendMessage"), 2);
+            QCOMPARE(calls.size(), 2);
+        }
+        QFile file(ledger.filePath("123456.watermark")); QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("PTI-TRADE-1\n123456\n3\n"));
         agent.stop(); QTRY_VERIFY(!agent.stopping());
     }
 
@@ -646,6 +730,464 @@ private slots:
         QCOMPARE(f.provider.count("deleteWebhook"), 0);
         QCOMPARE(f.urls.value("bot123456:synthetic"), QString("https://someone-else.invalid/new"));
     }
+    void transientRegistrationRecovery_data()
+    {
+        QTest::addColumn<int>("failures");
+        QTest::newRow("first-attempt") << 0;
+        QTest::newRow("second-attempt") << 1;
+        QTest::newRow("third-attempt") << 2;
+        QTest::newRow("exhausted") << 3;
+    }
+    void transientRegistrationRecovery()
+    {
+        QFETCH(int, failures);
+        WebhookFixture f;
+        const auto standard = f.provider.handler;
+        f.provider.handler = [&, standard](const auto &r) {
+            if (r.url.path().endsWith("/setWebhook") && f.provider.count("setWebhook") <= failures) {
+                // Commit first, then lose the acknowledgement: cleanup must reconcile.
+                auto committed = r; committed.socket = nullptr; standard(committed);
+                WebhookTestServer::raw(r, "{\"ok\":false,\"error_code\":503}", 503);
+            } else standard(r);
+        };
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
+        QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        bool idleGap = false;
+        connect(&agent, &TelegramAgent::stateChanged, &agent, [&] {
+            if (!agent.active() && !agent.starting() && !agent.stopping()
+                && f.provider.count("setWebhook") < qMin(failures + 1, 3)) idleGap = true;
+        });
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return agent.active() || (!errors.isEmpty() && !agent.stopping()); }, 10000));
+        QCOMPARE(f.provider.count("setWebhook"), qMin(failures + 1, 3));
+        QCOMPARE(agent.active(), failures < 3);
+        QCOMPARE(errors.size(), failures < 3 ? 0 : 1);
+        QVERIFY(!idleGap);
+        QCOMPARE(f.provider.count("getMe"), 1);
+        QCOMPARE(f.provider.count("deleteWebhook"), failures);
+        QCOMPARE(f.provider.count("getUpdates"), 0);
+        for (const auto &r : f.provider.requests) if (r.url.path().endsWith("/setWebhook")) {
+            QCOMPARE(r.url.path(), QString("/bot123456:synthetic/setWebhook"));
+            QCOMPARE(r.body.value("secret_token").toString(), QString("persisted_secret_123456"));
+        }
+        QTest::qWait(350);
+        QCOMPARE(f.provider.count("setWebhook"), qMin(failures + 1, 3));
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
+    void revokedPolicyCancelsRegistrationRecovery()
+    {
+        WebhookFixture f;
+        const auto standard = f.provider.handler;
+        f.provider.handler = [&, standard](const auto &r) {
+            if (r.url.path().endsWith("/setWebhook") && f.provider.count("setWebhook") == 1) {
+                auto committed = r; committed.socket = nullptr; standard(committed);
+                f.holdDelete = true;
+                WebhookTestServer::raw(r, "{}", 503);
+            } else standard(r);
+        };
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QTRY_COMPARE_WITH_TIMEOUT(f.provider.count("deleteWebhook"), 1, 5000);
+        agent.setAllowedChatIds({});
+        agent.setAllowedChatIds({"42"}); // Cannot regain authority in this Start.
+        f.holdDelete = false;
+        WebhookTestServer::answer(f.provider.last("deleteWebhook"), true);
+        QVERIFY(QTest::qWaitFor([&] { return !agent.stopping(); }, 5000));
+        QTest::qWait(400);
+        QVERIFY(!agent.active()); QVERIFY(!agent.starting());
+        QCOMPARE(f.provider.count("setWebhook"), 1);
+    }
+
+    void registrationDeadlineRecoversAfterAuthoritativeCleanup()
+    {
+        WebhookFixture f;
+        const auto standard = f.provider.handler;
+        f.provider.handler = [&, standard](const auto &r) {
+            if (r.url.path().endsWith("/setWebhook") && f.provider.count("setWebhook") == 1) {
+                auto committed = r; committed.socket = nullptr; standard(committed);
+                // The manager and agent both bound this real loopback request.
+            } else standard(r);
+        };
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
+        QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return agent.active() || (!errors.isEmpty() && !agent.stopping()); }, 15000));
+        QVERIFY(agent.active()); QCOMPARE(errors.size(), 0);
+        QCOMPARE(f.provider.count("setWebhook"), 2);
+        QCOMPARE(f.provider.count("deleteWebhook"), 1);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
+    void recoveryWaitsForRemoteConfirmationAndLastHostRelease()
+    {
+        WebhookFixture f;
+#ifdef Q_OS_UNIX
+        f.options.tunnel.argumentPrefix.append("--hold-release");
+#endif
+        const auto standard = f.provider.handler;
+        QSignalSpy released(TelegramWebhookHost::instance(), &TelegramWebhookHost::released);
+        bool cleanupConfirmed = false;
+        bool prematureRegistration = false;
+        f.provider.handler = [&, standard](const auto &r) {
+            if (r.url.path().endsWith("/setWebhook")) {
+                if (f.provider.count("setWebhook") == 1) {
+                    auto committed = r; committed.socket = nullptr; standard(committed);
+                    f.holdInfo = f.holdDelete = true;
+                    WebhookTestServer::raw(r, "{}", 503);
+                    return;
+                }
+                prematureRegistration = !cleanupConfirmed || released.isEmpty();
+            }
+            standard(r);
+        };
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
+        QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return f.provider.count("getWebhookInfo") == 1; }, 5000));
+        QVERIFY(agent.stopping()); QCOMPARE(errors.size(), 0);
+        QCOMPARE(f.provider.count("setWebhook"), 1);
+        WebhookTestServer::answer(f.provider.last("getWebhookInfo"), QJsonObject{{"url", f.urls.value("bot123456:synthetic")}});
+        QVERIFY(QTest::qWaitFor([&] { return f.provider.count("deleteWebhook") == 1; }, 3000));
+        QCOMPARE(f.provider.count("setWebhook"), 1);
+        f.holdDelete = false;
+        WebhookTestServer::answer(f.provider.last("deleteWebhook"), true);
+        QVERIFY(QTest::qWaitFor([&] { return f.provider.count("getWebhookInfo") == 2; }, 3000));
+        QCOMPARE(f.provider.count("setWebhook"), 1);
+        f.holdInfo = false;
+        cleanupConfirmed = true;
+        WebhookTestServer::answer(f.provider.last("getWebhookInfo"), QJsonObject{{"url", ""}});
+#ifdef Q_OS_UNIX
+        QTest::qWait(100);
+        QVERIFY(released.isEmpty()); // Remote completion alone cannot bypass the child.
+        QCOMPARE(f.provider.count("setWebhook"), 1);
+#endif
+        QVERIFY(QTest::qWaitFor([&] { return agent.active(); }, 5000));
+        QVERIFY(!prematureRegistration); QCOMPARE(errors.size(), 0);
+        QCOMPARE(f.provider.count("setWebhook"), 2);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
+    void explicitStopCancelsRecovery_data()
+    {
+        QTest::addColumn<QString>("phase");
+        QTest::newRow("registration-pending") << QString("registration");
+        QTest::newRow("cleanup-pending") << QString("cleanup");
+        QTest::newRow("backoff-pending") << QString("backoff");
+    }
+    void explicitStopCancelsRecovery()
+    {
+        QFETCH(QString, phase);
+        WebhookFixture f;
+        const auto standard = f.provider.handler;
+        f.provider.handler = [&, standard](const auto &r) {
+            if (r.url.path().endsWith("/setWebhook")) {
+                auto committed = r; committed.socket = nullptr; standard(committed);
+                if (phase == "registration") return;
+                f.holdDelete = phase == "cleanup";
+                WebhookTestServer::raw(r, "{}", 503);
+            } else standard(r);
+        };
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
+        QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        if (phase == "backoff") {
+            connect(TelegramWebhookHost::instance(), &TelegramWebhookHost::released, &agent, [&] {
+                // The host queues finishStop before this timer; Stop lands in backoff.
+                QTimer::singleShot(0, &agent, [&] { agent.stop(); });
+            });
+        }
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        if (phase == "registration") {
+            QTRY_COMPARE_WITH_TIMEOUT(f.provider.count("setWebhook"), 1, 5000);
+            agent.stop();
+            WebhookTestServer::answer(f.provider.last("setWebhook"), true);
+        } else if (phase == "cleanup") {
+            QTRY_COMPARE_WITH_TIMEOUT(f.provider.count("deleteWebhook"), 1, 5000);
+            agent.stop(); // Must cancel even though internal stopping is already true.
+            f.holdDelete = false;
+            WebhookTestServer::answer(f.provider.last("deleteWebhook"), true);
+        }
+        QVERIFY(QTest::qWaitFor([&] { return !agent.starting() && !agent.stopping(); }, 5000));
+        QTest::qWait(400);
+        QVERIFY(!agent.active()); QCOMPARE(errors.size(), 0);
+        QCOMPARE(f.provider.count("setWebhook"), 1);
+        QCOMPARE(f.provider.count("deleteWebhook"), 1);
+    }
+
+    void unknownCleanupNeverRetries_data()
+    {
+        QTest::addColumn<QString>("kind");
+        QTest::newRow("malformed") << QString("malformed");
+        QTest::newRow("uncertain-empty") << QString("empty");
+        QTest::newRow("uncertain-replacement") << QString("replacement");
+        QTest::newRow("delete-unconfirmed") << QString("delete");
+    }
+    void unknownCleanupNeverRetries()
+    {
+        QFETCH(QString, kind);
+        WebhookFixture f;
+        const auto standard = f.provider.handler;
+        f.provider.handler = [&, standard](const auto &r) {
+            if (r.url.path().endsWith("/setWebhook")) {
+                auto committed = r; committed.socket = nullptr; standard(committed);
+                if (kind == "empty") f.urls["bot123456:synthetic"].clear();
+                if (kind == "replacement") f.urls["bot123456:synthetic"] = "https://other.invalid/owner";
+                f.malformedInfo = kind == "malformed";
+                WebhookTestServer::raw(r, "{}", 503);
+            } else if (kind == "delete" && r.url.path().endsWith("/deleteWebhook")) {
+                WebhookTestServer::answer(r, false);
+            } else standard(r);
+        };
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"});
+        QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return errors.size() == 1 && !agent.stopping(); }, 5000));
+        QVERIFY(errors[0][0].toString().contains("unknown"));
+        QTest::qWait(400);
+        QCOMPARE(f.provider.count("setWebhook"), 1);
+        QCOMPARE(f.provider.count("deleteWebhook"), kind == "delete" ? 1 : 0);
+        QVERIFY(!agent.active()); QVERIFY(!agent.starting());
+    }
+
+    void transientRegistrationTransportCategories_data()
+    {
+        QTest::addColumn<QString>("phase"); QTest::addColumn<QString>("failure");
+        QTest::newRow("set-network-close") << QString("setWebhook") << QString("network");
+        QTest::newRow("set-api-503") << QString("setWebhook") << QString("api");
+        QTest::newRow("readback-network-close") << QString("getWebhookInfo") << QString("network");
+        QTest::newRow("readback-service-503") << QString("getWebhookInfo") << QString("service");
+    }
+    void transientRegistrationTransportCategories()
+    {
+        QFETCH(QString, phase); QFETCH(QString, failure);
+        WebhookFixture f;
+        const auto standard = f.provider.handler;
+        bool injected = false;
+        f.provider.handler = [&, standard](const auto &r) {
+            if (!injected && r.url.path().endsWith('/' + phase)) {
+                injected = true;
+                if (phase == "setWebhook") { auto committed = r; committed.socket = nullptr; standard(committed); }
+                if (failure == "network") {
+                    // A complete request can commit before its truncated reply closes.
+                    r.socket->write("HTTP/1.1 200 Test\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{");
+                    r.socket->disconnectFromHost();
+                } else WebhookTestServer::raw(r, "{\"ok\":false,\"error_code\":503}", failure == "api" ? 200 : 503);
+            } else standard(r);
+        };
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return agent.active() || (!errors.isEmpty() && !agent.stopping()); }, 7000));
+        QVERIFY(agent.active()); QCOMPARE(errors.size(), 0);
+        QCOMPARE(f.provider.count("setWebhook"), 2); QCOMPARE(f.provider.count("deleteWebhook"), 1);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
+    void freshManualStartResetsBudgetAndPreservesRecoveredIdentity()
+    {
+        QTemporaryDir ledger; WebhookFixture f;
+        int failuresRemaining = 0;
+        const auto standard = f.provider.handler;
+        f.provider.handler = [&, standard](const auto &r) {
+            if (r.url.path().endsWith("/setWebhook") && failuresRemaining > 0) {
+                --failuresRemaining;
+                auto committed = r; committed.socket = nullptr; standard(committed);
+                WebhookTestServer::raw(r, "{}", 503);
+            } else standard(r);
+        };
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        QSignalSpy commands(&agent, &TelegramAgent::tradeCommandReceived);
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+        // The reported active -> Stop -> one new Start path recovers automatically.
+        failuresRemaining = 1;
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return agent.active(); }, 5000));
+        QCOMPARE(errors.size(), 0); QCOMPARE(f.provider.count("setWebhook"), 3);
+        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200);
+        QTRY_COMPARE(commands.size(), 1);
+        agent.completeTradeCommand(commands[0][0].toString(), {});
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+        failuresRemaining = 3;
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return errors.size() == 1 && !agent.stopping(); }, 8000));
+        QCOMPARE(f.provider.count("setWebhook"), 6); QVERIFY(!agent.active());
+        failuresRemaining = 2;
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return agent.active(); }, 8000));
+        QCOMPARE(f.provider.count("setWebhook"), 9); QCOMPARE(errors.size(), 1);
+        QCOMPARE(f.provider.count("getMe"), 4);
+        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200); // Durable claim survives all Starts.
+        QCOMPARE(commands.size(), 1);
+        QCOMPARE(f.post(f.update(2, "publics_auto_buy MSFT")), 200);
+        QTRY_COMPARE(commands.size(), 2);
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
+    void preReadbackAdmissionNeverReplaysAcrossRecovery()
+    {
+        QTemporaryDir ledger; WebhookFixture f; f.holdInfo = true;
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy commands(&agent, &TelegramAgent::tradeCommandReceived);
+        QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QTRY_COMPARE_WITH_TIMEOUT(f.provider.count("getWebhookInfo"), 1, 5000);
+        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200);
+        QCOMPARE(commands.size(), 0);
+        QVERIFY(QFile::exists(ledger.filePath("123456.watermark")));
+        f.holdInfo = false;
+        WebhookTestServer::raw(f.provider.last("getWebhookInfo"), "{}", 503);
+        QVERIFY(QTest::qWaitFor([&] { return agent.active(); }, 5000));
+        QCOMPARE(errors.size(), 0); QCOMPARE(f.provider.count("setWebhook"), 2);
+        QCOMPARE(commands.size(), 0); // Never execute the retired startup queue.
+        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200);
+        QCOMPARE(commands.size(), 0);
+        QCOMPARE(f.post(f.update(2, "publics_auto_buy MSFT")), 200);
+        QTRY_COMPARE(commands.size(), 1);
+        QCOMPARE(commands[0][2].toStringList(), QStringList{"MSFT"});
+        agent.stop(); QTRY_VERIFY(!agent.stopping());
+    }
+
+    void permanentRegistrationFailuresNeverRetry_data()
+    {
+        QTest::addColumn<int>("status"); QTest::addColumn<int>("apiCode"); QTest::addColumn<QString>("kind");
+        for (const int code : {400, 401, 403, 409, 429}) {
+            QTest::newRow(qPrintable(QString("http-%1").arg(code))) << code << 0 << QString("error");
+            QTest::newRow(qPrintable(QString("api-%1").arg(code))) << 200 << code << QString("error");
+        }
+        QTest::newRow("hard-api-over-http-service") << 503 << 401 << QString("error");
+        QTest::newRow("malformed") << 200 << 0 << QString("malformed");
+        QTest::newRow("missing-result") << 200 << 0 << QString("missing");
+        QTest::newRow("rejected-result") << 200 << 0 << QString("false");
+        QTest::newRow("contradictory-success-service") << 200 << 503 << QString("contradictory");
+        QTest::newRow("redirect") << 302 << 0 << QString("error");
+        QTest::newRow("oversized") << 200 << 0 << QString("large");
+    }
+    void permanentRegistrationFailuresNeverRetry()
+    {
+        QFETCH(int, status); QFETCH(int, apiCode); QFETCH(QString, kind);
+        WebhookFixture f;
+        const auto standard = f.provider.handler;
+        f.provider.handler = [=](const auto &r) {
+            if (r.url.path().endsWith("/setWebhook")) {
+                // A terminal receipt must not retry even when cleanup can prove ownership.
+                auto committed = r; committed.socket = nullptr; standard(committed);
+                QByteArray body = QJsonDocument(QJsonObject{{"ok", false}, {"error_code", apiCode}}).toJson();
+                if (kind == "malformed") body = "not-json";
+                if (kind == "missing") body = "{\"ok\":true}";
+                if (kind == "false") body = "{\"ok\":true,\"result\":false}";
+                if (kind == "contradictory") body = "{\"ok\":true,\"result\":false,\"error_code\":503}";
+                if (kind == "large") body = QByteArray(1024 * 1024 + 1, 'x');
+                WebhookTestServer::raw(r, body, status);
+            } else standard(r);
+        };
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return !errors.isEmpty() && !agent.stopping(); }, 5000));
+        QTest::qWait(350);
+        QVERIFY(!agent.active()); QVERIFY(!agent.starting());
+        QCOMPARE(f.provider.count("setWebhook"), 1); QCOMPARE(f.provider.count("getUpdates"), 0);
+    }
+
+    void activeMessageServiceFailureDoesNotRetryOrReplay()
+    {
+        QTemporaryDir ledger; WebhookFixture f;
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); agent.setCommandLedgerPathForTests(ledger.path());
+        QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        QSignalSpy commands(&agent, &TelegramAgent::tradeCommandReceived);
+        agent.start("123456:synthetic", "persisted_secret_123456"); QTRY_VERIFY_WITH_TIMEOUT(agent.active(), 5000);
+        const auto standard = f.provider.handler;
+        f.provider.handler = [standard](const auto &r) {
+            if (r.url.path().endsWith("/sendMessage")) WebhookTestServer::raw(r, "{}", 503);
+            else standard(r);
+        };
+        QCOMPARE(f.post(f.update(1, "publics_auto_buy AAPL")), 200);
+        QTRY_COMPARE(commands.size(), 1);
+        agent.completeTradeCommand(commands[0][0].toString(), {"Completed once"});
+        QVERIFY(QTest::qWaitFor([&] { return !errors.isEmpty() && !agent.stopping(); }, 5000));
+        QTest::qWait(350);
+        QCOMPARE(f.provider.count("setWebhook"), 1); QCOMPARE(f.provider.count("sendMessage"), 1);
+        QCOMPARE(commands.size(), 1); QVERIFY(!agent.active());
+    }
+
+    void recoveryStateObserverCanDeleteOrReplaceOwner_data()
+    {
+        QTest::addColumn<bool>("replace");
+        QTest::newRow("delete") << false; QTest::newRow("replace") << true;
+    }
+    void recoveryStateObserverCanDeleteOrReplaceOwner()
+    {
+        QFETCH(bool, replace);
+        WebhookFixture f;
+        const auto standard = f.provider.handler;
+        f.provider.handler = [&, standard](const auto &r) {
+            if (r.url.path().endsWith("/setWebhook") && f.provider.count("setWebhook") == 1) {
+                auto committed = r; committed.socket = nullptr; standard(committed);
+                WebhookTestServer::raw(r, "{}", 503);
+            } else standard(r);
+        };
+        auto *agent = new TelegramAgent(f.provider.root(), f.healthUrl(), f.options);
+        QPointer<TelegramAgent> owner(agent);
+        agent->setAllowedChatIds({"42"});
+        bool observed = false;
+        connect(agent, &TelegramAgent::stateChanged, agent, [&] {
+            if (observed || !owner->starting() || f.provider.count("setWebhook") != 1) return;
+            observed = true;
+            if (!replace) { delete owner.data(); return; }
+            owner->stop();
+            owner->start("654321:synthetic", "persisted_secret_654321");
+        });
+        agent->start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return observed && (!owner || owner->active()); }, 7000));
+        QCOMPARE(f.provider.count("setWebhook"), replace ? 2 : 1);
+        if (owner) {
+            QCOMPARE(f.provider.last("setWebhook").url.path(), QString("/bot654321:synthetic/setWebhook"));
+            owner->stop(); QTRY_VERIFY(!owner->stopping()); delete owner.data();
+        }
+    }
+
+    void recoveryNeverTakesOverReplacementAfterConfirmedRegistration_data()
+    {
+        QTest::addColumn<bool>("afterDelete");
+        QTest::newRow("ownership-check") << false;
+        QTest::newRow("deletion-readback") << true;
+    }
+    void recoveryNeverTakesOverReplacementAfterConfirmedRegistration()
+    {
+        QFETCH(bool, afterDelete);
+        WebhookFixture f;
+        const auto standard = f.provider.handler;
+        bool failedReadback = false;
+        f.provider.handler = [&, standard](const auto &r) {
+            if (!failedReadback && r.url.path().endsWith("/getWebhookInfo")) {
+                failedReadback = true;
+                if (!afterDelete) f.urls["bot123456:synthetic"] = "https://replacement.invalid/owner";
+                WebhookTestServer::raw(r, "{}", 503);
+            } else if (afterDelete && r.url.path().endsWith("/getWebhookInfo") && f.provider.count("getWebhookInfo") == 3) {
+                f.urls["bot123456:synthetic"] = "https://replacement.invalid/owner";
+                standard(r);
+            } else standard(r);
+        };
+        TelegramAgent agent(f.provider.root(), f.healthUrl(), f.options);
+        agent.setAllowedChatIds({"42"}); QSignalSpy errors(&agent, &TelegramAgent::errorOccurred);
+        agent.start("123456:synthetic", "persisted_secret_123456");
+        QVERIFY(QTest::qWaitFor([&] { return agent.active() || (!errors.isEmpty() && !agent.stopping()); }, 7000));
+        QVERIFY(!agent.active()); QCOMPARE(errors.size(), 1);
+        QCOMPARE(f.provider.count("setWebhook"), 1); QCOMPARE(f.provider.count("deleteWebhook"), afterDelete ? 1 : 0);
+        QCOMPARE(f.urls.value("bot123456:synthetic"), QString("https://replacement.invalid/owner"));
+    }
+
     void failingRegistrationDoesNotActivateOrPoll()
     {
         WebhookFixture f; f.rejectRegistration = true;
@@ -834,6 +1376,10 @@ int main(int argc, char **argv)
     const auto arguments = app.arguments();
     // Stable fake child prefix for controller/UI tests, followed by real ngrok args.
     if (arguments.size() >= 4 && arguments[1] == QStringLiteral("--fake-ngrok")) {
+#ifdef Q_OS_UNIX
+        // Exercise last-lease teardown through the real host's bounded kill path.
+        if (arguments.contains(QStringLiteral("--hold-release"))) std::signal(SIGTERM, SIG_IGN);
+#endif
         WebhookTestServer inspector(arguments[2].toUShort());
         const auto localPort = arguments[3].toUShort();
         inspector.handler = [localPort, &app](const auto &r) {

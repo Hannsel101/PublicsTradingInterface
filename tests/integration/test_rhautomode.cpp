@@ -19,6 +19,58 @@ class RHAutoModeTest : public QObject {
         QVERIFY2(!controller.busy(), qPrintable(controller.error()));
     }
 private slots:
+    void tickerSeparators_data() {
+        QTest::addColumn<QString>("input"); QTest::addColumn<QString>("side");
+        const QStringList inputs{
+            "aapl msft    GOOG", "aapl, MSFT ,GOOG", "aapl msft,GOOG",
+            ",, aapl,,msft , ,GOOG,, ", "\taapl\tmsft\nGOOG\r\n",
+            QString("aapl") + QChar(0x00a0) + "msft," + QChar(0x2003) + "GOOG",
+            "aapl,msft aApL, GOOG msft"};
+        for (const auto &side : {QString("buy"), QString("sell")})
+            for (int i = 0; i < inputs.size(); ++i)
+                QTest::newRow(qPrintable(side + QString::number(i))) << inputs[i] << side;
+    }
+    void tickerSeparators() {
+        QFETCH(QString, input); QFETCH(QString, side);
+        RHAutoModeFixture::Fixture f; QVERIFY(f.ready); f.accountCount = 2;
+        const QStringList expected{"AAPL", "MSFT", "GOOG"};
+        f.transform = [&](const QString &path, QJsonObject response) {
+            if (path != "/positions/") return response;
+            const auto original = response.value("results").toArray();
+            QJsonArray rows;
+            for (const auto &raw : original) for (const auto &symbol : expected) {
+                auto row = raw.toObject();
+                row.insert("instrument", f.brokerageOrigin + "/instruments/" + symbol + "/");
+                rows.append(row);
+            }
+            response.insert("results", rows); return response;
+        };
+        for (const auto *name : {"first", "second"}) {
+            QVERIFY(f.sessions->saveAuthenticatedSession(name, QString("fixture-") + name, 3600));
+            QTRY_VERIFY(!f.sessions->busy());
+        }
+        auto deps = f.dependencies(); int acquires = 0, releases = 0;
+        const auto acquire = deps.acquire; const auto release = deps.release;
+        deps.acquire = [&](auto done) { ++acquires; acquire(std::move(done)); };
+        deps.release = [&] { ++releases; release(); };
+        RHAutoTradeController controller(f.network, *f.sessions, deps);
+        QVERIFY(controller.submit(input, side)); drain(f, controller);
+        QCOMPARE(f.orders.size(), 12); QCOMPARE(controller.tradeResults().size(), 12);
+        QCOMPARE(f.delays.size(), 12); QCOMPARE(acquires, 2); QCOMPARE(releases, 2);
+        for (int i = 0; i < f.orders.size(); ++i) {
+            const int account = (i % 6) / 3 + 1;
+            const auto row = controller.tradeResults()[i].toMap();
+            QCOMPARE(row.value("symbol").toString(), expected[i % 3]);
+            QCOMPARE(row.value("sessionName").toString(), i < 6 ? "first" : "second");
+            QCOMPARE(row.value("status").toString(), "sent");
+            QCOMPARE(row.value("nativeRow").toMap().value("symbol").toString(), expected[i % 3]);
+            QCOMPARE(f.orders[i].value("instrument").toString(), f.brokerageOrigin + "/instruments/" + expected[i % 3] + "/");
+            QCOMPARE(f.orders[i].value("account").toString(), f.brokerageOrigin + QString("/accounts/a%1/").arg(account));
+            QCOMPARE(f.orders[i].value("side").toString(), side);
+            QCOMPARE(f.orders[i].value("quantity").toString(), side == "buy" ? "1" : account == 1 ? "5.5" : "2");
+        }
+        QVERIFY(controller.tradeResultsComplete()); QVERIFY(!f.sessions->busy()); QVERIFY(controller.error().isEmpty());
+    }
     void sellUsesFreshFractionalAccountSpecificQuantities() {
         Fixture f; QVERIFY(f.ready);
         QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
@@ -31,20 +83,44 @@ private slots:
         QCOMPARE(controller.tradeResults().size(), 6); QVERIFY(!f.sessions->busy());
         QCOMPARE(f.requests.count("GET /positions/"), 6); // Fresh sizing for every account/ticker row.
     }
+    void nativeChunksNeverTruncateOrReorderLargeInput_data() {
+        QTest::addColumn<QString>("side");
+        QTest::newRow("buy") << QString("buy"); QTest::newRow("sell") << QString("sell");
+    }
     void nativeChunksNeverTruncateOrReorderLargeInput() {
-        Fixture f; QVERIFY(f.ready); f.accountCount = 1;
+        QFETCH(QString, side); RHAutoModeFixture::Fixture f; QVERIFY(f.ready); f.accountCount = 1;
+        QStringList symbols; for (int i = 0; i < 43; ++i) symbols.append(QString("T%1").arg(i));
+        f.transform = [&](const QString &path, QJsonObject response) {
+            if (path != "/positions/") return response;
+            const auto original = response.value("results").toArray(); QJsonArray rows;
+            for (const auto &raw : original) for (const auto &symbol : symbols) {
+                auto row = raw.toObject(); row.insert("instrument", f.brokerageOrigin + "/instruments/" + symbol + "/");
+                rows.append(row);
+            }
+            response.insert("results", rows); return response;
+        };
         QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600)); QTRY_VERIFY(!f.sessions->busy());
         auto deps = f.dependencies(); int acquires = 0, releases = 0;
         const auto acquire = deps.acquire; const auto release = deps.release;
         deps.acquire = [&](auto done) { ++acquires; acquire(std::move(done)); };
         deps.release = [&] { ++releases; release(); };
         RHAutoTradeController controller(f.network, *f.sessions, deps);
-        QStringList symbols; for (int i = 0; i < 43; ++i) symbols.append(QString("T%1").arg(i));
-        QVERIFY(controller.submit(QString(3000, ' ') + symbols.join(','), "buy")); drain(f, controller);
+        QString input = symbols.join(" \t,\n").toLower() + " ,t0 T19,,t20 t42,";
+        input.prepend(QString(4096 - input.size(), QChar(0x00a0)));
+        QCOMPARE(input.size(), 4096);
+        QVERIFY(controller.submit(input, side)); drain(f, controller);
         QCOMPARE(f.orders.size(), symbols.size()); QCOMPARE(controller.tradeResults().size(), symbols.size());
         QCOMPARE(acquires, 1); QCOMPARE(releases, 1); QCOMPARE(f.delays.size(), symbols.size());
-        for (int i = 0; i < symbols.size(); ++i)
+        for (int i = 0; i < symbols.size(); ++i) {
             QCOMPARE(f.orders[i].value("instrument").toString(), f.brokerageOrigin + "/instruments/" + symbols[i] + "/");
+            QCOMPARE(f.orders[i].value("side").toString(), side);
+            QCOMPARE(f.orders[i].value("quantity").toString(), side == "buy" ? "1" : "5.5");
+            const auto row = controller.tradeResults()[i].toMap();
+            QCOMPARE(row.value("symbol").toString(), symbols[i]);
+            QCOMPARE(row.value("status").toString(), "sent");
+            QCOMPARE(row.value("nativeRow").toMap().value("symbol").toString(), symbols[i]);
+        }
+        QVERIFY(!f.sessions->busy()); QVERIFY(controller.error().isEmpty());
     }
     void submissionEvidence_data() {
         QTest::addColumn<QString>("mode");
@@ -417,20 +493,36 @@ private slots:
         QVERIFY(!f.store.readIndices.mid(priorReads).contains(2));
         QVERIFY(!f.sessions->busy());
     }
+    void rejectsInvalidInputBeforeReadingCredentials_data() {
+        QTest::addColumn<QString>("input"); QTest::addColumn<QString>("side");
+        QStringList symbols; for (int i = 0; i < 43; ++i) symbols.append(QString("T%1").arg(i));
+        const QStringList inputs{
+            "", ", \t,\r\n,,", QString(",") + QChar(0x00a0) + QChar(0x2003),
+            "AAPL;MSFT", "AAPL/$", "AAPL MSFT,GOOG!", "AAPL, MS_FT", "AAPL,MSFT/GOOG",
+            QString::fromUtf8("AAPL ſPY"), QString::fromUtf8("AAPL ßPY"),
+            QString::fromUtf8("AAPL ＭSFT"), QString::fromUtf8("AAPL MŚFT"),
+            QString("AAPL MS") + QChar(0x200b) + "FT", "AAPL A1234567890", "AAPL BRK.ABCDE",
+            QString("AAPL") + QString(4093, ' '), symbols.join(" \t,") + " BAD!"};
+        for (const auto &side : {QString("buy"), QString("sell")})
+            for (int i = 0; i < inputs.size(); ++i)
+                QTest::newRow(qPrintable(side + QString::number(i))) << inputs[i] << side;
+        QTest::newRow("invalid-side") << QString("AAPL MSFT") << QString("other");
+    }
     void rejectsInvalidInputBeforeReadingCredentials() {
-        Fixture f; QVERIFY(f.ready);
+        QFETCH(QString, input); QFETCH(QString, side); Fixture f; QVERIFY(f.ready);
         QVERIFY(f.sessions->saveAuthenticatedSession("first", "fixture-first", 3600));
         QTRY_VERIFY(!f.sessions->busy());
-        RHAutoTradeController controller(f.network, *f.sessions, f.dependencies());
-        const int reads = f.store.reads;
-        for (const auto &input : {QString(), QString("AAPL,,MSFT"), QString("AA PL"),
-                                 QString::fromUtf8("ſPY"), QString(4097, 'A')}) {
-            QVERIFY(!controller.submit(input, "buy"));
-            QVERIFY(!controller.busy());
-        }
-        QVERIFY(!controller.submit("AAPL", "other"));
-        QCOMPARE(f.store.reads, reads);
-        QVERIFY(f.orders.isEmpty());
+        auto deps = f.dependencies(); int acquires = 0, releases = 0;
+        deps.acquire = [&](auto) { ++acquires; };
+        deps.release = [&] { ++releases; };
+        RHAutoTradeController controller(f.network, *f.sessions, deps);
+        const int reads = f.store.reads; const auto requests = f.requests;
+        QVERIFY(!controller.submit(input, side));
+        QVERIFY(controller.error().contains("commas or whitespace"));
+        QVERIFY(!controller.busy()); QVERIFY(!f.sessions->busy());
+        QCOMPARE(f.store.reads, reads); QCOMPARE(f.requests, requests);
+        QCOMPARE(acquires, 0); QCOMPARE(releases, 0);
+        QVERIFY(f.orders.isEmpty()); QVERIFY(f.timers.isEmpty()); QVERIFY(controller.tradeResults().isEmpty());
     }
 };
 QTEST_GUILESS_MAIN(RHAutoModeTest)

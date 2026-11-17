@@ -5,6 +5,11 @@
 
 
 #include <QtTest>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QNetworkProxy>
+#include <QFile>
 
 class MemoryBotStore final : public TelegramBotStore
 {
@@ -24,10 +29,12 @@ public:
     }
     void remove(QString, AddCompletion done) override { pendingAdd = std::move(done); }
     QString capturedPassword;
+    int activationReads = 0;
     void saveProtectedBot(QString, QString, QString, QStringList policy, QString password, QString confirmation, AddCompletion done) override {
         Q_ASSERT(password == confirmation); capturedPassword = password; savedPolicy = policy; pendingAdd = std::move(done);
     }
     void readActivationSnapshot(QString id, QString password, ActivationCompletion done) override {
+        ++activationReads;
         capturedPassword = password;
         QStringList policy;
         for (const auto &entry : entries) if (entry.id == id) policy = entry.allowedChatIds;
@@ -489,6 +496,125 @@ private slots:
         QVERIFY(!controller.saveBotWithAllowedChats("Desk", {}, "42"));
         controller.setTradingBusy(false);
         QVERIFY(!controller.busy()); QVERIFY(!controller.hasRunningBots()); QVERIFY(controller.canStart());
+    }
+    void webhookRestartRetriesWithoutAnotherPassword_data()
+    {
+        QTest::addColumn<int>("failures");
+        QTest::addColumn<bool>("cancelRecovery");
+        QTest::newRow("second-attempt-success") << 1 << false;
+        QTest::newRow("third-attempt-success") << 2 << false;
+        QTest::newRow("three-failures-manual-restart") << 3 << false;
+        QTest::newRow("stop-all-cancels-recovery") << 1 << true;
+    }
+    void webhookRestartRetriesWithoutAnotherPassword()
+    {
+        QFETCH(int, failures);
+        QFETCH(bool, cancelRecovery);
+        ControllerBotServer server;
+        QTcpServer receiverPort, inspectorPort;
+        QVERIFY(receiverPort.listen(QHostAddress::LocalHost));
+        QVERIFY(inspectorPort.listen(QHostAddress::LocalHost));
+        QTemporaryDir ownership;
+        QVERIFY(ownership.isValid());
+        TelegramAgent::WebhookOptions options;
+        options.tunnel.ownershipDirectory = ownership.filePath("tunnel-ownership");
+        options.tunnel.port = receiverPort.serverPort();
+        options.tunnel.inspectorUrl = QUrl(QStringLiteral("http://127.0.0.1:%1/api/tunnels").arg(inspectorPort.serverPort()));
+        options.tunnel.executable = QString::fromUtf8(PUBLICS_WEBHOOK_TEST_EXECUTABLE);
+        options.tunnel.argumentPrefix = {"--fake-ngrok", QString::number(inspectorPort.serverPort()),
+            QString::number(receiverPort.serverPort())};
+        options.tunnel.discoveryDelayMs = 20;
+        receiverPort.close(); inspectorPort.close();
+        MemoryBotStore store;
+        int runtimes = 0;
+        QTemporaryDir ledger;
+        QVERIFY(ledger.isValid());
+        TelegramBotsController controller(&store, [&](QObject *owner) {
+            ++runtimes;
+            auto *runtime = new TelegramAgent(server.root(), server.healthUrl(), options, owner);
+            runtime->setCommandLedgerPathForTests(ledger.path());
+            return runtime;
+        });
+        controller.load(); controller.selectBot("one");
+        QSignalSpy prompts(&controller, &TelegramBotsController::passwordRequested);
+        QVERIFY(controller.startBot());
+        QVERIFY(controller.startBotWithPassword("one", "test password 123"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.bots().first().toMap().value("active").toBool(), 10000);
+        QCOMPARE(store.activationReads, 1);
+        QVERIFY(controller.stopBot());
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.hasRunningBots(), 5000);
+
+        server.transientRegistrationFailures = failures;
+        server.holdWebhookDeletion = true;
+        QVERIFY(controller.startBot());
+        QVERIFY(controller.startBotWithPassword("one", "test password 123"));
+        QTRY_COMPARE_WITH_TIMEOUT(server.deletions.size(), 1, 10000);
+        QCOMPARE(server.requestedMethods.count("setWebhook"), 2);
+        QCOMPARE(store.activationReads, 2);
+        QCOMPARE(prompts.size(), 2);
+        QVERIFY(controller.hasRunningBots());
+        QVERIFY(!controller.canStart());
+        QVERIFY(controller.error().isEmpty());
+        QVERIFY(!controller.startBotWithPassword("one", "test password 123"));
+        QCOMPARE(store.activationReads, 2);
+        if (cancelRecovery) QVERIFY(!controller.stopAll()); // Asynchronous cleanup still held.
+        server.holdWebhookDeletion = false;
+        server.finishWebhookDeletion();
+        if (cancelRecovery) {
+            QTRY_VERIFY_WITH_TIMEOUT(!controller.hasRunningBots(), 5000);
+            QTest::qWait(200);
+            QCOMPARE(server.requestedMethods.count("setWebhook"), 2);
+            QCOMPARE(store.activationReads, 2);
+            QCOMPARE(prompts.size(), 2);
+            QVERIFY(controller.canStart());
+            return;
+        }
+        if (failures < 3) {
+            QTRY_VERIFY_WITH_TIMEOUT(controller.bots().first().toMap().value("active").toBool(), 15000);
+            QVERIFY(controller.error().isEmpty());
+        } else {
+            QTRY_VERIFY_WITH_TIMEOUT(!controller.hasRunningBots(), 15000);
+            QVERIFY(!controller.error().isEmpty());
+            QVERIFY(controller.canStart());
+        }
+        QCOMPARE(server.requestedMethods.count("setWebhook"), 1 + qMin(failures + 1, 3));
+        QCOMPARE(store.activationReads, 2);
+        QCOMPARE(prompts.size(), 2);
+        QCOMPARE(runtimes, 1);
+        QVERIFY(!controller.bots().last().toMap().value("active").toBool());
+        if (failures == 3) {
+            QVERIFY(controller.startBot());
+            QVERIFY(controller.startBotWithPassword("one", "test password 123"));
+            QTRY_VERIFY_WITH_TIMEOUT(controller.bots().first().toMap().value("active").toBool(), 10000);
+            QCOMPARE(store.activationReads, 3);
+            QCOMPARE(prompts.size(), 3);
+            QCOMPARE(server.requestedMethods.count("setWebhook"), 5);
+        }
+        QSignalSpy trades(&controller, &TelegramBotsController::tradeRequested);
+        QUrl receiver = server.registeredWebhook;
+        receiver.setScheme("http"); receiver.setHost("127.0.0.1"); receiver.setPort(options.tunnel.port);
+        QNetworkRequest request(receiver);
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        request.setRawHeader("X-Telegram-Bot-Api-Secret-Token", server.webhookSecret.toUtf8());
+        const QJsonObject update{{"update_id", 1}, {"message", QJsonObject{
+            {"message_id", 1}, {"date", 1700000000}, {"text", "publics_auto_buy AAPL"},
+            {"from", QJsonObject{{"id", 42}, {"is_bot", false}, {"first_name", "Fixture"}}},
+            {"chat", QJsonObject{{"id", 42}, {"type", "private"}}}}}};
+        QNetworkAccessManager network;
+        network.setProxy(QNetworkProxy::NoProxy);
+        for (int i = 0; i < 2; ++i) {
+            auto *reply = network.post(request, QJsonDocument(update).toJson(QJsonDocument::Compact));
+            QTRY_VERIFY_WITH_TIMEOUT(reply->isFinished(), 3000);
+            QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 200);
+            reply->deleteLater();
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(trades.size(), 1, 3000);
+        QCOMPARE(trades.first().at(0).toString(), QString("one"));
+        QCOMPARE(trades.first().at(3).toStringList(), QStringList{"AAPL"});
+        QVERIFY(QFile::exists(ledger.filePath("123456.watermark")));
+        QCOMPARE(server.requestedMethods.count("getUpdates"), 0);
+        controller.stopAll();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.hasRunningBots(), 5000);
     }
     void stoppingWebhookHoldsStartAndNavigationUntilCleanupFinishes()
     {

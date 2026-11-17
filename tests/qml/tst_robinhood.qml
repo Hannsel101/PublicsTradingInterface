@@ -375,8 +375,14 @@ TestCase {
         } finally { view.destroy() }
     }
     function test_tradeEntryUppercasesAsciiAndPreservesSeparators_data() {
-        return [{tag: "buy-compact", width: 360, height: 620, side: "buy"},
-                {tag: "sell-desktop", width: 1000, height: 700, side: "sell"}]
+        const rows = []
+        const entries = [" aapl BRK.B      TSLA ", "   aapl, BRK.B   ,TSLA ", "  aapl  BRK.B,TSLA  "]
+        for (const size of sizes())
+            for (const side of ["buy", "sell"])
+                for (let i = 0; i < entries.length; ++i)
+                    rows.push({tag: size.tag + "-" + side + "-" + i, width: size.width, height: size.height,
+                               side: side, input: entries[i]})
+        return rows
     }
     function test_tradeEntryUppercasesAsciiAndPreservesSeparators(data) {
         RobinSessions.accounts.append(account("100", "Standard Brokerage"))
@@ -393,8 +399,8 @@ TestCase {
             compare(sell.enabled, false)
             reveal(view, field)
             field.forceActiveFocus()
-            RobinTrades.typeText(field, " aapl, BRK.B, TSLA ")
-            compare(field.text, " AAPL, BRK.B, TSLA ")
+            RobinTrades.typeText(field, data.input)
+            compare(field.text, data.input.toUpperCase())
             tryCompare(buy, "enabled", true)
             tryCompare(sell, "enabled", true)
             const button = data.side === "buy" ? buy : sell
@@ -403,7 +409,7 @@ TestCase {
             snapshot(view, "robin-before-click-" + data.tag)
             mouseClick(button)
             tryCompare(RobinTrades, "submitCalls", 1)
-            compare(RobinTrades.lastInput, " AAPL, BRK.B, TSLA ")
+            compare(RobinTrades.lastInput, data.input.toUpperCase())
             compare(RobinTrades.lastSide, data.side)
             compare(buy.enabled, false)
             compare(sell.enabled, false)
@@ -453,7 +459,7 @@ TestCase {
                 if (child.text !== undefined) verify(child.text !== "Ticker symbols")
             const mode = findChild(view, "robinExecutionMode")
             verify(mode !== null && mode.visible)
-            compare(field.Accessible.name, "Ticker symbols, comma-separated")
+            compare(field.Accessible.name, "Ticker symbols, separated by commas or whitespace")
             tryVerify(() => field.y >= mode.y + mode.height
                       && field.y - mode.y - mode.height <= trade.spacing + 1)
             const buy = findChild(view, "robinBuyButton")

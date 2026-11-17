@@ -108,6 +108,21 @@ private slots:
         QTest::newRow("auth") << QStringLiteral("/authenticate_robinhood_account synthetic-private+tag@example.test") << true;
         QTest::newRow("buy") << QStringLiteral("publics_auto_buy AAPL, MSFT") << true;
         QTest::newRow("sell") << QStringLiteral("publics_auto_sell AAPL") << true;
+        for (const auto &route : QStringList{"publics_auto_buy", "publics_auto_sell", "robinhood_auto_buy",
+                "robinhood_auto_sell", "auto_buy", "auto_sell"}) {
+            QTest::newRow(qPrintable(route + "-mixed"))
+                << " \t/" + route + QString::fromUtf8("\u00a0,,aapl\t\r\nMSFT,\u2003GOOG,,\u3000") << true;
+            QTest::newRow(qPrintable(route + "-unknown-secret"))
+                << route + " AAPL, \nsynthetic-private-password=secret" << false;
+            QTest::newRow(qPrintable(route + "-unicode-ticker")) << route + QString::fromUtf8(" AAPL\u2003K") << false;
+            QTest::newRow(qPrintable(route + "-empty")) << route + " ,, \t\n," << false;
+        }
+        QTest::newRow("publics-50-whitespace") << "publics_auto_buy ,," + QString("A \t").repeated(50) + ",," << true;
+        QTest::newRow("publics-51-whitespace") << "publics_auto_buy " + QString("A\n").repeated(51) << false;
+        const QString publicsExact = "publics_auto_buy " + QString(1024 - QString("publics_auto_buy A").size(), '\t') + "A";
+        QTest::newRow("publics-exact-1024-whitespace") << publicsExact << true;
+        QTest::newRow("publics-over-1024-whitespace") << publicsExact + " " << false;
+
         QTest::newRow("rh-buy") << QStringLiteral("robinhood_auto_buy aapl, MSFT") << true;
         QTest::newRow("rh-sell") << QStringLiteral("/robinhood_auto_sell BRK.B,BRK-B") << true;
         QStringList many;
@@ -155,15 +170,26 @@ private slots:
         const auto socket = provider.polls.takeFirst();
         QVERIFY(socket);
         ControllerBotServer::answer(socket, QJsonArray{incoming(command)});
-        QTRY_COMPARE(provider.messages.size(), 1);
+        const bool empty = command.endsWith(" ,, \t\n,");
+        if (empty) QTRY_COMPARE(provider.polls.size(), 1);
+        else QTRY_COMPARE(provider.messages.size(), 1);
         verifyLog(capture.messages, QStringLiteral("polling"), command, recognized);
         QTRY_COMPARE(provider.polls.size(), 1);
         ControllerBotServer::answer(provider.polls.takeFirst(), QJsonArray{incoming(command)});
         QTRY_COMPARE(provider.polls.size(), 1);
-        QCOMPARE(provider.messages.size(), 1); // Duplicate diagnostics never replay the command.
+        QCOMPARE(provider.messages.size(), empty ? 0 : 1); // Duplicate diagnostics never replay the command.
         QCOMPARE(capture.messages.size(), PUBLICS_EXPECT_INCOMING_LOGS ? 2 : 0);
         verifyLog(capture.messages.mid(1), QStringLiteral("polling"), command, recognized);
         agent.stop();
+    }
+    void oversizedWhitespaceCommandsAreRedacted()
+    {
+        for (const auto &route : QStringList{"robinhood_auto_buy", "auto_sell"}) {
+            Capture capture;
+            const auto text = route + QString(4096, '\n') + "A";
+            logTelegramIncomingUpdate(incoming(text), false);
+            verifyLog(capture.messages, QStringLiteral("polling"), text, false);
+        }
     }
     void messageHandlerMayStopOrDestroyRuntime_data()
     {
@@ -231,6 +257,10 @@ private slots:
         QTest::newRow("auth") << QString("authenticate_robinhood_account synthetic-private+tag@example.test");
         QTest::newRow("publics") << QString("publics_auto_buy AAPL");
         QTest::newRow("rh") << QString("/robinhood_auto_sell aapl,MSFT");
+        for (const auto &route : QStringList{"publics_auto_buy", "publics_auto_sell", "robinhood_auto_buy",
+                "robinhood_auto_sell", "auto_buy", "auto_sell"})
+            QTest::newRow(qPrintable(route + "-mixed"))
+                << " \t/" + route + QString::fromUtf8("\u00a0,,aapl\t\r\nMSFT,\u2003GOOG,,\u3000");
         QStringList many;
         for (int i = 0; i < 700; ++i) many.append(QStringLiteral("T%1").arg(i));
         QTest::newRow("rh-700") << "robinhood_auto_buy " + many.join(',');

@@ -18,12 +18,20 @@ TestCase {
     SignalSpy { id: buySpy; signalName: "performBuy" }
     SignalSpy { id: sellSpy; signalName: "performSell" }
 
-    function test_manualButtonsPreserveTickerList() {
+    function test_manualButtonsPreserveTickerList_data() {
+        return [{tag: "spaces", input: " aapl TSLA      GM "},
+                {tag: "commas", input: "   aapl, TSLA   ,GM "},
+                {tag: "mixed", input: "  aapl  TSLA,GM  "}]
+    }
+    function test_manualButtonsPreserveTickerList(data) {
         const trade = createTemporaryObject(tradeComponent, testCase)
         verify(trade !== null)
-        trade.inputFieldText = "AAPL, TSLA, GM"
+        trade.inputFieldText = data.input
+        compare(findChild(trade, "tickerInput").Accessible.name, "Ticker symbols, separated by commas or whitespace")
         buySpy.target = trade
         sellSpy.target = trade
+        buySpy.clear()
+        sellSpy.clear()
         const buyButton = findChild(trade, "buyButton")
         const sellButton = findChild(trade, "sellButton")
         tryVerify(() => buyButton.visible && buyButton.enabled && buyButton.width > 0 && buyButton.height > 0)
@@ -31,7 +39,7 @@ TestCase {
         compare(buySpy.count, 1)
         mouseClick(sellButton)
         compare(sellSpy.count, 1)
-        compare(trade.inputFieldText, "AAPL, TSLA, GM")
+        compare(trade.inputFieldText, data.input)
         buySpy.target = null
         sellSpy.target = null
     }

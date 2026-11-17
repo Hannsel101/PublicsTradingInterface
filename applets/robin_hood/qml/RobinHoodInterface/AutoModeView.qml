@@ -53,15 +53,15 @@ FocusScope {
             Layout.fillWidth: true
             Layout.minimumHeight: 48
             enabled: !root.busy
-            placeholderText: qsTr("AAPL or AAPL, TSLA")
-            Accessible.name: qsTr("Ticker symbols, comma-separated")
+            placeholderText: qsTr("AAPL or AAPL TSLA, GM")
+            Accessible.name: qsTr("Ticker symbols, separated by commas or whitespace")
             selectByMouse: true
             font.pixelSize: 18
             color: "#f3f9f0"
             placeholderTextColor: "#abc4b8"
             leftPadding: 12
             rightPadding: 12
-            readonly property bool acceptableSymbols: text.trim().length > 0 && !/[^A-Za-z0-9.,\s-]/.test(text)
+            readonly property bool acceptableSymbols: /[A-Za-z]/.test(text) && !/[^A-Za-z0-9.,\s\u0085-]/.test(text)
             onTextEdited: {
                 const normalized = text.replace(/[a-z]/g, character => character.toUpperCase())
                 if (normalized === text) return

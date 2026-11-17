@@ -21,6 +21,7 @@
 #include <QUrlQuery>
 #include <QDebug>
 #include <functional>
+#include <utility>
 #include <QDir>
 #include <QFile>
 #include <QLockFile>
@@ -60,6 +61,14 @@ struct TelegramAgent::State
     bool hostReleased = true;
     bool cleanupDone = true;
     QTimer cleanupTimer;
+    // One password-authenticated Start owns at most three registration attempts.
+    // Credentials stay only in the existing RAM fields until the chain retires.
+    static constexpr int maxRegistrationAttempts = 3;
+    int registrationAttempt = 0;
+    bool retryPending = false;
+    bool retryScheduled = false;
+    QString terminalStartupError;
+    enum class RequestFailure { Terminal, Transient };
     QSet<qint64> admitted;
     QQueue<qint64> admissionOrder;
     quint64 generation = 0;
@@ -208,7 +217,10 @@ struct TelegramAgent::State
                 fail(QStringLiteral("Telegram webhook secret did not match this session.")); return;
             }
             manager->setWebhookUrl(url);
-            qDebug("Telegram webhook registration phase");
+            const auto run = generation;
+            const QPointer<TelegramAgent> guard(q);
+            qDebug("Telegram webhook registration attempt %d/3", registrationAttempt);
+            if (!guard || generation != run || !starting || stopping) return;
             request(QStringLiteral("setWebhook"), {{"url", url.toString(QUrl::FullyEncoded)},
                 {"secret_token", secret}, {"allowed_updates", QJsonArray{"message"}},
                 {"max_connections", 1}, {"drop_pending_updates", false}}, [this](QJsonValue result) {
@@ -356,18 +368,23 @@ struct TelegramAgent::State
             || from.value("id").toInteger() != chat.value("id").toInteger()) return true;
         const auto text = message.value("text").toString().trimmed();
         static const QRegularExpression emptyTradeCommand(QStringLiteral(
-            "\\A/?(?:(?:publics|robinhood)_)?auto_(?:buy|sell)\\z"));
+            "\\A/?(?:(?:publics|robinhood)_)?auto_(?:buy|sell)[,\\s]*\\z"),
+            QRegularExpression::UseUnicodePropertiesOption);
         // No arguments: no reply, queued work or durable trade claim.
         if (emptyTradeCommand.match(text).hasMatch()) return true;
         PendingReply item{id, chat.value("id").toInteger(),
             text == QStringLiteral("status") || text == QStringLiteral("/status"), {}, {}};
         // ASCII only: never case-fold arbitrary Unicode into a valid ticker.
         static const QRegularExpression command(QStringLiteral(
-            "\\A/?(publics|robinhood)_auto_(buy|sell)[ \t]+([A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?(?:[ \t]*,[ \t]*[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?)*)\\z"));
+            "\\A/?(publics|robinhood)_auto_(buy|sell)[,\\s]+([A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?(?:[,\\s]+[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?)*)[,\\s]*\\z"),
+            QRegularExpression::UseUnicodePropertiesOption);
         // Composite jobs use the brokers' intersection: never let Publics strip
         // punctuation/digits and silently trade a different symbol.
         static const QRegularExpression combinedCommand(QStringLiteral(
-            "\\A/?auto_(buy|sell)[ \t]+([A-Za-z]{1,10}(?:[ \t]*,[ \t]*[A-Za-z]{1,10})*)\\z"));
+            "\\A/?auto_(buy|sell)[,\\s]+([A-Za-z]{1,10}(?:[,\\s]+[A-Za-z]{1,10})*)[,\\s]*\\z"),
+            QRegularExpression::UseUnicodePropertiesOption);
+        static const QRegularExpression separators(QStringLiteral("[,\\s]+"),
+            QRegularExpression::UseUnicodePropertiesOption);
         if (message.value("text").toString().size() <= 4096 && allowedChatIds.contains(item.chatId)
             && !message.contains("forward_origin") && !message.contains("via_bot")
             && !message.contains("is_automatic_forward") && !message.contains("is_from_offline")
@@ -377,7 +394,7 @@ struct TelegramAgent::State
             const auto match = command.match(text);
             if (match.hasMatch()) {
                 const bool robinhood = match.captured(1) == QStringLiteral("robinhood");
-                auto symbols = match.captured(3).split(QLatin1Char(','));
+                auto symbols = match.captured(3).split(separators, Qt::SkipEmptyParts);
                 for (auto &symbol : symbols) symbol = symbol.trimmed().toUpper();
                 if (robinhood || (message.value("text").toString().size() <= 1024 && symbols.size() <= 50)) {
                     symbols.removeDuplicates();
@@ -388,7 +405,7 @@ struct TelegramAgent::State
             } else {
                 const auto combined = combinedCommand.match(text);
                 if (combined.hasMatch()) {
-                    auto symbols = combined.captured(2).split(QLatin1Char(','));
+                    auto symbols = combined.captured(2).split(separators, Qt::SkipEmptyParts);
                     for (auto &symbol : symbols) symbol = symbol.trimmed().toUpper();
                     symbols.removeDuplicates();
                     item.broker = Broker::Combined;
@@ -632,15 +649,41 @@ struct TelegramAgent::State
     void finishStop()
     {
         if (!stopping || !hostReleased || !cleanupDone) return;
-        token.clear();
-        ownedWebhook = QUrl{};
-        sessionSecret.clear();
         if (manager) manager.release()->deleteLater();
         registrationReply = nullptr;
         clientId.clear();
+        ownedWebhook = QUrl{};
+        if (retryPending) {
+            if (retryScheduled) return;
+            retryScheduled = true;
+            const auto run = generation;
+            const QPointer<TelegramAgent> owner(q);
+            // Keep stopping raised through cleanup and backoff; never publish idle
+            // between attempts, and do not re-read credentials or revalidate identity.
+            QTimer::singleShot(100 * registrationAttempt, Qt::PreciseTimer, q, [owner, run] {
+                if (!owner || owner->d->generation != run || !owner->d->retryPending
+                    || !owner->d->retryScheduled || !owner->d->stopping) return;
+                auto *state = owner->d.get();
+                state->retryPending = state->retryScheduled = false;
+                state->stopping = false;
+                state->starting = true;
+                ++state->registrationAttempt;
+                emit owner->stateChanged();
+                if (!owner || owner->d->generation != run || !owner->d->starting || owner->d->stopping) return;
+                owner->d->acquireHost();
+            });
+            return;
+        }
+        token.clear();
+        sessionSecret.clear();
+        const auto error = std::exchange(terminalStartupError, {});
         stopping = false;
+        const auto run = generation;
+        const QPointer<TelegramAgent> guard(q);
         qDebug("Telegram webhook stop complete");
+        if (!guard || generation != run) return;
         emit q->stateChanged(); // Final old-run mutation; observer may restart or delete.
+        if (guard && generation == run && !error.isEmpty()) emit q->errorOccurred(error);
     }
     void finishCleanup(bool confirmed)
     {
@@ -648,27 +691,52 @@ struct TelegramAgent::State
         cleanupDone = true;
         cleanupTimer.stop();
         cancelRequests();
-        token.clear();
+        if (!confirmed) {
+            retryPending = retryScheduled = false;
+            terminalStartupError = QStringLiteral("Telegram webhook remote cleanup is unknown; not retried.");
+        }
+        if (!retryPending) { token.clear(); sessionSecret.clear(); }
+        const auto run = generation;
         const QPointer<TelegramAgent> guard(q);
-        if (!confirmed) emit q->errorOccurred(QStringLiteral("Telegram webhook remote cleanup is unknown; not retried."));
-        if (guard) finishStop();
+        qDebug("Telegram webhook cleanup completion: %s", confirmed ? "confirmed" : "unknown");
+        if (guard && generation == run) finishStop();
     }
     void cleanupRemote()
     {
         request(QStringLiteral("getWebhookInfo"), {}, [this](QJsonValue info) {
             if (!info.isObject() || !info.toObject().value("url").isString()) { finishCleanup(false); return; }
-            if (info.toObject().value("url").toString() != ownedWebhook.toString(QUrl::FullyEncoded)) {
-                finishCleanup(!registrationUncertain); return; // Do not delete another owner's replacement.
+            const auto remoteUrl = info.toObject().value("url").toString();
+            if (remoteUrl != ownedWebhook.toString(QUrl::FullyEncoded)) {
+                // Stop never deletes another owner's replacement. Recovery also
+                // must not overwrite it, even if our original registration was known.
+                finishCleanup(!registrationUncertain && (!retryPending || remoteUrl.isEmpty())); return;
             }
             registrationUncertain = false; // Readback proves this registration committed.
             request(QStringLiteral("deleteWebhook"), {{"drop_pending_updates", false}}, [this](QJsonValue result) {
                 if (result != QJsonValue(true)) { finishCleanup(false); return; }
                 request(QStringLiteral("getWebhookInfo"), {}, [this](QJsonValue current) {
                     finishCleanup(current.isObject() && current.toObject().value("url").isString()
-                        && current.toObject().value("url").toString() != ownedWebhook.toString(QUrl::FullyEncoded));
+                        && current.toObject().value("url").toString() != ownedWebhook.toString(QUrl::FullyEncoded)
+                        && (!retryPending || current.toObject().value("url").toString().isEmpty()));
                 });
             });
         });
+    }
+    void cancelRecovery()
+    {
+        retryPending = retryScheduled = false;
+        terminalStartupError.clear();
+        // Remote cleanup still needs token; the session secret never does.
+        sessionSecret.clear();
+    }
+    void registrationFailed(const QString &message)
+    {
+        retryPending = registrationAttempt < maxRegistrationAttempts;
+        if (!retryPending) terminalStartupError = message;
+        const auto run = generation + 1;
+        const QPointer<TelegramAgent> guard(q);
+        stop(false);
+        if (guard && generation == run) emit q->stateChanged();
     }
     void stop(bool notify = true)
     {
@@ -683,7 +751,7 @@ struct TelegramAgent::State
         tradeTicket.clear(); tradeChat = 0; authenticationCommand = false; reportSending = false; discardReports();
         admitted.clear(); admissionOrder.clear();
         offset = 0;
-        botId = 0;
+        if (!retryPending) botId = 0; // Registration retries retain the authenticated identity.
         // Aborting setWebhook cannot retract an accepted remote mutation.
         cancelRequests(options.enabled && !clientId.isEmpty());
         if (options.enabled && !clientId.isEmpty()) {
@@ -708,6 +776,7 @@ struct TelegramAgent::State
     }
     void destroy()
     {
+        cancelRecovery();
         ++generation;
         active = starting = healthy = false;
         cleanupTimer.stop(); pollTimer.stop();
@@ -795,6 +864,8 @@ struct TelegramAgent::State
             pending.remove(reply);
             reply->deleteLater();
             consume();
+            // registerWebhook owns an earlier absolute deadline on the same reply.
+            response->timedOut = response->timedOut || reply->property("webhookTimedOut").toBool();
             if (registrationReply == reply) {
                 registrationReply = nullptr;
                 const auto receipt = QJsonDocument::fromJson(response->bytes).object();
@@ -815,12 +886,17 @@ struct TelegramAgent::State
                     if (owner && owner->d->generation == run) callback();
                 });
             };
-            const auto reject = [this, &method, &failed, &dispatch](QString message, bool recoverable = true) {
+            const auto reject = [this, &method, &failed, &dispatch](QString message, bool recoverable = true,
+                                    RequestFailure category = RequestFailure::Terminal) {
                 // Never expose URLs, provider descriptions, raw bodies or errorString().
                 if (method == QStringLiteral("sendMessage"))
                     message += QStringLiteral(" Acknowledgement delivery is uncertain; not retried.");
-                dispatch([this, failed, recoverable, message = std::move(message)] {
-                    if (failed && recoverable) failed(message);
+                const bool retryRegistration = category == RequestFailure::Transient && options.enabled
+                    && starting && !stopping && (method == QStringLiteral("setWebhook")
+                        || method == QStringLiteral("getWebhookInfo"));
+                dispatch([this, failed, recoverable, retryRegistration, message = std::move(message)] {
+                    if (retryRegistration) registrationFailed(message);
+                    else if (failed && recoverable) failed(message);
                     else fail(message);
                 });
             };
@@ -833,16 +909,42 @@ struct TelegramAgent::State
                 }
             };
             const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            // Known authorization/conflict headers outrank recoverable body failures.
-            if (rejectHardFailure(status)) return;
-            if (response->oversized) { reject(QStringLiteral("Telegram response exceeded size limit.")); return; }
-            if (response->timedOut) { reject(QStringLiteral("Telegram request timed out.")); return; }
-            if (status >= 300 && status < 400) { reject(QStringLiteral("Telegram redirect refused.")); return; }
             const auto doc = QJsonDocument::fromJson(response->bytes);
             const auto object = doc.object();
-            const int code = status >= 400 ? status : object.value("error_code").toInt();
-            if (rejectHardFailure(code)) return;
-            if (code == 429) { reject(QStringLiteral("Telegram 429: rate limited; wait before starting again.")); return; }
+            const int apiCode = object.value("error_code").toInt();
+            // Known hard HTTP/API evidence outranks transport/deadline failures.
+            if (rejectHardFailure(status) || rejectHardFailure(apiCode)) return;
+            if (status == 429 || apiCode == 429) {
+                reject(QStringLiteral("Telegram 429: rate limited; wait before starting again.")); return;
+            }
+            if (response->oversized) { reject(QStringLiteral("Telegram response exceeded size limit.")); return; }
+            if (status >= 300 && status < 400) { reject(QStringLiteral("Telegram redirect refused.")); return; }
+            if ((status >= 400 && status < 500) || (apiCode >= 400 && apiCode < 500)) {
+                reject(QStringLiteral("Telegram returned an invalid or rejected response.")); return;
+            }
+            if (response->timedOut) {
+                reject(QStringLiteral("Telegram request timed out."), true, RequestFailure::Transient); return;
+            }
+            bool transientNetwork = false;
+            switch (reply->error()) {
+            case QNetworkReply::ConnectionRefusedError:
+            case QNetworkReply::RemoteHostClosedError:
+            case QNetworkReply::HostNotFoundError:
+            case QNetworkReply::TimeoutError:
+            case QNetworkReply::TemporaryNetworkFailureError:
+            case QNetworkReply::NetworkSessionFailedError:
+            case QNetworkReply::ProxyConnectionRefusedError:
+            case QNetworkReply::ProxyConnectionClosedError:
+            case QNetworkReply::ProxyNotFoundError:
+            case QNetworkReply::ProxyTimeoutError:
+                transientNetwork = true; break;
+            default: break;
+            }
+            const bool transientApiError = object.value("ok") == QJsonValue(false)
+                && !object.contains("result") && apiCode >= 500 && apiCode < 600;
+            if ((status >= 500 && status < 600) || transientApiError || transientNetwork) {
+                reject(QStringLiteral("Telegram network or service request failed."), true, RequestFailure::Transient); return;
+            }
             if (reply->error() != QNetworkReply::NoError || status == 0) {
                 reject(QStringLiteral("Telegram network or service request failed.")); return;
             }
@@ -870,7 +972,12 @@ bool TelegramAgent::healthy() const { return d->healthy; }
 bool TelegramAgent::active() const { return d->active; }
 bool TelegramAgent::starting() const { return d->starting; }
 bool TelegramAgent::stopping() const { return d->stopping; }
-void TelegramAgent::stop() { d->stop(); }
+void TelegramAgent::stop()
+{
+    d->cancelRecovery();
+    if (d->stopping) d->finishStop();
+    else d->stop();
+}
 void TelegramAgent::resolveInspectorConflict(const QString &action)
 {
     if ((action != QStringLiteral("restart") && action != QStringLiteral("cancel"))
@@ -906,6 +1013,10 @@ void TelegramAgent::setAllowedChatIds(QStringList ids)
         QStringList effective;
         for (const auto id : d->allowedChatIds) effective.append(QString::number(id));
         d->manager->setAllowedChatIds(effective);
+    }
+    if (d->allowedChatIds.isEmpty() && (d->starting || d->retryPending)) {
+        stop(); // Revoke the entire pending Start, not just its current intake.
+        return;
     }
     if (d->tradeChat && !d->allowedChatIds.contains(d->tradeChat)) d->discardReports(true);
 }
@@ -949,7 +1060,9 @@ void TelegramAgent::start(QString token, QString sessionSecret)
         return;
     }
     const bool hadState = d->active || d->starting;
+    d->cancelRecovery();
     d->stop(false);
+    d->registrationAttempt = 1;
     static const QRegularExpression format(QStringLiteral("\\A[1-9][0-9]{0,15}:[A-Za-z0-9_-]{1,256}\\z"));
     if (!d->safeRoot() || !d->safeHealthEndpoint() || !format.match(token).hasMatch()
         || !TelegramWebhookManager::validSecret(sessionSecret)) {

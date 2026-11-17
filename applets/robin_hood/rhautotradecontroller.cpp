@@ -350,15 +350,15 @@ bool RHAutoTradeController::submit(QString input, QString side) {
     static const QRegularExpression ticker(QStringLiteral("\\A[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?\\z"));
     QStringList symbols;
     if (input.size() <= 4096 && (side == "buy" || side == "sell")) {
-        for (const auto &entry : input.split(',')) {
-            const auto candidate = entry.trimmed();
+        static const QRegularExpression separators("[,\\s]+", QRegularExpression::UseUnicodePropertiesOption);
+        for (const auto &candidate : input.split(separators, Qt::SkipEmptyParts)) {
             if (!ticker.match(candidate).hasMatch()) { symbols.clear(); break; }
             const auto upper = candidate.toUpper();
             if (!symbols.contains(upper)) symbols.append(upper);
         }
     }
     if (symbols.isEmpty()) {
-        d->error = "Enter valid comma-separated ASCII stock symbols (maximum 4096 characters) and select Buy or Sell.";
+        d->error = "Enter valid ASCII stock symbols separated by commas or whitespace (maximum 4096 characters) and select Buy or Sell.";
         d->notify(); return false;
     }
     if (!d->admitted()) { d->error = sessionFailure; d->notify(); return false; }

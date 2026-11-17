@@ -79,7 +79,7 @@ TestCase {
         compare(input.text, "AAPL, BRK.B, ßé"); compare(buy.enabled, false)
         input.selectAll(); RobinTrades.typeText(input, " aapl, brk.b ")
         compare(input.text, " AAPL, BRK.B ")
-        compare(input.Accessible.name, "Ticker symbols, comma-separated")
+        compare(input.Accessible.name, "Ticker symbols, separated by commas or whitespace")
         for (const button of [buy, sell]) {
             verify(button.mapToItem(view, 0, 0).x >= 0)
             verify(button.mapToItem(view, button.width, button.height).x <= view.width)
@@ -109,6 +109,33 @@ TestCase {
         mouseClick(findChild(view, "robinAutoBack"))
         tryCompare(findChild(view, "robinAutoModeLoader"), "active", false)
         compare(RobinSessions.sessionActive, false)
+    }
+    function test_mixedSeparators_data() {
+        const rows = []
+        const inputs = [" aapl MSFT      GM ", "   aapl, MSFT   ,GM ", "  aapl  MSFT,GM  ", "aapl\u0085MSFT GM"]
+        for (const size of sizes())
+            for (const side of ["buy", "sell"])
+                for (let i = 0; i < inputs.length; ++i)
+                    rows.push({tag: size.tag + "-" + side + "-" + i, width: size.width, height: size.height,
+                               side: side, input: inputs[i]})
+        return rows
+    }
+    function test_mixedSeparators(data) {
+        const view = openView(data)
+        const input = findChild(view, "robinAutoTickers")
+        input.text = data.input
+        const button = findChild(view, data.side === "buy" ? "robinAutoBuy" : "robinAutoSell")
+        tryCompare(button, "enabled", true)
+        mouseClick(button)
+        compare(RobinAutoTrades.lastInput, data.input)
+        compare(RobinAutoTrades.lastSide, data.side)
+    }
+    function test_separatorOnlyInputDisabled_data() { return sizes() }
+    function test_separatorOnlyInputDisabled(data) {
+        const view = openView(data)
+        findChild(view, "robinAutoTickers").text = " ,,,  ,  "
+        compare(findChild(view, "robinAutoBuy").enabled, false)
+        compare(findChild(view, "robinAutoSell").enabled, false)
     }
     function test_results_data() { return sizes() }
     function test_results(data) {

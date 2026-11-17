@@ -18,8 +18,8 @@ ColumnLayout {
         objectName: "robinTickerInput"
         Layout.fillWidth: true
         Layout.minimumHeight: 52
-        placeholderText: qsTr("AAPL or AAPL, TSLA, GM")
-        Accessible.name: qsTr("Ticker symbols, comma-separated")
+        placeholderText: qsTr("AAPL or AAPL TSLA, GM")
+        Accessible.name: qsTr("Ticker symbols, separated by commas or whitespace")
         selectByMouse: true
         onTextEdited: {
             const uppercase = input.text.replace(/[a-z]/g, character => character.toUpperCase())

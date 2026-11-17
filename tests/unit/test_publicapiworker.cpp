@@ -20,11 +20,29 @@ private slots:
         QVERIFY(!id.contains(worker.m_token));
     }
 
+    void parsesMixedTickerSeparators_data()
+    {
+        QTest::addColumn<QString>("input");
+        QTest::newRow("spaces") << QStringLiteral("aapl msft      gm");
+        QTest::newRow("commas") << QStringLiteral("   aapl, msft   ,gm  ");
+        QTest::newRow("mixed") << QStringLiteral("    aapl  msft,gm ");
+        QTest::newRow("all-whitespace") << QStringLiteral("\t aapl\r\nmsft\v\fgm\t");
+        QTest::newRow("unicode-whitespace") << QString::fromUtf8("aapl\u00a0msft\u2003gm");
+        QTest::newRow("empty-segments") << QStringLiteral(",, aapl,, \tmsft , ,gm, ,");
+    }
+
+    void parsesMixedTickerSeparators()
+    {
+        QFETCH(QString, input);
+        QCOMPARE(PublicApiWorker::parseSymbols(input),
+                 QStringList({QStringLiteral("AAPL"), QStringLiteral("MSFT"), QStringLiteral("GM")}));
+    }
+
     void parsesCommaSeparatedSymbolsWithoutLosingOrder()
     {
         QCOMPARE(PublicApiWorker::parseSymbols(QStringLiteral(" AAPL, TSLA, GM,")),
                  QStringList({QStringLiteral("AAPL"), QStringLiteral("TSLA"), QStringLiteral("GM")}));
-        QCOMPARE(PublicApiWorker::parseSymbols(QStringLiteral("a a!p1l, t$sla,, gm")),
+        QCOMPARE(PublicApiWorker::parseSymbols(QStringLiteral("aa!p1l, t$sla,, gm")),
                  QStringList({QStringLiteral("AAPL"), QStringLiteral("TSLA"), QStringLiteral("GM")}));
         QCOMPARE(PublicApiWorker::parseSymbols(QStringLiteral(" , 123 ,!")), QStringList());
         QCOMPARE(PublicApiWorker::parseSymbols(QStringLiteral("aapl,aapl")),

@@ -111,15 +111,15 @@ bool RHTradeController::submit(QString input, QString side) {
     if (m_busy || m_finishing) return false;
     QStringList symbols;
     if (input.size() <= 1024 && (side == "buy" || side == "sell")) {
-        for (const auto &entry : input.split(',')) {
-            const auto candidate = entry.trimmed();
+        static const QRegularExpression separators("[,\\s]+", QRegularExpression::UseUnicodePropertiesOption);
+        for (const auto &candidate : input.split(separators, Qt::SkipEmptyParts)) {
             if (!matches(candidate, "[A-Za-z][A-Za-z0-9]{0,9}(?:[.-][A-Za-z0-9]{1,4})?")) { symbols.clear(); break; }
             const auto symbol = candidate.toUpper();
             if (!symbols.contains(symbol)) symbols.append(symbol);
         }
     }
     if (symbols.isEmpty() || symbols.size() > 20 || !m_deps.acquire || !m_deps.current || !m_deps.release) {
-        m_error = "Enter 1–20 valid comma-separated stock symbols and select Buy or Sell.";
+        m_error = "Enter 1–20 valid stock symbols separated by commas or whitespace and select Buy or Sell.";
         emit errorChanged(); return false;
     }
     QPointer<RHTradeController> guard(this); const auto before = m_epoch;

@@ -132,6 +132,13 @@ struct Fixture : QObject {
 class RHTradeControllerTest : public QObject {
     Q_OBJECT
 private:
+    static bool awaitCooldown(Fixture &fixture) {
+        QElapsedTimer elapsed; elapsed.start();
+        while (fixture.timers.isEmpty() && elapsed.elapsed() < 5000) {
+            QCoreApplication::processEvents(); QTest::qWait(1);
+        }
+        return fixture.timers.size() == 1;
+    }
     static void comparePostEvidence(const QVariantMap &row, bool attempted, bool ok, int http, int error) {
         const QVariantMap expected{{"orderPostAttempted", attempted}, {"orderPostTransportOk", ok},
             {"orderPostHttpStatus", http}, {"orderPostNetworkError", error}};
@@ -1395,21 +1402,113 @@ private slots:
         QVERIFY(f.requests.isEmpty()); QCOMPARE(f.releases, 1);
     }
 
-    void invalidInputNeverAcquiresOrDispatches()
-    {
-        RHNetworkEngine network;
-        int acquisitions = 0;
-        RHTradeController::Dependencies deps;
-        deps.acquire = [&](auto) { ++acquisitions; };
-        deps.current = [](const auto &) { return true; };
-        deps.release = [] {};
-        deps.availabilityReason = [] { return QString(); };
-        RHTradeController controller(network, deps);
-        for (const auto &text : QStringList{"", "AAPL,", "A APL", "AAPL/$", ",", "AAPL,,MSFT", QString::fromUtf8("ſPY"), QString::fromUtf8("ßPY")})
-            QVERIFY(!controller.submit(text, "buy"));
-        QVERIFY(!controller.submit("AAPL", "short"));
-        QCOMPARE(acquisitions, 0);
-        QVERIFY(!controller.tradeResultsBusy());
+    void tickerSeparators_data() {
+        QTest::addColumn<QString>("input"); QTest::addColumn<QString>("side");
+        const QStringList inputs{
+            "aapl msft    GOOG", "aapl, MSFT ,GOOG", "aapl msft,GOOG",
+            ",, aapl,,msft , ,GOOG,, ", "\taapl\tmsft\nGOOG\r\n",
+            QString("aapl") + QChar(0x00a0) + "msft," + QChar(0x2003) + "GOOG",
+            "aapl,msft aApL, GOOG msft"};
+        for (const auto &side : {QString("buy"), QString("sell")})
+            for (int i = 0; i < inputs.size(); ++i)
+                QTest::newRow(qPrintable(side + QString::number(i))) << inputs[i] << side;
+    }
+    void tickerSeparators() {
+        QFETCH(QString, input); QFETCH(QString, side); Fixture f;
+        const QStringList expected{"AAPL", "MSFT", "GOOG"};
+        f.overrideRead = [&](QUrl url) -> QJsonObject {
+            if (url.path() != "/positions/") return {};
+            const auto number = QUrlQuery(url).queryItemValue("account_number");
+            QJsonArray rows;
+            for (const auto &symbol : expected) rows.append(QJsonObject{
+                {"account", f.origin + "/accounts/a" + number + "/"}, {"account_number", number},
+                {"instrument", f.origin + "/instruments/" + symbol + "/"}, {"quantity", "2.5"},
+                {"shares_held_for_sells", "0"}, {"shares_held_for_stock_grants", "0"},
+                {"shares_held_for_options_collateral", "0"}, {"shares_held_for_options_events", "0"}});
+            return {{"results", rows}, {"next", QJsonValue::Null}};
+        };
+        RHTradeController controller(f.network, f.deps());
+        QVERIFY(controller.submit(input, side));
+        for (int i = 0; i < expected.size() * 3; ++i) {
+            QVERIFY(awaitCooldown(f)); QCOMPARE(f.orders.size(), i + 1);
+            const auto row = controller.tradeResults().at(i).toMap();
+            QCOMPARE(row.value("symbol").toString(), expected[i / 3]);
+            QCOMPARE(row.value("status").toString(), "submitted");
+            QCOMPARE(f.orders[i].value("symbol").toString(), expected[i / 3]);
+            QCOMPARE(f.orders[i].value("instrument").toString(), f.origin + "/instruments/" + expected[i / 3] + "/");
+            QCOMPARE(f.orders[i].value("side").toString(), side);
+            QCOMPARE(f.orders[i].value("account").toString(), f.origin + QString("/accounts/a%1/").arg(i % 3 + 1));
+            QCOMPARE(f.orders[i].value("quantity").toString(), side == "buy" ? "1" : "2.5");
+            QVERIFY(f.delays.last() >= 2000 && f.delays.last() <= 3000);
+            QVERIFY(controller.tradeResultsBusy()); QCOMPARE(f.releases, 0); f.tick();
+        }
+        QTRY_VERIFY(controller.tradeResultsComplete()); QCOMPARE(f.acquisitions, 1); QCOMPARE(f.releases, 1);
+        QCOMPARE(controller.tradeResults().size(), 9); QCOMPARE(f.delays.size(), 9);
+    }
+    void invalidInputNeverAcquiresOrDispatches_data() {
+        QTest::addColumn<QString>("input"); QTest::addColumn<QString>("side");
+        QStringList symbols; for (int i = 0; i < 21; ++i) symbols.append(QString("T%1").arg(i));
+        const QStringList inputs{
+            "", ", \t,\r\n,,", QString(",") + QChar(0x00a0) + QChar(0x2003),
+            "AAPL;MSFT", "AAPL/$", "AAPL MSFT,GOOG!", "AAPL, MS_FT", "AAPL,MSFT/GOOG",
+            QString::fromUtf8("AAPL ſPY"), QString::fromUtf8("AAPL ßPY"),
+            QString::fromUtf8("AAPL ＭSFT"), QString::fromUtf8("AAPL MŚFT"),
+            QString("AAPL MS") + QChar(0x200b) + "FT", "AAPL A1234567890", "AAPL BRK.ABCDE",
+            QString("AAPL") + QString(1021, ' '), // Raw length cap applies before splitting/deduplication.
+            symbols.join(" ,\t") + " T0 t0", symbols.mid(0, 20).join(' ') + " BAD!"};
+        for (const auto &side : {QString("buy"), QString("sell")})
+            for (int i = 0; i < inputs.size(); ++i)
+                QTest::newRow(qPrintable(side + QString::number(i))) << inputs[i] << side;
+        QTest::newRow("invalid-side") << QString("AAPL MSFT") << QString("short");
+    }
+    void invalidInputNeverAcquiresOrDispatches() {
+        QFETCH(QString, input); QFETCH(QString, side); Fixture f;
+        RHTradeController controller(f.network, f.deps());
+        QVERIFY(!controller.submit(input, side));
+        QVERIFY(controller.error().contains("commas or whitespace"));
+        QCOMPARE(f.acquisitions, 0); QCOMPARE(f.releases, 0);
+        QVERIFY(f.orders.isEmpty()); QVERIFY(f.requests.isEmpty()); QVERIFY(f.timers.isEmpty());
+        QVERIFY(controller.tradeResults().isEmpty()); QVERIFY(!controller.tradeResultsBusy());
+    }
+    void tickerInputBoundaries_data() {
+        QTest::addColumn<QString>("input"); QTest::addColumn<QStringList>("expected"); QTest::addColumn<QString>("side");
+        QStringList twenty; for (int i = 0; i < 20; ++i) twenty.append(QString("T%1").arg(i));
+        for (const auto &side : {QString("buy"), QString("sell")}) {
+            QTest::newRow(qPrintable(side + "-length-1024")) << QString("aapl") + QString(1020, QChar(0x00a0)) << QStringList{"AAPL"} << side;
+            QTest::newRow(qPrintable(side + "-twenty-unique")) << twenty.join(" \t, ") + " t0,,T19 " << twenty << side;
+            QTest::newRow(qPrintable(side + "-ascii-syntax")) << QString("a1 brk.b,bf-b ABCDEFGHIJ.A123")
+                << QStringList{"A1", "BRK.B", "BF-B", "ABCDEFGHIJ.A123"} << side;
+        }
+    }
+    void tickerInputBoundaries() {
+        QFETCH(QString, input); QFETCH(QStringList, expected); QFETCH(QString, side);
+        Fixture f; f.session.accounts = {f.session.accounts.first()};
+        // Provider instrument IDs are opaque safe IDs, not dotted display tickers.
+        f.overrideRead = [&](QUrl url) -> QJsonObject {
+            const auto symbol = QUrlQuery(url).queryItemValue("symbols");
+            auto id = symbol; id.replace('.', '_');
+            const auto instrument = f.origin + "/instruments/" + id + "/";
+            if (url.path() == "/instruments/") return {{"results", QJsonArray{QJsonObject{
+                {"id", id}, {"symbol", symbol}, {"url", instrument}, {"tradeable", true},
+                {"tradability", "tradable"}, {"state", "active"}}}}, {"next", QJsonValue::Null}};
+            if (url.path() == "/quotes/") return {{"results", QJsonArray{QJsonObject{
+                {"symbol", symbol}, {"instrument", instrument}, {"last_trade_price", "10.25"},
+                {"ask_price", "10.25"}, {"bid_price", "10.24"}}}}, {"next", QJsonValue::Null}};
+            return {};
+        };
+        RHTradeController controller(f.network, f.deps());
+        QVERIFY(controller.submit(input, side));
+        for (int i = 0; i < expected.size(); ++i) {
+            QVERIFY(awaitCooldown(f));
+            const auto row = controller.tradeResults()[i].toMap();
+            QCOMPARE(row.value("symbol").toString(), expected[i]);
+            QCOMPARE(row.value("status").toString(), side == "buy" ? "submitted" : "skipped");
+            if (side == "buy") QCOMPARE(f.orders[i].value("symbol").toString(), expected[i]);
+            f.tick();
+        }
+        QTRY_VERIFY(controller.tradeResultsComplete()); QCOMPARE(controller.tradeResults().size(), expected.size());
+        QCOMPARE(f.acquisitions, 1); QCOMPARE(f.releases, 1);
+        QCOMPARE(f.orders.size(), side == "buy" ? expected.size() : 0);
     }
 };
 QTEST_GUILESS_MAIN(RHTradeControllerTest)

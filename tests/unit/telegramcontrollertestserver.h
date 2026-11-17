@@ -22,6 +22,7 @@ public:
     bool loseFirstMessageAcknowledgement = false;
     bool holdIdentity = false;
     bool holdWebhookDeletion = false;
+    int transientRegistrationFailures = 0;
     QUrl registeredWebhook;
     QString webhookSecret;
     QList<QPointer<QTcpSocket>> deletions;
@@ -60,6 +61,13 @@ public:
                             : query.queryItemValue(QStringLiteral("url"), QUrl::FullyDecoded));
                         webhookSecret = post ? payload.value("secret_token").toString()
                             : query.queryItemValue(QStringLiteral("secret_token"), QUrl::FullyDecoded);
+                        // Simulate a remote registration committing before its failure receipt.
+                        if (transientRegistrationFailures > 0) {
+                            --transientRegistrationFailures;
+                            socket->write("HTTP/1.1 503 Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+                            socket->disconnectFromHost();
+                            return;
+                        }
                         answer(socket, true);
                     } else if (path.endsWith("/getWebhookInfo")) {
                         answer(socket, QJsonObject{{"url", registeredWebhook.toString()},

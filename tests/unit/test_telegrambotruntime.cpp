@@ -209,7 +209,8 @@ private slots:
         for (const auto &command : QStringList{"publics_auto_buy", "publics_auto_sell",
                 "robinhood_auto_buy", "robinhood_auto_sell", "auto_buy", "auto_sell"}) {
             for (const auto &text : QStringList{command, "/" + command,
-                    " \t" + command + " \t\r\n", "/" + command + " \t"})
+                    " \t" + command + " \t\r\n", "/" + command + " \t",
+                    command + ",,,", "/" + command + QString::fromUtf8("\u00a0,,\t,\n\u2003,")})
                 incoming.append(tradeUpdate(id++, text));
         }
         BotServer::answer(server.requests[1], incoming);
@@ -228,13 +229,18 @@ private slots:
     void lowercaseTickersAreNormalizedBeforeDomainDispatch_data()
     {
         QTest::addColumn<QString>("command");
+        QTest::addColumn<QString>("tail");
+        const QStringList tails{" aapl mSfT    nvda AaPl", " aapl, mSfT  ,nvda, AaPl",
+            " aapl mSfT,nvda AaPl", "\t,,aapl,\t\r\nmSfT,,nvda AaPl,, \n",
+            QString::fromUtf8("\u00a0,,aapl\u2003mSfT,\u2028nvda\u3000AaPl,,\u00a0")};
         for (const auto &command : QStringList{"publics_auto_buy", "publics_auto_sell",
                 "robinhood_auto_buy", "robinhood_auto_sell", "auto_buy", "auto_sell"})
-            QTest::newRow(qPrintable(command)) << command;
+            for (qsizetype i = 0; i < tails.size(); ++i)
+                QTest::newRow(qPrintable(command + QString::number(i))) << command << tails[i];
     }
     void lowercaseTickersAreNormalizedBeforeDomainDispatch()
     {
-        QFETCH(QString, command);
+        QFETCH(QString, command); QFETCH(QString, tail);
         QTemporaryDir ledger; BotServer server; TelegramBotRuntime runtime(server.root());
         runtime.setAllowedChatIds({"42"}); runtime.setCommandLedgerPathForTests(ledger.path());
         QSignalSpy publics(&runtime, &TelegramBotRuntime::tradeCommandReceived);
@@ -243,7 +249,7 @@ private slots:
         runtime.start("123456:synthetic");
         QTRY_COMPARE(server.requests.size(), 1); BotServer::answer(server.requests[0], BotServer::bot());
         QTRY_COMPARE(server.requests.size(), 2);
-        BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, command + " aapl, mSfT, nvda, AaPl")});
+        BotServer::answer(server.requests[1], QJsonArray{tradeUpdate(1, " \t/" + command + tail)});
         const auto &commands = command.startsWith("publics_") ? publics
             : command.startsWith("robinhood_") ? robinhood : combined;
         QTRY_COMPARE(commands.size(), 1);
@@ -340,11 +346,16 @@ private slots:
         QTest::addColumn<QStringList>("expected");
         QTest::newRow("ascii-case-and-spaces") << "publics_auto_buy aapl, msft,aapl" << (QStringList{"AAPL", "MSFT"});
         QTest::newRow("share-class") << "/publics_auto_sell BRK.B,BRK-B" << (QStringList{"BRK.B", "BRK-B"});
+        QTest::newRow("50-before-dedup-whitespace") << "publics_auto_buy ,," + QString("a \t").repeated(50) + ",," << (QStringList{"A"});
+        QTest::newRow("51-before-dedup-whitespace") << "publics_auto_buy " + QString("a\n").repeated(51) << QStringList{};
+        const QString exact = "publics_auto_buy " + QString(1024 - QString("publics_auto_buy A").size(), '\t') + "A";
+        QTest::newRow("exact-1024-whitespace") << exact << (QStringList{"A"});
+        QTest::newRow("over-1024-whitespace") << exact + " " << QStringList{};
         for (const auto &text : QStringList{"publicsAutoBuy AAPL", "publicsAutoSell AAPL", "/publicsAutoBuy AAPL",
                  "publics_auto_buy", "Publics_auto_buy AAPL", "PUBLICS_AUTO_BUY AAPL", "/publics_auto_buy@other_bot AAPL",
-                 "publics_auto_buy AAPL,,MSFT", "publics_auto_buy AAPL,", "publics_auto_buy AAPL MSFT", "publics_auto_buy AAPL;MSFT",
+                 "publics_auto_buy AAPL;MSFT",
                  "publics_auto_buy ../AAPL", "publics_auto_buy ＡＡＰＬ", "publics_auto_buy K", "publics_auto_buy é", "publics_auto_buy AAPL,ß",
-                 "publics_auto_buy AAPL\nMSFT", "publics_auto_buy " + QString(16, 'A'),
+                 "publics_auto_buy " + QString(16, 'A'),
                  "publics_auto_buy " + QString("A,").repeated(50) + "A",
                  QString(1025, ' ') + "publics_auto_buy AAPL"})
             QTest::newRow(qPrintable(text.left(80))) << text << QStringList{};
@@ -382,13 +393,14 @@ private slots:
         QStringList many;
         for (int i = 0; i < 300; ++i) many.append(QStringLiteral("T%1").arg(i));
         QTest::newRow("all-300-not-truncated") << "robinhood_auto_buy " + many.join(',') << many;
+        QTest::newRow("all-300-whitespace-not-truncated") << "robinhood_auto_sell ,," + many.join("\t\n") + ",," << many;
         const QString exact = "robinhood_auto_buy " + QString(4096 - QString("robinhood_auto_buy A").size(), ' ') + "A";
         QTest::newRow("exact-4096") << exact << (QStringList{"A"});
         QTest::newRow("over-4096") << exact + " " << QStringList{};
         for (const auto &text : QStringList{"robinhoodAutoBuy AAPL", "robinhoodAutoSell AAPL", "Robinhood_auto_buy AAPL",
-                "ROBINHOOD_AUTO_BUY AAPL", "/robinhood_auto_buy@other_bot AAPL", "robinhood_auto_buy", "robinhood_auto_buy AAPL,",
-                "robinhood_auto_buy AAPL,,MSFT", "robinhood_auto_buy AAPL MSFT", "robinhood_auto_buy AAPL;MSFT",
-                "robinhood_auto_buy ＡＡＰＬ", "robinhood_auto_buy K", "robinhood_auto_buy ß", "robinhood_auto_buy AAPL\nMSFT",
+                "ROBINHOOD_AUTO_BUY AAPL", "/robinhood_auto_buy@other_bot AAPL", "robinhood_auto_buy",
+                "robinhood_auto_buy AAPL;MSFT",
+                "robinhood_auto_buy ＡＡＰＬ", "robinhood_auto_buy K", "robinhood_auto_buy ß",
                 "robinhood_auto_buy " + QString(16, 'A')})
             QTest::newRow(qPrintable(text)) << text << QStringList{};
     }
@@ -426,13 +438,14 @@ private slots:
         QStringList many;
         for (int i = 0; i < 300; ++i) many.append(QString(1, QChar('A' + i / 26)) + QChar('A' + i % 26));
         QTest::newRow("all-300-not-truncated") << "auto_buy " + many.join(',') << many;
+        QTest::newRow("all-300-whitespace-not-truncated") << "auto_sell ,," + many.join("\t\n") + ",," << many;
         const QString exact = "auto_buy " + QString(4096 - QString("auto_buy A").size(), ' ') + "A";
         QTest::newRow("exact-4096") << exact << (QStringList{"A"});
         QTest::newRow("over-4096") << exact + " " << QStringList{};
         for (const auto &text : QStringList{"autoBuy AAPL", "autoSell AAPL", "Auto_buy AAPL", "AUTO_BUY AAPL", "robinhoodAutoSell AAPL", "Robinhood_auto_buy AAPL",
-                "ROBINHOOD_AUTO_BUY AAPL", "/auto_buy@other_bot AAPL", "auto_buy", "auto_buy AAPL,",
-                "auto_buy AAPL,,MSFT", "auto_buy AAPL MSFT", "auto_buy AAPL;MSFT", "auto_buy BRK.B", "auto_buy BRK-B", "auto_buy T1",
-                "auto_buy ＡＡＰＬ", "auto_buy K", "auto_buy ß", "auto_buy AAPL\nMSFT",
+                "ROBINHOOD_AUTO_BUY AAPL", "/auto_buy@other_bot AAPL", "auto_buy",
+                "auto_buy AAPL;MSFT", "auto_buy BRK.B", "auto_buy BRK-B", "auto_buy T1",
+                "auto_buy ＡＡＰＬ", "auto_buy K", "auto_buy ß",
                 "auto_buy " + QString(16, 'A')})
             QTest::newRow(qPrintable(text)) << text << QStringList{};
     }

@@ -76,7 +76,8 @@ Item {
                     objectName: "tickerInput"
                     Layout.fillWidth: true
                     Layout.minimumHeight: 52
-                    placeholderText: qsTr("Single: AAPL  or  Multi: AAPL, TSLA, GM")
+                    placeholderText: qsTr("Single: AAPL  or  Multi: AAPL TSLA, GM")
+                    Accessible.name: qsTr("Ticker symbols, separated by commas or whitespace")
                     selectByMouse: true
                     font.pixelSize: 18
                     font.capitalization: Font.AllUppercase

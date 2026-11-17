@@ -40,7 +40,11 @@ public:
                         response(socket, QJsonDocument(QJsonObject{{"accessToken", key + "-token"}}).toJson());
                     else response(socket, R"({"message":"bad key"})", 401);
                 } else if (path == "/userapigateway/trading/account") {
-                    response(socket, bearer == QStringLiteral("first")
+                    response(socket, unsupportedOnly
+                        ? R"({"accounts":[{"accountId":"U","accountType":"UNSUPPORTED"}]})"
+                        : entityOnly
+                        ? R"({"accounts":[{"accountId":"E","accountType":"ENTITY"}]})"
+                        : bearer == QStringLiteral("first")
                         ? (includeEntity
                             ? R"({"accounts":[{"accountId":"A","accountType":"BROKERAGE"},{"accountId":"E","accountType":"ENTITY"},{"accountId":"B","accountType":"ROTH_IRA"}]})"
                             : R"({"accounts":[{"accountId":"A","accountType":"BROKERAGE"},{"accountId":"A","accountType":"BROKERAGE"},{"accountId":"B","accountType":"ROTH_IRA"}]})")
@@ -116,6 +120,8 @@ public:
     QStringList orderedTrades;
     QString failSymbol;
     bool includeEntity = false;
+    bool entityOnly = false;
+    bool unsupportedOnly = false;
     int orderStatus = 200;
     bool hangOrders = false;
     bool dropOrders = false;
@@ -442,11 +448,10 @@ private slots:
 
         worker.executeTrade(QStringLiteral("AAPL, GM"), QStringLiteral("BUY"));
         QTRY_VERIFY_WITH_TIMEOUT(worker.tradeResultsComplete(), 6000);
-        QVERIFY(server.orderedTrades.contains(QStringLiteral("E:AAPL")));
-        QVERIFY(server.orderedTrades.contains(QStringLiteral("E:GM")));
+        QCOMPARE(server.orderedTrades, QStringList({"A:AAPL", "A:GM", "E:AAPL", "E:GM", "B:AAPL", "B:GM"}));
         QCOMPARE(worker.tradeResults().size(), 6);
-        QCOMPARE(worker.tradeResults().at(2).toMap().value(QStringLiteral("accountType")).toString(), QStringLiteral("ENTITY"));
-        QCOMPARE(worker.tradeResults().at(2).toMap().value(QStringLiteral("accountLabel")).toString(), QStringLiteral("Business: E"));
+        QCOMPARE(worker.tradeResults().at(2).toMap().value("accountType").toString(), QStringLiteral("ENTITY"));
+        QCOMPARE(worker.tradeResults().at(2).toMap().value("accountLabel").toString(), QStringLiteral("Business: E"));
 
         server.orderedTrades.clear();
         server.quantities.clear();
@@ -469,6 +474,67 @@ private slots:
         QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("A:AAPL"), QStringLiteral("E:AAPL"),
                                                    QStringLiteral("B:AAPL"), QStringLiteral("C:AAPL")}));
         QCOMPARE(controller.tradeResults().size(), 4);
+
+        server.orderedTrades.clear();
+        server.quantities.clear();
+        controller.submit(QStringLiteral("AAPL"), QStringLiteral("SELL"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.tradeResultsComplete(), 12000);
+        QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("A:AAPL"), QStringLiteral("E:AAPL")}));
+        QCOMPARE(server.quantities, QStringList({QStringLiteral("2.5"), QStringLiteral("4")}));
+        QCOMPARE(controller.tradeResults().size(), 4);
+    }
+
+    void entityOnlyKeySupportsBuySellAndPreflights()
+    {
+        TestBrokerageServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        server.entityOnly = true;
+        PublicApiWorker worker(server.url());
+        worker.setRequestPolicy(PublicRequestPolicy{.portfolioPauseMs = 0});
+        QSignalSpy loaded(&worker, &PublicApiWorker::accountLoadFinished);
+        worker.processToken(QStringLiteral("first-token"));
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.size(), 1, 4000);
+        QVERIFY(loaded.first().at(0).toBool());
+        QCOMPARE(server.portfolioPaths.size(), 1);
+        QVERIFY(server.portfolioPaths.first().contains("/E/"));
+        for (const auto &side : {QStringLiteral("BUY"), QStringLiteral("SELL")}) {
+            server.orderedTrades.clear();
+            server.quantities.clear();
+            worker.executePreflight(QStringLiteral("AAPL"), side);
+            QTRY_VERIFY_WITH_TIMEOUT(worker.tradeResultsComplete(), 4000);
+            QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("E:AAPL")}));
+            QCOMPARE(server.quantities, QStringList({side == "BUY" ? QStringLiteral("1") : QStringLiteral("4")}));
+            server.orderedTrades.clear();
+            server.quantities.clear();
+            worker.executeTrade(QStringLiteral("AAPL"), side);
+            QTRY_VERIFY_WITH_TIMEOUT(worker.tradeResultsComplete(), 4000);
+            QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("E:AAPL")}));
+            QCOMPARE(server.quantities, QStringList({side == "BUY" ? QStringLiteral("1") : QStringLiteral("4")}));
+            QCOMPARE(worker.tradeResults().size(), 1);
+            QCOMPARE(worker.tradeResults().first().toMap().value("accountType").toString(), QStringLiteral("ENTITY"));
+            QCOMPARE(worker.tradeResults().first().toMap().value("accountLabel").toString(), QStringLiteral("Business: E"));
+        }
+        QCOMPARE(server.postedIds.size(), 4);
+    }
+
+    void unsupportedAccountTypeStillCannotTrade()
+    {
+        TestBrokerageServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        server.unsupportedOnly = true;
+        PublicApiWorker worker(server.url());
+        QSignalSpy loaded(&worker, &PublicApiWorker::accountLoadFinished);
+        worker.processToken(QStringLiteral("first-token"));
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.size(), 1, 4000);
+        QVERIFY(!loaded.first().at(0).toBool());
+        QVERIFY(loaded.first().at(1).toString().contains("No eligible"));
+        QVERIFY(server.portfolioPaths.isEmpty());
+        for (const auto &side : {QStringLiteral("BUY"), QStringLiteral("SELL")}) {
+            worker.executePreflight(QStringLiteral("AAPL"), side);
+            worker.executeTrade(QStringLiteral("AAPL"), side);
+        }
+        QVERIFY(server.postedIds.isEmpty());
+        QVERIFY(server.orderedTrades.isEmpty());
     }
 
     void selectedKeyMarketRequestsUseSameAccountTickerSequenceOnLocalServer()
@@ -534,7 +600,7 @@ private slots:
         AutoTradeController controller(&auth, &worker);
 
         server.clock.start();
-        controller.submit(QStringLiteral("aapl, t$sla, gm,"), QStringLiteral("BUY"));
+        controller.submit(QStringLiteral(" \taapl  t$sla,  gm,\t"), QStringLiteral("BUY"));
         QTRY_VERIFY_WITH_TIMEOUT(controller.tradeResultsComplete(), 16000);
         QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("A:AAPL"), QStringLiteral("A:TSLA"), QStringLiteral("A:GM"),
                                                    QStringLiteral("B:AAPL"), QStringLiteral("B:TSLA"), QStringLiteral("B:GM"),
@@ -563,7 +629,7 @@ private slots:
         worker.setRequestPolicy(PublicRequestPolicy{.portfolioPauseMs = 0});
         connect(&auth, &PublicAuthClient::tokenReceived, &worker, &PublicApiWorker::processToken);
         AutoTradeController controller(&auth, &worker);
-        controller.submit(QStringLiteral("AAPL, GM,"), QStringLiteral("SELL"));
+        controller.submit(QStringLiteral("  AAPL    GM \t"), QStringLiteral("SELL"));
         QTRY_VERIFY_WITH_TIMEOUT(controller.tradeResultsComplete(), 6000);
         QCOMPARE(server.orderedTrades, QStringList({QStringLiteral("A:AAPL")}));
         QCOMPARE(server.quantities, QStringList({QStringLiteral("2.5")}));

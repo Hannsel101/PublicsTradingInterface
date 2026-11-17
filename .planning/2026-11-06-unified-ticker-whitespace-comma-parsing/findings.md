@@ -1,0 +1,9 @@
+# Findings
+
+- Bounded independent source-only review deleg_802efd8b found no concrete introduced P1/P2 issues. Reviewed separators preserve route grammar, normalization/deduplication, limits and admission/acquisition boundaries. This review is separate from actual final build/test evidence.
+
+- Four native input boundaries found: PublicApiWorker::parseSymbols (also reused by Publics AutoTradeController), RHTradeController::submit, RHAutoTradeController::submit and TelegramAgent::admit. Only these implement ticker splitting; Telegram canonical-list services should continue rejecting malformed list elements rather than parse strings a second time.
+- Existing Publics comma-only splitting merged whitespace-separated symbols into one symbol; six-row real unit regression reproduced four failures (spaces/mixed/ASCII whitespace/Unicode whitespace). Comma-only and repeated-comma cases already worked in Publics. Preserve its existing within-token ASCII filtering; token whitespace can no longer be removed to join symbols.
+- Robinhood QML fields already pass raw input to native controllers. AutoModeView has a cheap character eligibility gate whose JavaScript whitespace class excludes NEL (U+0085), while Qt Unicode whitespace accepts it. Add NEL to that UI gate and require at least one ASCII letter to disable delimiter-only input. Keep native grammar authoritative.
+- All three applet ticker placeholders/accessibility should advertise both separators. QML tests use backend mocks, separate from actual native parsing/order tests; do not claim UI mocks prove brokerage execution.
+- New delimiter-run semantics deliberately accept repeated/leading/trailing commas and skip empties. Telegram separators-only trading messages must keep existing no-argument no-op: no replies/ledger/domain dispatch.

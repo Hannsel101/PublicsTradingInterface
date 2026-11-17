@@ -9,6 +9,7 @@
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSettings>
 #include <QLocale>
@@ -125,8 +126,10 @@ void PublicApiWorker::setRequestPolicy(const PublicRequestPolicy &policy)
 
 QStringList PublicApiWorker::parseSymbols(const QString &input)
 {
+    static const QRegularExpression separators(QStringLiteral("[,\\s]+"),
+        QRegularExpression::UseUnicodePropertiesOption);
     QStringList symbols;
-    for (const QString &part : input.split(QLatin1Char(','))) {
+    for (const QString &part : input.split(separators, Qt::SkipEmptyParts)) {
         QString symbol;
         for (const QChar character : part) {
             const ushort letter = character.unicode();

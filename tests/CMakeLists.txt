@@ -43,8 +43,9 @@ if(TARGET telegram_bots_ui)
     publics_add_test(test_telegramwebhookmanager unit/test_telegramwebhookmanager.cpp telegram_bots_runtime)
     publics_add_test(test_telegramwebhookagent unit/test_telegramwebhookagent.cpp telegram_bots_runtime)
     set_tests_properties(test_telegrambotruntime test_telegramwebhookhost test_telegramwebhookagent PROPERTIES TIMEOUT 240)
-    # The expanded three-route grammar/auth/replay matrix includes bounded network deadlines.
-    set_tests_properties(test_telegrambotruntime PROPERTIES TIMEOUT 480)
+    # Full grammar matrices measured 364s polling, 297s webhook and 105s Debug logging.
+    set_tests_properties(test_telegrambotruntime test_telegramwebhookagent PROPERTIES TIMEOUT 480)
+    set_tests_properties(test_telegramdebuglogging PROPERTIES TIMEOUT 180)
     publics_add_test(test_telegrampasswordbridge integration/test_telegrampasswordbridge.cpp
         telegram_bots_backend Qt6::Network)
     add_dependencies(test_telegrampasswordbridge test_telegramwebhookagent)
@@ -70,8 +71,8 @@ publics_add_test(test_rhsessionmanager_native unit/test_rhsessionmanager_native.
 publics_add_test(test_rhnetworkengine unit/test_rhnetworkengine.cpp rh_network_engine)
 publics_enable_live_trading(test_rhnetworkengine)
 publics_add_test(test_rhtradecontroller unit/test_rhtradecontroller.cpp rh_trading)
-# Data-driven deadline/reconciliation suite needs headroom under parallel kits.
-set_tests_properties(test_rhtradecontroller PROPERTIES TIMEOUT 240)
+# Expanded separator/deadline suite measured 207s under ASan; allow parallel-kit headroom.
+set_tests_properties(test_rhtradecontroller PROPERTIES TIMEOUT 360)
 publics_add_test(test_rhautomode integration/test_rhautomode.cpp rh_trading)
 set_tests_properties(test_rhautomode PROPERTIES TIMEOUT 240)
 publics_add_test(test_rhautomodeapplet integration/test_rhautomodeapplet.cpp

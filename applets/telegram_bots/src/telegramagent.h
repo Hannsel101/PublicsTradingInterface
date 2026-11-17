@@ -39,7 +39,10 @@ public:
     bool stopping() const;
     // One-argument compatibility is restricted to explicitly injected literal-
     // loopback polling fixtures. Production/webhook Start requires the persisted,
-    // password-decrypted session secret on every activation; no secret is generated.
+    // password-decrypted session secret on every user Start; no secret is generated.
+    // Startup webhook registration alone may recover twice (three total attempts)
+    // using this same RAM snapshot and validated bot identity. Each retry waits for
+    // confirmed owned remote cleanup and last-host-lease release; Stop cancels it.
     void start(QString token);
     void start(QString token, QString sessionSecret);
     void stop();
